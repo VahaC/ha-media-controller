@@ -10,15 +10,14 @@ substitutions:
   ac_entity: switch.replace_me_ac
   ha_url: "http://homeassistant.local:8123"
   ha_token: "replace_me"
+  asset_base_url: "https://raw.githubusercontent.com/VahaC/music-assistant-esp32s34848s040-controller/main/firmware/assets"
 
 esphome:
   name: ${device_name}
   friendly_name: ${friendly_name}
   project:
     name: vahac.media_controller
-    version: "0.1.0"
-  includes:
-    - playlist_parser.h
+    version: "0.2.0"
   on_boot:
     priority: -100
     then:
@@ -132,6 +131,10 @@ psram:
   mode: octal
   speed: 80MHz
 
+# The importing user configuration supplies Wi-Fi or Ethernet. Declaring the
+# shared network component keeps this maintained package valid on its own.
+network:
+
 logger:
 
 # -------------------- DEBUG / STABILITY DIAGNOSTICS --------------------
@@ -180,8 +183,8 @@ api:
                   size_t uris_start = body.find('[', uris_pos);
                   size_t uris_end = body.find(']', uris_start);
                   std::string uris_json = body.substr(uris_start, uris_end - uris_start + 1);
-                  id(playlist_names) = parse_json_string_array(names_json);
-                  id(playlist_uris) = parse_json_string_array(uris_json);
+                  id(playlist_names) = id(json_string_array_parser)(names_json);
+                  id(playlist_uris) = id(json_string_array_parser)(uris_json);
                   ESP_LOGD("playlist", "Loaded %d playlists after connect",
                            id(playlist_names).size());
                   std::string options = "";
@@ -195,8 +198,6 @@ api:
                       options.c_str(),
                       LV_ROLLER_MODE_NORMAL);
                   }
-
-captive_portal:
 
 # -------------------- SPI / I2C --------------------
 spi:
@@ -293,55 +294,55 @@ touchscreen:
 # -------------------- ICON IMAGES --------------------
 image:
   - platform: file
-    file: assets/icon_repeat_off.png
+    file: "${asset_base_url}/icon_repeat_off.png"
     id: icon_repeat_off
     resize: 20x20
     type: RGB
     transparency: alpha_channel
   - platform: file
-    file: assets/icon_repeat_all.png
+    file: "${asset_base_url}/icon_repeat_all.png"
     id: icon_repeat_all
     resize: 20x20
     type: RGB
     transparency: alpha_channel
   - platform: file
-    file: assets/icon_repeat_one.png
+    file: "${asset_base_url}/icon_repeat_one.png"
     id: icon_repeat_one
     resize: 20x20
     type: RGB
     transparency: alpha_channel
   - platform: file
-    file: assets/icon_shuffle_off.png
+    file: "${asset_base_url}/icon_shuffle_off.png"
     id: icon_shuffle_off
     resize: 20x20
     type: RGB
     transparency: alpha_channel
   - platform: file
-    file: assets/icon_shuffle_on.png
+    file: "${asset_base_url}/icon_shuffle_on.png"
     id: icon_shuffle_on
     resize: 20x20
     type: RGB
     transparency: alpha_channel
   - platform: file
-    file: assets/1lamp.png
+    file: "${asset_base_url}/1lamp.png"
     id: icon_light1
     resize: 128x128
     type: RGB
     transparency: alpha_channel
   - platform: file
-    file: assets/2lamps.png
+    file: "${asset_base_url}/2lamps.png"
     id: icon_light2
     resize: 128x128
     type: RGB
     transparency: alpha_channel
   - platform: file
-    file: assets/fan.png
+    file: "${asset_base_url}/fan.png"
     id: icon_fan
     resize: 128x128
     type: RGB
     transparency: alpha_channel
   - platform: file
-    file: assets/ac.png
+    file: "${asset_base_url}/ac.png"
     id: icon_ac
     resize: 128x128
     type: RGB
@@ -649,8 +650,8 @@ interval:
                   std::string uris_json = body.substr(uris_start, uris_end - uris_start + 1);
 
                   // -- Parse both arrays --
-                  id(playlist_names) = parse_json_string_array(names_json);
-                  id(playlist_uris) = parse_json_string_array(uris_json);
+                  id(playlist_names) = id(json_string_array_parser)(names_json);
+                  id(playlist_uris) = id(json_string_array_parser)(uris_json);
                   ESP_LOGD("playlist", "Loaded %d playlists", id(playlist_names).size());
 
                   // -- Build roller options string --
@@ -776,9 +777,9 @@ script:
                   std::string artists_json = unescaped.substr(a_arr_start, a_arr_end - a_arr_start + 1);
                   std::string ids_json = unescaped.substr(q_arr_start, q_arr_end - q_arr_start + 1);
 
-                  id(queue_title_list) = parse_json_string_array(titles_json);
-                  id(queue_artist_list) = parse_json_string_array(artists_json);
-                  id(queue_id_list) = parse_json_string_array(ids_json);
+                  id(queue_title_list) = id(json_string_array_parser)(titles_json);
+                  id(queue_artist_list) = id(json_string_array_parser)(artists_json);
+                  id(queue_id_list) = id(json_string_array_parser)(ids_json);
 
                   // Keep all parallel arrays at the same safe size.
                   size_t safe_count = id(queue_title_list).size();
@@ -1257,6 +1258,50 @@ http_request:
   timeout: 10s
 
 globals:
+  # Captureless function pointer: the same parser formerly provided by the
+  # local playlist_parser.h, which ESPHome Git packages cannot resolve.
+  - id: json_string_array_parser
+    type: std::vector<std::string> (*)(const std::string &)
+    restore_value: no
+    initial_value: |-
+      [](const std::string &json) -> std::vector<std::string> {
+        std::vector<std::string> result;
+        std::string s = json;
+        size_t pos = s.find('[');
+        if (pos == std::string::npos) return result;
+        s = s.substr(pos + 1);
+
+        while (true) {
+          size_t start = s.find('"');
+          if (start == std::string::npos) break;
+          s = s.substr(start + 1);
+
+          std::string item;
+          size_t i = 0;
+          while (i < s.size()) {
+            if (s[i] == '\\' && i + 1 < s.size()) {
+              if (s[i + 1] == '"') item += '"';
+              else if (s[i + 1] == 'n') item += '\n';
+              else if (s[i + 1] == '\\') item += '\\';
+              else item += s[i + 1];
+              i += 2;
+            } else if (s[i] == '"') {
+              i++;
+              break;
+            } else {
+              item += s[i];
+              i++;
+            }
+          }
+          result.push_back(item);
+          s = s.substr(i);
+
+          size_t next = s.find_first_not_of(" ,\n\r\t");
+          if (next != std::string::npos && s[next] == ']') break;
+        }
+        return result;
+      }
+
   - id: playlist_names
     type: std::vector<std::string>
     restore_value: no
