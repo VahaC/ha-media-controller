@@ -10,7 +10,7 @@ import unittest
 MODULE_PATH = (
     Path(__file__).parents[1]
     / "custom_components"
-    / "vahac_media_controller"
+    / "media_controller"
     / "transformations.py"
 )
 SPEC = importlib.util.spec_from_file_location("vahac_transformations", MODULE_PATH)

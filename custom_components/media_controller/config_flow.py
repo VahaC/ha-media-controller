@@ -1,4 +1,4 @@
-"""Config and options flows for VahaC Media Controller."""
+"""Config and options flows for Media Controller."""
 
 from __future__ import annotations
 

@@ -58,7 +58,7 @@ class QueuePayload:
         return len(self.titles)
 
     def as_dict(self) -> dict[str, Any]:
-        """Return the legacy-compatible JSON object."""
+        """Return the firmware queue JSON object."""
         return {
             "titles": list(self.titles),
             "artists": list(self.artists),
@@ -89,7 +89,7 @@ class PlaylistPayload:
         return len(self.names)
 
     def as_attributes(self) -> dict[str, Any]:
-        """Return legacy-compatible Home Assistant attributes."""
+        """Return the Home Assistant playlist attributes."""
         return {
             "names": list(self.names),
             "uris": list(self.uris),
