@@ -7,9 +7,7 @@ built for the ESP32-S3 480×480 ST7701S + GT911 board commonly sold as
 The project packages the existing working controller as:
 
 - a HACS-compatible Home Assistant custom integration;
-- a reusable ESPHome package with all build assets in this repository;
-- a migration path that removes Pyscript and two manual synchronization
-  automations after verification.
+- a reusable ESPHome package with all build assets in this repository.
 
 The LVGL interface, display timings, touch pins, media controls, album art,
 queue windowing, playlists, room controls, sleep timer, and consumed wake touch
@@ -18,9 +16,11 @@ are intentionally preserved.
 ## Current validation status
 
 The custom integration transformation tests and static repository checks pass.
-The packaged example also passes `esphome config` and a complete ESPHome
-2026.8.0 compile. Physical target testing is still required before a release is
-tagged. See [Hardware verification](#hardware-verification).
+The packaged firmware also passes `esphome config` and a complete ESPHome
+2026.8.0 compile. The firmware was successfully verified on the physical
+ESP32-S3 + ST7701S + GT911 target, including the Git package installation flow.
+Use the [hardware checklist](#hardware-verification) when installing it on
+another board revision.
 
 ## Supported hardware
 
@@ -52,9 +52,9 @@ Until this repository is included in the default HACS catalog:
 2. Add
    `https://github.com/VahaC/music-assistant-esp32s34848s040-controller`
    as an **Integration** repository.
-3. Install **VahaC Media Controller** and restart Home Assistant.
+3. Install **Media Controller** and restart Home Assistant.
 4. Open Settings → Devices & services → Add integration.
-5. Select **VahaC Media Controller**.
+5. Select **Media Controller**.
 6. Select the required Music Assistant player.
 7. Optionally map Light 1, Light 2, Fan, and AC.
 
@@ -73,11 +73,10 @@ Entity IDs are assigned by Home Assistant's entity registry. Open the new
 controller device and copy its actual entity IDs for the firmware substitutions.
 Do not assume the example IDs are the IDs Home Assistant chose.
 
-The old queue automation no longer contains a player entity ID: the integration
-listens to the Music Assistant player selected in Config Flow. The ESPHome
-device still uses its `player_entity` substitution for native media state and
-control actions. If the selected player is changed later in Options Flow,
-update that substitution during the next ESPHome/OTA update as well.
+The integration listens to the Music Assistant player selected in Config Flow.
+The ESPHome device also uses its `player_entity` substitution for native media
+state and control actions. If the selected player is changed later in Options
+Flow, update that substitution during the next ESPHome/OTA update as well.
 
 ### Synchronization behavior
 
@@ -87,89 +86,93 @@ update that substitution during the next ESPHome/OTA update as well.
 - Only 50 queue entries are requested, starting up to five entries before the
   current item.
 - Rapid changes cancel obsolete delays and queue calls cannot overlap.
-- `vahac_media_controller.refresh` refreshes queue and playlists on demand.
-- `vahac_media_controller.play_queue_item` starts the selected queue item by
+- `media_controller.refresh` refreshes queue and playlists on demand.
+- `media_controller.play_queue_item` starts the selected queue item by
   its Music Assistant queue item ID without replacing the queue.
 
 ## Configure and flash ESPHome
 
-### Local package
+The ESPHome device YAML is intentionally small. Paste the complete block below
+into the device configuration in ESPHome Device Builder. Do not copy the
+2,000+ line `firmware/media-controller.yaml` file into Home Assistant: the
+`packages:` section downloads that maintained file and all required image
+assets from this repository during validation and compilation.
 
-1. Copy `firmware/media-controller.example.yaml` to a local file such as
-   `media-controller.local.yaml`.
-2. Keep using your existing ESPHome `secrets.yaml`. Do not create a second
-   secrets file. `firmware/secrets.example.yaml` is only a reference list of
-   the required keys: merge any missing keys into the existing global file, or
-   change the `!secret` references in the device YAML to match your current
-   key names.
-3. Replace every non-secret placeholder in the local device file.
-4. Set `player_entity` to the Music Assistant player selected in Config Flow.
-5. Set the queue/playlists/light/switch substitutions to the entity IDs created
-   by the VahaC integration.
-6. Validate and compile:
+```yaml
+substitutions:
+  # Keep the existing ESPHome device name when updating an already adopted
+  # device; changing it creates a different device identity in Home Assistant.
+  device_name: media-controller
+  friendly_name: Media Controller
 
-   ```text
-   esphome config firmware/media-controller.local.yaml
-   esphome compile firmware/media-controller.local.yaml
-   ```
+  # Use the same Music Assistant player selected in the integration Config Flow.
+  player_entity: media_player.your_music_assistant_player
 
-7. Flash by USB for the first installation, then use ESPHome OTA updates.
+  # Copy the actual entity IDs created by the Media Controller integration.
+  queue_entity: sensor.your_controller_queue
+  playlists_entity: sensor.your_controller_playlists
+  light1_entity: light.your_controller_light_1
+  light2_entity: light.your_controller_light_2
+  fan_entity: switch.your_controller_fan
+  ac_entity: switch.your_controller_ac
 
-The 2,000+ line maintained UI stays in `firmware/media-controller.yaml`; the
-user edits only the small local configuration.
+  ha_url: "http://homeassistant.local:8123"
+  ha_token: !secret media_controller_ha_token
 
-### Git package
+packages:
+  media_controller:
+    url: https://github.com/VahaC/music-assistant-esp32s34848s040-controller
+    ref: main
+    files:
+      - firmware/media-controller.yaml
+    refresh: 1d
 
-`firmware/media-controller.remote.example.yaml` demonstrates the current
-ESPHome Git package syntax. Copy it into your ESPHome configuration directory,
-set the substitutions, and keep all `!secret` values in that directory's
-`secrets.yaml`.
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+api:
+  encryption:
+    key: !secret media_controller_api_encryption_key
+
+ota:
+  - platform: esphome
+    password: !secret media_controller_ota_password
+```
+
+Before installing:
+
+1. Replace `device_name`, `player_entity`, and every queue/playlist/room entity
+   placeholder with the actual values from Home Assistant.
+2. Keep using the existing global ESPHome `secrets.yaml`; do not create a
+   repository-specific secrets file.
+3. Ensure the `!secret` names in the block match keys that already exist in
+   that global file. Rename the references in the device YAML if your keys have
+   different names.
+4. In ESPHome Device Builder, select **Validate**, then **Install**. Use USB for
+   the first flash and OTA for later updates.
+
+For command-line validation and compilation:
+
+```text
+esphome config media-controller.yaml
+esphome compile media-controller.yaml
+```
 
 Remote ESPHome packages cannot contain secret lookups. This is why Wi-Fi, API
-encryption, OTA, the fallback AP password, and the Home Assistant token are in
-the small user configuration rather than the maintained package.
+encryption, OTA, and the Home Assistant token are in the small user
+configuration rather than the maintained package.
 
 ## REST token limitation
 
-Version 1 intentionally retains the existing Home Assistant REST transport for
-queue, playlist, and album-art requests. The ESP32 sends a bearer token only to
-the configured local `ha_url`.
+The firmware currently uses the Home Assistant REST transport for queue,
+playlist, and album-art requests. The ESP32 sends a bearer token only to the
+configured local `ha_url`.
 
 Use a dedicated token, store it only in `secrets.yaml`, do not commit it, and
 keep the ESPHome device and Home Assistant on a trusted local network. Removing
 the token is a later security milestone that requires payload-size, ESP32
-memory, reconnect, and album-art testing; it is not mixed into this migration.
-
-## Migration from the legacy installation
-
-Do not remove the working Pyscript setup first. Use this order:
-
-1. Keep the legacy Pyscript files and automations enabled.
-2. Install and configure the new integration.
-3. Confirm its queue sensor contains a compact JSON `data` attribute with
-   `titles`, `artists`, `queue_ids`, `current_index`, and `count`.
-4. Confirm its playlists sensor contains `names`, `uris`, and `count`, with
-   generated `(from library)` entries filtered out.
-5. Point a test firmware configuration at the new entity IDs and compile it.
-6. Disable—not delete—the two legacy synchronization automations and reload
-   Pyscript or restart Home Assistant.
-7. Verify startup/periodic playlists, delayed queue updates, queue item playback,
-   playlist playback, and a Home Assistant restart.
-8. Complete the physical checks below.
-
-Only after every check passes is it safe to remove:
-
-- Pyscript, if no other automation uses it;
-- `sync_ma_queue.py`;
-- `set_ma_playlists.py` (the legacy filename differs from the earlier handoff
-  name `sync_ma_playlists.py`);
-- the legacy queue automation;
-- the legacy playlist automation;
-- `input_select.music_playlist`, if nothing else uses it.
-
-Exact pre-migration reference files remain under `legacy/` for rollback and
-behavior comparison. The original `home-assistant/` directory is also retained
-during the hardware-validation period.
+memory, reconnect, and album-art testing, so it remains a separate follow-up.
 
 ## Hardware verification
 
@@ -206,9 +209,6 @@ Pure transformation tests use the standard library:
 ```text
 python -m unittest discover -s tests -v
 ```
-
-The Phase 0 audit and implementation sequence are recorded in
-`docs/IMPLEMENTATION_PLAN.md`.
 
 ## License
 

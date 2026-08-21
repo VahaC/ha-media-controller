@@ -17,7 +17,7 @@ esphome:
   friendly_name: ${friendly_name}
   project:
     name: vahac.media_controller
-    version: "0.2.0"
+    version: "0.3.0"
   on_boot:
     priority: -100
     then:
@@ -949,7 +949,7 @@ script:
                      id(queue_id_list)[idx].c_str());
           }
       - homeassistant.service:
-          service: vahac_media_controller.play_queue_item
+          service: media_controller.play_queue_item
           data:
             entity_id: ${player_entity}
             queue_item_id: !lambda |-

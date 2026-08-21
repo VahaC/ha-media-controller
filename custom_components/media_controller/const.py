@@ -1,10 +1,10 @@
-"""Constants for the VahaC Media Controller integration."""
+"""Constants for the Media Controller integration."""
 
 from datetime import timedelta
 
 from homeassistant.const import Platform
 
-DOMAIN = "vahac_media_controller"
+DOMAIN = "media_controller"
 
 PLATFORMS: list[Platform] = [Platform.LIGHT, Platform.SENSOR, Platform.SWITCH]
 

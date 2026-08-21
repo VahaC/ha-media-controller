@@ -66,7 +66,7 @@ class QueueSensor(_ControllerSensor):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        """Expose the exact legacy queue transport shape."""
+        """Expose the queue payload expected by the firmware."""
         payload = self.coordinator.data or QueuePayload()
         return {
             "data": payload.as_json(),
@@ -90,6 +90,6 @@ class PlaylistSensor(_ControllerSensor):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        """Expose the exact legacy playlist transport shape."""
+        """Expose the playlist payload expected by the firmware."""
         payload = self.coordinator.data or PlaylistPayload()
         return payload.as_attributes()

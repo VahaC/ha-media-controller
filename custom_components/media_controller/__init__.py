@@ -1,4 +1,4 @@
-"""VahaC Media Controller integration."""
+"""Media Controller integration."""
 
 from __future__ import annotations
 
@@ -58,14 +58,14 @@ def _runtime_for_call(
     if entry_id := call.data.get(ATTR_ENTRY_ID):
         if runtime := runtimes.get(entry_id):
             return runtime
-        raise ServiceValidationError("VahaC Media Controller entry is not loaded")
+        raise ServiceValidationError("Media Controller entry is not loaded")
 
     if entity_id := call.data.get(CONF_ENTITY_ID):
         for runtime in runtimes.values():
             if runtime.adapter.player_entity_id == entity_id:
                 return runtime
         raise ServiceValidationError(
-            "No VahaC Media Controller entry uses this Music Assistant player"
+            "No Media Controller entry uses this Music Assistant player"
         )
 
     if len(runtimes) == 1:
@@ -83,13 +83,13 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
             runtime = runtimes.get(entry_id)
             if runtime is None:
                 raise ServiceValidationError(
-                    "VahaC Media Controller entry is not loaded"
+                    "Media Controller entry is not loaded"
                 )
             selected = [runtime]
         else:
             selected = list(runtimes.values())
         if not selected:
-            raise ServiceValidationError("No VahaC Media Controller entry is loaded")
+            raise ServiceValidationError("No Media Controller entry is loaded")
         await asyncio.gather(
             *(
                 coordinator.async_request_refresh()
@@ -131,7 +131,7 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up a VahaC Media Controller config entry."""
+    """Set up a Media Controller config entry."""
     player_entity = _configured_value(entry, CONF_PLAYER_ENTITY)
     try:
         adapter = MusicAssistantAdapter.from_player(hass, player_entity)

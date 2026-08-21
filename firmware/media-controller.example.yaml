@@ -5,7 +5,7 @@ substitutions:
   # Select the same Music Assistant player used in the integration Config Flow.
   player_entity: media_player.your_music_assistant_player
 
-  # Copy the entity IDs created by the VahaC Media Controller integration.
+  # Copy the entity IDs created by the Media Controller integration.
   queue_entity: sensor.your_controller_queue
   playlists_entity: sensor.your_controller_playlists
   light1_entity: light.your_controller_light_1
@@ -13,25 +13,22 @@ substitutions:
   fan_entity: switch.your_controller_fan
   ac_entity: switch.your_controller_ac
 
-  # Keep the URL local to Home Assistant. The v1 REST transport still needs a
-  # dedicated long-lived HA token stored only in secrets.yaml.
+  # Use a dedicated long-lived HA token stored in the existing ESPHome
+  # secrets.yaml. Rename this !secret reference if your key has another name.
   ha_url: "http://homeassistant.local:8123"
   ha_token: !secret media_controller_ha_token
 
-  # Repository-local assets for development and validation.
-  asset_base_url: assets
-
 packages:
-  media_controller: !include media-controller.yaml
+  media_controller:
+    url: https://github.com/VahaC/music-assistant-esp32s34848s040-controller
+    ref: main
+    files:
+      - firmware/media-controller.yaml
+    refresh: 1h
 
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
-  ap:
-    ssid: "Media Controller Fallback"
-    password: !secret media_controller_fallback_ap_password
-
-captive_portal:
 
 api:
   encryption:
