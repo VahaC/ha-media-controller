@@ -31,7 +31,7 @@ _LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
-class VahaCControllerRuntime:
+class MediaControllerRuntime:
     """Runtime objects owned by one config entry."""
 
     adapter: MusicAssistantAdapter
@@ -52,9 +52,9 @@ def _configured_value(entry: ConfigEntry, key: str) -> Any:
 def _runtime_for_call(
     hass: HomeAssistant,
     call: ServiceCall,
-) -> VahaCControllerRuntime:
+) -> MediaControllerRuntime:
     """Resolve a runtime by entry ID or configured player entity."""
-    runtimes: dict[str, VahaCControllerRuntime] = hass.data.get(DOMAIN, {})
+    runtimes: dict[str, MediaControllerRuntime] = hass.data.get(DOMAIN, {})
     if entry_id := call.data.get(ATTR_ENTRY_ID):
         if runtime := runtimes.get(entry_id):
             return runtime
@@ -78,7 +78,7 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
     hass.data.setdefault(DOMAIN, {})
 
     async def async_handle_refresh(call: ServiceCall) -> None:
-        runtimes: dict[str, VahaCControllerRuntime] = hass.data[DOMAIN]
+        runtimes: dict[str, MediaControllerRuntime] = hass.data[DOMAIN]
         if entry_id := call.data.get(ATTR_ENTRY_ID):
             runtime = runtimes.get(entry_id)
             if runtime is None:
@@ -140,7 +140,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     queue = QueueCoordinator(hass, entry, adapter)
     playlists = PlaylistCoordinator(hass, entry, adapter)
-    runtime = VahaCControllerRuntime(adapter, queue, playlists)
+    runtime = MediaControllerRuntime(adapter, queue, playlists)
 
     try:
         await asyncio.gather(
@@ -164,7 +164,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if not unload_ok:
         return False
-    runtime: VahaCControllerRuntime = entry.runtime_data
+    runtime: MediaControllerRuntime = entry.runtime_data
     await runtime.async_shutdown()
     hass.data[DOMAIN].pop(entry.entry_id, None)
     return True
