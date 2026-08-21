@@ -11,7 +11,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from . import VahaCControllerRuntime
+from . import MediaControllerRuntime
 from .const import DOMAIN
 from .coordinator import PlaylistCoordinator, QueueCoordinator
 from .transformations import PlaylistPayload, QueuePayload
@@ -23,7 +23,7 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up the queue and playlist sensors."""
-    runtime: VahaCControllerRuntime = entry.runtime_data
+    runtime: MediaControllerRuntime = entry.runtime_data
     async_add_entities(
         [
             QueueSensor(entry, runtime.queue),

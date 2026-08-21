@@ -74,7 +74,7 @@ def _entry_player_entity(entry: config_entries.ConfigEntry) -> str | None:
     )
 
 
-class VahaCMediaControllerConfigFlow(
+class MediaControllerConfigFlow(
     config_entries.ConfigFlow,
     domain=DOMAIN,
 ):
@@ -119,12 +119,12 @@ class VahaCMediaControllerConfigFlow(
     @callback
     def async_get_options_flow(
         config_entry: config_entries.ConfigEntry,
-    ) -> VahaCMediaControllerOptionsFlow:
+    ) -> MediaControllerOptionsFlow:
         """Create the options flow."""
-        return VahaCMediaControllerOptionsFlow()
+        return MediaControllerOptionsFlow()
 
 
-class VahaCMediaControllerOptionsFlow(OptionsFlowWithReload):
+class MediaControllerOptionsFlow(OptionsFlowWithReload):
     """Allow player and optional room-control remapping."""
 
     async def async_step_init(

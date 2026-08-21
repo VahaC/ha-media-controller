@@ -16,8 +16,8 @@ esphome:
   name: ${device_name}
   friendly_name: ${friendly_name}
   project:
-    name: vahac.media_controller
-    version: "0.3.0"
+    name: media_controller.esp32s3
+    version: "0.4.0"
   on_boot:
     priority: -100
     then:

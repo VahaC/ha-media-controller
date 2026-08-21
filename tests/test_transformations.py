@@ -13,7 +13,9 @@ MODULE_PATH = (
     / "media_controller"
     / "transformations.py"
 )
-SPEC = importlib.util.spec_from_file_location("vahac_transformations", MODULE_PATH)
+SPEC = importlib.util.spec_from_file_location(
+    "media_controller_transformations", MODULE_PATH
+)
 assert SPEC is not None and SPEC.loader is not None
 transformations = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = transformations
