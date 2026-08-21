@@ -97,8 +97,12 @@ update that substitution during the next ESPHome/OTA update as well.
 
 1. Copy `firmware/media-controller.example.yaml` to a local file such as
    `media-controller.local.yaml`.
-2. Copy `firmware/secrets.example.yaml` to `firmware/secrets.yaml`.
-3. Replace every placeholder in both local files.
+2. Keep using your existing ESPHome `secrets.yaml`. Do not create a second
+   secrets file. `firmware/secrets.example.yaml` is only a reference list of
+   the required keys: merge any missing keys into the existing global file, or
+   change the `!secret` references in the device YAML to match your current
+   key names.
+3. Replace every non-secret placeholder in the local device file.
 4. Set `player_entity` to the Music Assistant player selected in Config Flow.
 5. Set the queue/playlists/light/switch substitutions to the entity IDs created
    by the VahaC integration.

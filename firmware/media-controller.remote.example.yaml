@@ -10,6 +10,7 @@ substitutions:
   ac_entity: switch.your_controller_ac
   ha_url: "http://homeassistant.local:8123"
   ha_token: !secret media_controller_ha_token
+  asset_base_url: "https://raw.githubusercontent.com/VahaC/music-assistant-esp32s34848s040-controller/main/firmware/assets"
 
 packages:
   media_controller:
@@ -26,6 +27,8 @@ wifi:
     ssid: "Media Controller Fallback"
     password: !secret media_controller_fallback_ap_password
 
+captive_portal:
+
 api:
   encryption:
     key: !secret media_controller_api_encryption_key
@@ -33,4 +36,3 @@ api:
 ota:
   - platform: esphome
     password: !secret media_controller_ota_password
-
