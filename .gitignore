@@ -1,0 +1,21 @@
+# Local ESPHome configuration and secrets
+secrets.yaml
+*.local.yaml
+.esphome/
+
+# Python tooling
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+
+# Editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+docs/IMPLEMENTATION_PLAN.md
+CODEX_HANDOFF.md
+AGENTS.md

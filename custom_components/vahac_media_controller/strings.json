@@ -1,0 +1,79 @@
+{
+  "title": "VahaC Media Controller",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Configure the media controller",
+        "description": "Select the Music Assistant player and optional room controls used by this controller.",
+        "data": {
+          "player_entity": "Music Assistant player",
+          "light_1_entity": "Light 1",
+          "light_2_entity": "Light 2",
+          "fan_entity": "Fan",
+          "ac_entity": "AC"
+        }
+      }
+    },
+    "error": {
+      "not_music_assistant": "Select a media player provided by Music Assistant."
+    },
+    "abort": {
+      "already_configured": "This Music Assistant player is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Controller options",
+        "description": "Remap the player or optional room controls. The integration reloads automatically.",
+        "data": {
+          "player_entity": "Music Assistant player",
+          "light_1_entity": "Light 1",
+          "light_2_entity": "Light 2",
+          "fan_entity": "Fan",
+          "ac_entity": "AC"
+        }
+      }
+    },
+    "error": {
+      "not_music_assistant": "Select a media player provided by Music Assistant.",
+      "already_configured": "This Music Assistant player is already used by another controller."
+    }
+  },
+  "entity": {
+    "light": {
+      "light_1": {
+        "name": "Light 1"
+      },
+      "light_2": {
+        "name": "Light 2"
+      }
+    },
+    "sensor": {
+      "queue": {
+        "name": "Queue"
+      },
+      "playlists": {
+        "name": "Playlists"
+      }
+    },
+    "switch": {
+      "fan": {
+        "name": "Fan"
+      },
+      "ac": {
+        "name": "AC"
+      }
+    }
+  },
+  "services": {
+    "refresh": {
+      "name": "Refresh controller data",
+      "description": "Refresh queue and playlist data immediately."
+    },
+    "play_queue_item": {
+      "name": "Play queue item",
+      "description": "Start a Music Assistant queue item without replacing the queue."
+    }
+  }
+}
