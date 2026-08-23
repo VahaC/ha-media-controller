@@ -228,6 +228,18 @@ Navigation never names a home page directly — it always goes through the
 `show_home_page*` scripts — and no sensor writes to a widget directly, so those
 steps are the whole integration surface.
 
+### Album art sizing
+
+Every layout decodes album art at the size it draws it:
+
+| Source | Size | Used by |
+| --- | --- | --- |
+| `album_art` | 480×480 | `Classic`, full screen |
+| `album_art_small` | 244×244 | `Minimal Ring` disc, `Cover Card` cover |
+
+Only the source the active layout needs is downloaded. `resize:` preserves the
+aspect ratio, so non-square art is letterboxed rather than stretched.
+
 ### Album art must never be scaled at draw time
 
 This build sets `LV_COLOR_16_SWAP` and leaves `LV_DRAW_SW_SUPPORT_SWAPPED` off,
@@ -272,12 +284,19 @@ On the physical ESP32-S3 + ST7701S + GT911 device, verify all of the following:
    unconfigured mappings affect only their own controls.
 10. Long queues and repeated page navigation do not cause watchdog or memory
     resets; inspect the included heap/PSRAM diagnostics.
-11. Note `Media Controller Heap Free`, `Media Controller Heap Min Free`, and
-    `Media Controller Loop Time`. Each extra LVGL page costs roughly 10–15 KB of
-    internal heap; album art buffers are shared between layouts of the same size
-    and do not multiply. Loop time should stay close to the 16 ms LVGL refresh
-    period — a sustained 25 ms or more means something is stalling the main
-    loop, and gesture recognition degrades with it.
+11. Note `Media Controller Heap Free` and `Media Controller Heap Min Free`.
+    Each extra LVGL page costs roughly 10–15 KB of internal heap; album art
+    buffers are shared between layouts of the same size and do not multiply.
+
+    `Media Controller Loop Time` is the **longest single loop iteration** in the
+    last update interval, not an average, so one expensive frame — a page load
+    animation, an album art decode, a queue response — sets it. Occasional peaks
+    of tens of milliseconds are normal and are not evidence of a stall.
+
+    `Reset Reason` is carried over from the previous boot and stays there until
+    the next one, so it can look alarming long after a one-off reset. Watch
+    `Media Controller Uptime` instead: if it keeps climbing, the device is not
+    rebooting whatever the reset reason says.
 12. Switch `Screen Style` through all three options from Home Assistant. The
     layout must change immediately, already showing the current track, artist,
     progress, and album art, with no reboot.

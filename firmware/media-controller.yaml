@@ -17,7 +17,7 @@ esphome:
   friendly_name: ${friendly_name}
   project:
     name: media_controller.esp32s3
-    version: "0.6.0"
+    version: "0.7.0"
   on_boot:
     priority: -100
     then:
@@ -259,13 +259,16 @@ image:
     transparency: alpha_channel
     
 # -- Initial URL is a placeholder; real URL is set dynamically via entity_picture sensor --
-# -- Classic layout source: decoded at whatever resolution Home Assistant serves
-# -- and drawn full-bleed behind the interface. --
+# -- Classic layout source, decoded straight to the size of the screen. Without
+# -- resize the buffer is whatever Home Assistant served (2 MB of PSRAM for a
+# -- 1000x1000 cover) and the 480x480 widget shows a centre crop of it; at this
+# -- size the whole cover is visible and the decode is cheaper. --
   - platform: online_image
     url: "${ha_url}/"
     id: album_art
     format: JPEG
     type: RGB565
+    resize: 480x480
     update_interval: never
     buffer_size: 4096
     on_download_finished:
@@ -1427,7 +1430,15 @@ script:
 
 # -------------------- HA SENSORS --------------------
 sensor:
-  # -- Stability diagnostics: heap/PSRAM/main-loop health --
+  # -- Uptime tells a stale "Reset Reason" apart from a device that is actually
+  # -- rebooting: the reset reason is carried over from the previous boot and
+  # -- stays there until the next one. --
+  - platform: uptime
+    name: "Media Controller Uptime"
+
+  # -- Stability diagnostics: heap/PSRAM/main-loop health.
+  # -- Loop Time is the longest single loop iteration in the last update
+  # -- interval, not an average, so single expensive frames show up there. --
   - platform: debug
     free:
       name: "Media Controller Heap Free"
@@ -1892,7 +1903,7 @@ lvgl:
       radius: 33
       pad_all: 0
       text_color: 0x05060c
-      shadow_width: 22
+      shadow_width: 14
       shadow_color: 0x00cfff
       shadow_opa: 55%
 
@@ -2332,7 +2343,7 @@ lvgl:
             bg_color: 0x00cfff
             bg_opa: COVER
             border_width: 0
-            shadow_width: 18
+            shadow_width: 10
             shadow_color: 0x00cfff
             shadow_opa: 70%
             scrollable: false
@@ -2759,10 +2770,7 @@ lvgl:
             bg_opa: COVER
             border_width: 0
             pad_all: 0
-            shadow_width: 30
-            shadow_color: 0x000000
-            shadow_opa: 70%
-            shadow_offset_y: 12
+            shadow_width: 0
             scrollable: false
             clickable: false
             widgets:
