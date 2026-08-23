@@ -22,12 +22,12 @@ ESP32-S3 + ST7701S + GT911 target, including the Git package installation flow.
 Use the [hardware checklist](#hardware-verification) when installing it on
 another board revision.
 
-The `Minimal Ring` screen style and the UI synchronisation refactor behind it
-are validated by `esphome config` and a full compile only. They have not yet run
-on the physical device: the circular album-art clipping, the runtime image
-scaling, the ring position dot, and the runtime memory cost of a second LVGL
-page all need hardware confirmation. See steps 11–14 of the
-[hardware checklist](#hardware-verification).
+The `Minimal Ring` and `Cover Card` screen styles, the UI synchronisation
+refactor behind them, and the swipe debounce are validated by `esphome config`
+and a full compile. `Minimal Ring` has run on the physical device; `Cover Card`
+has not. Album art rendering, the volume slider, the track time readout, and the
+runtime cost of a third LVGL page still need hardware confirmation. See steps
+11–16 of the [hardware checklist](#hardware-verification).
 
 ## Supported hardware
 
@@ -172,7 +172,7 @@ configuration rather than the maintained package.
 
 ## Screen styles
 
-The home screen ships in two layouts. The device exposes a **Screen Style**
+The home screen ships in three layouts. The device exposes a **Screen Style**
 select entity, so switching between them is a Home Assistant UI action or an
 automation — no recompile and no reflash. The choice is stored on the device and
 survives reboots.
@@ -181,6 +181,12 @@ survives reboots.
 | --- | --- |
 | `Classic` | Full-bleed album art, 240° progress arc, decoration card with title/artist/volume, transport row, shuffle/repeat, Queue and Playlists buttons. |
 | `Minimal Ring` | Album art as a centred disc inside a 270° progress ring with a glowing position dot, a bare prev / play-pause / next row, small title and artist, corner volume buttons, and a `...` button that opens an overlay with shuffle, repeat, Queue and Playlists. |
+| `Cover Card` | Rounded cover card with a drop shadow, large title and artist, elapsed and total time either side of a linear progress bar, a full transport row with shuffle and repeat inline, a volume slider, and Queue/Playlists in the top corners. Nothing hidden behind an overlay. |
+
+`Cover Card` is the only layout that shows track times and the only one with a
+volume slider rather than step buttons. It shares its pre-sized album art source
+with `Minimal Ring`, so adding it cost no extra image buffer and no extra
+download.
 
 Both layouts are live at all times: player state is written to every layout, so
 switching is instant and the newly shown one is already up to date. Swiping left
@@ -195,10 +201,11 @@ These template entities are also stored on the device and applied at boot:
 - `Title Color`, `Artist Color`, `Volume Color`
 - `Decoration Color`, `Decoration Opacity` (Classic only)
 - `Buttons Color`, `Buttons Opacity`
-- `Minimal Controls Color` — Minimal Ring transport glyphs only. It is separate
-  from `Buttons Color` because that layout deliberately keeps the accent colour
-  on the progress ring and renders the controls in neutral grey. Set it to the
-  same value as `Buttons Color` if you prefer them to match.
+- `Flat Controls Color` — transport glyphs on `Minimal Ring` and `Cover Card`.
+  It is separate from `Buttons Color` because both layouts deliberately reserve
+  the accent for the progress indicator and the play button, and render
+  everything else in neutral grey. Set it to the same value as `Buttons Color`
+  if you prefer them to match.
 - `Album Art Opacity`
 - `Screen Timeout`
 
@@ -206,17 +213,31 @@ Colours are plain six-digit hex without a leading `#`, for example `00cfff`.
 
 ### Adding another layout
 
-Layouts are ordinary LVGL pages. To add a third one:
+Layouts are ordinary LVGL pages. To add one:
 
-1. Add a page next to `page_player_minimal` in `firmware/media-controller.yaml`.
+1. Add a page next to `page_player_cover` in `firmware/media-controller.yaml`.
 2. Add its option to the `screen_style` select.
 3. Add a branch to `show_home_page`, `show_home_page_move_left`, and
    `show_home_page_move_right`, and to the page check in `apply_screen_style`.
 4. Extend the `ui_sync_*` and `apply_theme` scripts with the new widget IDs.
+5. If it needs album art at a new size, add an `online_image` with the matching
+   `resize:` and route it in `ui_load_album_art`.
 
 Navigation never names a home page directly — it always goes through the
 `show_home_page*` scripts — and no sensor writes to a widget directly, so those
-four steps are the whole integration surface.
+steps are the whole integration surface.
+
+### Album art must never be scaled at draw time
+
+This build sets `LV_COLOR_16_SWAP` and leaves `LV_DRAW_SW_SUPPORT_SWAPPED` off,
+so LVGL's software renderer cannot transform a swapped RGB565 image. Asking it
+to (via `lv_image_set_scale`, `zoom:`, or `scale:`) produces striped garbage
+instead of the cover, and the per-frame cost of transforming a full-resolution
+download is high enough to stall the main loop.
+
+Give each layout an `online_image` whose `resize:` already matches the widget,
+and share one source between layouts that need the same size. `resize:`
+preserves aspect ratio, so non-square art is letterboxed rather than stretched.
 
 ## REST token limitation
 
@@ -250,18 +271,26 @@ On the physical ESP32-S3 + ST7701S + GT911 device, verify all of the following:
    unconfigured mappings affect only their own controls.
 10. Long queues and repeated page navigation do not cause watchdog or memory
     resets; inspect the included heap/PSRAM diagnostics.
-11. Note `Media Controller Heap Free` and `Media Controller Heap Min Free`
-    before and after this firmware version. A second LVGL page costs roughly
-    10–15 KB of internal heap; the album-art buffer is shared and does not
-    double. Investigate anything larger than that.
-12. Switch `Screen Style` between `Classic` and `Minimal Ring` from Home
-    Assistant. The layout must change immediately, already showing the current
-    track, artist, progress, and album art, with no reboot.
+11. Note `Media Controller Heap Free`, `Media Controller Heap Min Free`, and
+    `Media Controller Loop Time`. Each extra LVGL page costs roughly 10–15 KB of
+    internal heap; album art buffers are shared between layouts of the same size
+    and do not multiply. Loop time should stay close to the 16 ms LVGL refresh
+    period — a sustained 25 ms or more means something is stalling the main
+    loop, and gesture recognition degrades with it.
+12. Switch `Screen Style` through all three options from Home Assistant. The
+    layout must change immediately, already showing the current track, artist,
+    progress, and album art, with no reboot.
 13. On `Minimal Ring`: album art is clipped to a clean circle for both square
     and non-square source images, the position dot tracks the ring across a
     whole track, `...` opens and closes the overlay, and shuffle/repeat state in
     the overlay matches Music Assistant.
-14. Change `Screen Style` while the queue, playlists, or room controls page is
+14. On `Cover Card`: the cover renders cleanly, elapsed and total time count
+    correctly and read `--:--` for live streams, the volume slider follows Home
+    Assistant but does not jump while being dragged, and releasing it sets the
+    volume once rather than on every step.
+15. A single swipe changes the page exactly once, in both directions and from
+    every layout. Repeat with playback running.
+16. Change `Screen Style` while the queue, playlists, or room controls page is
     open. The device must stay on that page and only apply the new layout when
     it next returns home.
 

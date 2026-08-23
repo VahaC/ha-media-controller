@@ -297,6 +297,9 @@ image:
         - lvgl.image.update:
             id: album_art_circle
             src: album_art_small
+        - lvgl.image.update:
+            id: album_art_cover
+            src: album_art_small
     on_error:
       then:
         - logger.log: Album art (disc) download failed
@@ -387,12 +390,13 @@ text:
       then:
         - script.execute: apply_theme
 
-  # -- Minimal Ring page: transport glyph colour. Kept separate from
-  # -- "Buttons Color" because that layout deliberately leaves the accent to
-  # -- the progress ring alone and renders the controls in neutral grey. --
+  # -- Transport glyph colour for the Minimal Ring and Cover Card layouts.
+  # -- Kept separate from "Buttons Color" because both layouts deliberately
+  # -- reserve the accent for the progress indicator and one play button, and
+  # -- render everything else in neutral grey. --
   - platform: template
-    name: "Minimal Controls Color"
-    id: color_minimal_controls
+    name: "Flat Controls Color"
+    id: color_flat_controls
     mode: text
     initial_value: "d8dce6"
     optimistic: true
@@ -414,6 +418,7 @@ select:
     options:
       - "Classic"
       - "Minimal Ring"
+      - "Cover Card"
     on_value:
       then:
         - script.execute: apply_screen_style
@@ -585,7 +590,13 @@ script:
           then:
             - lvgl.page.show: page_player_minimal
           else:
-            - lvgl.page.show: page_player
+            - if:
+                condition:
+                  lambda: return id(screen_style).current_option() == "Cover Card";
+                then:
+                  - lvgl.page.show: page_player_cover
+                else:
+                  - lvgl.page.show: page_player
 
   # -- Swipe navigation entry points. Every page-to-page swipe goes through one
   # -- of these so the debounce applies uniformly in both directions. --
@@ -667,10 +678,19 @@ script:
                 animation: MOVE_LEFT
                 time: 300ms
           else:
-            - lvgl.page.show:
-                id: page_player
-                animation: MOVE_LEFT
-                time: 300ms
+            - if:
+                condition:
+                  lambda: return id(screen_style).current_option() == "Cover Card";
+                then:
+                  - lvgl.page.show:
+                      id: page_player_cover
+                      animation: MOVE_LEFT
+                      time: 300ms
+                else:
+                  - lvgl.page.show:
+                      id: page_player
+                      animation: MOVE_LEFT
+                      time: 300ms
 
   - id: show_home_page_move_right
     then:
@@ -684,10 +704,19 @@ script:
                 animation: MOVE_RIGHT
                 time: 300ms
           else:
-            - lvgl.page.show:
-                id: page_player
-                animation: MOVE_RIGHT
-                time: 300ms
+            - if:
+                condition:
+                  lambda: return id(screen_style).current_option() == "Cover Card";
+                then:
+                  - lvgl.page.show:
+                      id: page_player_cover
+                      animation: MOVE_RIGHT
+                      time: 300ms
+                else:
+                  - lvgl.page.show:
+                      id: page_player
+                      animation: MOVE_RIGHT
+                      time: 300ms
 
   # -- Switch layouts only while a home layout is on screen. Changing the
   # -- select from Home Assistant must not yank the user off the queue,
@@ -699,7 +728,8 @@ script:
             lambda: |-
               if (!id(ui_ready)) return false;
               return id(page_player)->is_showing() ||
-                     id(page_player_minimal)->is_showing();
+                     id(page_player_minimal)->is_showing() ||
+                     id(page_player_cover)->is_showing();
           then:
             - script.execute: show_home_page
             - script.execute: ui_load_album_art
@@ -716,20 +746,22 @@ script:
       - lambda: |-
           if (!id(ui_ready)) return;
           const char *t = id(media_title).state.c_str();
-          lv_label_set_text(id(lbl_title), t);
-          lv_label_set_text(id(lbl_title_m), t);
-          lv_obj_set_style_text_align(id(lbl_title), LV_TEXT_ALIGN_CENTER, 0);
-          lv_obj_set_style_text_align(id(lbl_title_m), LV_TEXT_ALIGN_CENTER, 0);
+          lv_obj_t *labels[] = { id(lbl_title), id(lbl_title_m), id(lbl_title_c) };
+          for (auto *l : labels) {
+            lv_label_set_text(l, t);
+            lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
+          }
 
   - id: ui_sync_artist
     then:
       - lambda: |-
           if (!id(ui_ready)) return;
           const char *a = id(media_artist).state.c_str();
-          lv_label_set_text(id(lbl_artist), a);
-          lv_label_set_text(id(lbl_artist_m), a);
-          lv_obj_set_style_text_align(id(lbl_artist), LV_TEXT_ALIGN_CENTER, 0);
-          lv_obj_set_style_text_align(id(lbl_artist_m), LV_TEXT_ALIGN_CENTER, 0);
+          lv_obj_t *labels[] = { id(lbl_artist), id(lbl_artist_m), id(lbl_artist_c) };
+          for (auto *l : labels) {
+            lv_label_set_text(l, a);
+            lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
+          }
 
   - id: ui_sync_play_state
     then:
@@ -739,13 +771,20 @@ script:
                             ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY;
           lv_label_set_text(id(lbl_play_pause), sym);
           lv_label_set_text(id(lbl_play_pause_m), sym);
+          lv_label_set_text(id(lbl_play_pause_c), sym);
 
   - id: ui_sync_volume
     then:
       - lambda: |-
           if (!id(ui_ready)) return;
-          std::string vol = "Volume: " + to_string((int)(id(volume_level).state * 100)) + "%";
+          int pct = (int)(id(volume_level).state * 100.0f);
+          std::string vol = "Volume: " + to_string(pct) + "%";
           lv_label_set_text(id(lbl_volume), vol.c_str());
+          // -- Do not move the Cover Card knob out from under a finger that is
+          // -- still on it, nor snap it back before HA has applied the change. --
+          if (millis() - id(volume_touch_ms) > 2000) {
+            lv_slider_set_value(id(slider_volume_c), pct, LV_ANIM_OFF);
+          }
 
   # -- Both rings share one source of truth. The Minimal Ring layout also
   # -- carries a knob dot that has to be placed on the ring by hand, because
@@ -763,6 +802,22 @@ script:
           }
           lv_arc_set_value(id(progress_arc), progress);
           lv_arc_set_value(id(progress_arc_m), progress);
+          lv_bar_set_value(id(progress_bar_c), progress, LV_ANIM_OFF);
+
+          // -- Cover Card time readout --
+          auto fmt = [](int secs) {
+            if (secs < 0) secs = 0;
+            char buf[12];
+            snprintf(buf, sizeof(buf), "%d:%02d", secs / 60, secs % 60);
+            return std::string(buf);
+          };
+          if (dur > 0) {
+            lv_label_set_text(id(lbl_elapsed_c), fmt((int)id(media_position).state).c_str());
+            lv_label_set_text(id(lbl_total_c), fmt((int)dur).c_str());
+          } else {
+            lv_label_set_text(id(lbl_elapsed_c), "--:--");
+            lv_label_set_text(id(lbl_total_c), "--:--");
+          }
 
           // -- Ring geometry of the Minimal Ring layout, kept in sync with the
           // -- arc widget below: 300 px across, 4 px stroke, centred at y=-78. --
@@ -783,9 +838,9 @@ script:
           if (!id(ui_ready)) return;
           const std::string &x = id(shuffle_state).state;
           bool is_on = (x == "on" || x == "True" || x == "true" || x == "1");
-          lv_obj_t *offs[] = { id(img_shuffle_off), id(img_shuffle_off_m) };
-          lv_obj_t *ons[]  = { id(img_shuffle_on),  id(img_shuffle_on_m)  };
-          for (int i = 0; i < 2; i++) {
+          lv_obj_t *offs[] = { id(img_shuffle_off), id(img_shuffle_off_m), id(img_shuffle_off_c) };
+          lv_obj_t *ons[]  = { id(img_shuffle_on),  id(img_shuffle_on_m),  id(img_shuffle_on_c)  };
+          for (size_t i = 0; i < sizeof(offs) / sizeof(offs[0]); i++) {
             if (is_on) {
               lv_obj_add_flag(offs[i], LV_OBJ_FLAG_HIDDEN);
               lv_obj_remove_flag(ons[i], LV_OBJ_FLAG_HIDDEN);
@@ -800,10 +855,10 @@ script:
       - lambda: |-
           if (!id(ui_ready)) return;
           const std::string &x = id(repeat_state).state;
-          lv_obj_t *offs[] = { id(img_repeat_off), id(img_repeat_off_m) };
-          lv_obj_t *alls[] = { id(img_repeat_all), id(img_repeat_all_m) };
-          lv_obj_t *ones[] = { id(img_repeat_one), id(img_repeat_one_m) };
-          for (int i = 0; i < 2; i++) {
+          lv_obj_t *offs[] = { id(img_repeat_off), id(img_repeat_off_m), id(img_repeat_off_c) };
+          lv_obj_t *alls[] = { id(img_repeat_all), id(img_repeat_all_m), id(img_repeat_all_c) };
+          lv_obj_t *ones[] = { id(img_repeat_one), id(img_repeat_one_m), id(img_repeat_one_c) };
+          for (size_t i = 0; i < sizeof(offs) / sizeof(offs[0]); i++) {
             lv_obj_add_flag(offs[i], LV_OBJ_FLAG_HIDDEN);
             lv_obj_add_flag(alls[i], LV_OBJ_FLAG_HIDDEN);
             lv_obj_add_flag(ones[i], LV_OBJ_FLAG_HIDDEN);
@@ -823,7 +878,10 @@ script:
     then:
       - if:
           condition:
-            lambda: return id(screen_style).current_option() == "Minimal Ring";
+            lambda: |-
+              // -- Minimal Ring and Cover Card share the 244 px source. --
+              auto style = id(screen_style).current_option();
+              return style == "Minimal Ring" || style == "Cover Card";
           then:
             - lambda: |-
                 id(album_art_small).update();
@@ -855,14 +913,14 @@ script:
           lv_color_t col_art  = hex(id(color_artist).state);
           lv_color_t col_vol  = hex(id(color_volume).state);
           lv_color_t col_btn  = hex(id(color_buttons).state);
-          lv_color_t col_min  = hex(id(color_minimal_controls).state);
+          lv_color_t col_flat = hex(id(color_flat_controls).state);
 
           int arc_opa  = (int)id(arc_opacity).state;
           int art_opa  = (int)id(album_art_opacity).state;
           int deco_opa = (int)id(deco_opacity).state;
           int btn_opa  = (int)id(btn_opacity).state;
 
-          // -------- Progress rings --------
+          // -------- Progress indicators --------
           lv_obj_t *arcs[] = { id(progress_arc), id(progress_arc_m) };
           for (auto *a : arcs) {
             lv_obj_set_style_arc_color(a, col_arc, LV_PART_MAIN);
@@ -874,20 +932,35 @@ script:
           lv_obj_set_style_shadow_color(id(progress_dot_m), col_ind, 0);
           lv_obj_set_style_bg_opa(id(progress_dot_m), arc_opa, 0);
 
+          // -- Cover Card uses a linear bar and a volume slider for the same
+          // -- two roles the rings fill elsewhere. --
+          lv_obj_set_style_bg_color(id(progress_bar_c), col_arc, LV_PART_MAIN);
+          lv_obj_set_style_bg_color(id(progress_bar_c), col_ind, LV_PART_INDICATOR);
+          lv_obj_set_style_bg_opa(id(progress_bar_c), arc_opa, LV_PART_INDICATOR);
+          lv_obj_set_style_bg_color(id(slider_volume_c), col_arc, LV_PART_MAIN);
+          lv_obj_set_style_bg_color(id(slider_volume_c), col_ind, LV_PART_INDICATOR);
+
           // -------- Track text --------
-          lv_obj_set_style_text_color(id(lbl_title), col_ttl, 0);
-          lv_obj_set_style_text_color(id(lbl_title_m), col_ttl, 0);
-          lv_obj_set_style_text_color(id(lbl_artist), col_art, 0);
-          lv_obj_set_style_text_color(id(lbl_artist_m), col_art, 0);
-          lv_obj_set_style_text_align(id(lbl_title), LV_TEXT_ALIGN_CENTER, 0);
-          lv_obj_set_style_text_align(id(lbl_title_m), LV_TEXT_ALIGN_CENTER, 0);
-          lv_obj_set_style_text_align(id(lbl_artist), LV_TEXT_ALIGN_CENTER, 0);
-          lv_obj_set_style_text_align(id(lbl_artist_m), LV_TEXT_ALIGN_CENTER, 0);
+          lv_obj_t *titles[]  = { id(lbl_title), id(lbl_title_m), id(lbl_title_c) };
+          lv_obj_t *artists[] = { id(lbl_artist), id(lbl_artist_m), id(lbl_artist_c) };
+          for (auto *l : titles) {
+            lv_obj_set_style_text_color(l, col_ttl, 0);
+            lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
+          }
+          for (auto *l : artists) {
+            lv_obj_set_style_text_color(l, col_art, 0);
+            lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
+          }
           lv_obj_set_style_text_color(id(lbl_volume), col_vol, 0);
+          lv_obj_set_style_text_color(id(lbl_elapsed_c), col_vol, 0);
+          lv_obj_set_style_text_color(id(lbl_total_c), col_vol, 0);
+          lv_obj_set_style_text_color(id(lbl_vol_min_c), col_vol, 0);
+          lv_obj_set_style_text_color(id(lbl_vol_max_c), col_vol, 0);
 
           // -------- Album art --------
           lv_obj_set_style_img_opa(id(album_art_img), art_opa, 0);
           lv_obj_set_style_img_opa(id(album_art_circle), art_opa, 0);
+          lv_obj_set_style_img_opa(id(album_art_cover), art_opa, 0);
 
           // -------- Classic decoration circle --------
           lv_obj_set_style_bg_color(id(btn_decoration), col_deco, 0);
@@ -919,22 +992,32 @@ script:
             id(img_repeat_off), id(img_repeat_all), id(img_repeat_one),
             id(img_shuffle_off_m), id(img_shuffle_on_m),
             id(img_repeat_off_m), id(img_repeat_all_m), id(img_repeat_one_m),
+            id(img_shuffle_off_c), id(img_shuffle_on_c),
+            id(img_repeat_off_c), id(img_repeat_all_c), id(img_repeat_one_c),
           };
           for (auto *i : icons) {
             lv_obj_set_style_img_recolor(i, col_btn, 0);
             lv_obj_set_style_img_recolor_opa(i, LV_OPA_COVER, 0);
           }
 
-          // -------- Minimal Ring transport --------
-          lv_obj_t *min_glyphs[] = {
+          // -------- Flat transport glyphs (Minimal Ring, Cover Card) --------
+          lv_obj_t *flat_glyphs[] = {
             id(btn_prev_m), id(btn_play_pause_m), id(btn_next_m),
             id(btn_vol_down_m), id(btn_vol_up_m), id(btn_more_m),
+            id(btn_prev_c), id(btn_next_c),
+            id(btn_to_queue_c), id(btn_to_playlists_c),
           };
-          for (auto *b : min_glyphs) {
+          for (auto *b : flat_glyphs) {
             lv_obj_t *child = lv_obj_get_child(b, 0);
-            if (child != NULL) lv_obj_set_style_text_color(child, col_min, 0);
+            if (child != NULL && lv_obj_check_type(child, &lv_label_class)) {
+              lv_obj_set_style_text_color(child, col_flat, 0);
+            }
           }
-          lv_obj_set_style_border_color(id(btn_play_pause_m), col_min, 0);
+          lv_obj_set_style_border_color(id(btn_play_pause_m), col_flat, 0);
+
+          // -- Cover Card's play button is the one filled accent control. --
+          lv_obj_set_style_bg_color(id(btn_play_pause_c), col_btn, 0);
+          lv_obj_set_style_shadow_color(id(btn_play_pause_c), col_btn, 0);
 
   - id: refresh_queue
     mode: restart
@@ -1642,6 +1725,14 @@ globals:
     restore_value: no
     initial_value: '0'
 
+  # Set while the Cover Card volume slider is being dragged. Incoming volume
+  # updates from Home Assistant are ignored briefly afterwards so the knob does
+  # not fight the finger, and does not snap back before HA has caught up.
+  - id: volume_touch_ms
+    type: uint32_t
+    restore_value: no
+    initial_value: '0'
+
 # -------------------- LVGL UI --------------------
 lvgl:
   displays:
@@ -1780,6 +1871,35 @@ lvgl:
     - id: style_min_circle_pressed
       bg_color: 0xffffff
       bg_opa: 14%
+
+    # -- Cover Card: flat control glyph, chrome only while pressed --
+    - id: style_cover_ghost
+      bg_opa: TRANSP
+      border_width: 0
+      shadow_width: 0
+      radius: 22
+      pad_all: 0
+      text_color: 0xd8dce6
+
+    - id: style_cover_ghost_pressed
+      bg_color: 0xffffff
+      bg_opa: 12%
+
+    # -- Cover Card: the single filled accent control --
+    - id: style_cover_play
+      bg_color: 0x00cfff
+      bg_opa: COVER
+      border_width: 0
+      radius: 33
+      pad_all: 0
+      text_color: 0x05060c
+      shadow_width: 22
+      shadow_color: 0x00cfff
+      shadow_opa: 55%
+
+    - id: style_cover_play_pressed
+      bg_color: 0x00a6cc
+      shadow_width: 6
 
   pages:
     # ════════════════════════════════════════
@@ -2567,6 +2687,383 @@ lvgl:
                         align: CENTER
                   on_click:
                     - lvgl.widget.hide: overlay_more
+
+    # ════════════════════════════════════════
+    # PAGE 1C — Player, "Cover Card" layout
+    # ════════════════════════════════════════
+    # A rounded cover card with the full transport underneath: elapsed and
+    # remaining time, a linear progress bar, shuffle and repeat inline, and a
+    # volume slider. Nothing is hidden behind an overlay. Reuses the pre-sized
+    # album_art_small source, so this layout costs no extra image buffer and no
+    # extra download.
+    - id: page_player_cover
+      bg_color: 0x05060c
+      bg_opa: COVER
+      on_swipe_left:
+        - script.execute: nav_to_switches_move_left
+      on_swipe_right:
+        - script.execute: nav_to_switches_move_right
+      widgets:
+
+        # -- Queue --
+        - button:
+            id: btn_to_queue_c
+            gesture_bubble: true
+            styles: style_cover_ghost
+            pressed:
+              styles: style_cover_ghost_pressed
+            width: 44
+            height: 44
+            align: TOP_LEFT
+            x: 10
+            y: 8
+            widgets:
+              - label:
+                  text: !lambda return std::string(LV_SYMBOL_AUDIO);
+                  text_font: montserrat_16
+                  align: CENTER
+            on_click:
+              - lvgl.page.show: page_queue
+
+        # -- Playlists --
+        - button:
+            id: btn_to_playlists_c
+            gesture_bubble: true
+            styles: style_cover_ghost
+            pressed:
+              styles: style_cover_ghost_pressed
+            width: 44
+            height: 44
+            align: TOP_RIGHT
+            x: -10
+            y: 8
+            widgets:
+              - label:
+                  text: !lambda return std::string(LV_SYMBOL_LIST);
+                  text_font: montserrat_16
+                  align: CENTER
+            on_click:
+              - lvgl.page.show: page_playlists
+
+        # -- Cover card. Same 244 px source as the Minimal Ring disc, clipped to
+        # -- a rounded square instead of a circle. No transform, see the
+        # -- album_art_small comment. --
+        - obj:
+            id: art_clip_c
+            width: 244
+            height: 244
+            align: CENTER
+            y: -104
+            radius: 24
+            clip_corner: true
+            bg_color: 0x0d0f16
+            bg_opa: COVER
+            border_width: 0
+            pad_all: 0
+            shadow_width: 30
+            shadow_color: 0x000000
+            shadow_opa: 70%
+            shadow_offset_y: 12
+            scrollable: false
+            clickable: false
+            widgets:
+              - image:
+                  id: album_art_cover
+                  src: album_art_small
+                  align: CENTER
+
+        # -- Track title --
+        - label:
+            id: lbl_title_c
+            text: "No track"
+            text_color: 0xffffff
+            text_font: roboto_30
+            align: CENTER
+            y: 48
+            width: 420
+            long_mode: SCROLL_CIRCULAR
+            text_align: CENTER
+
+        # -- Artist --
+        - label:
+            id: lbl_artist_c
+            text: "Unknown"
+            text_color: 0x5588cc
+            text_font: roboto_22
+            align: CENTER
+            y: 82
+            width: 420
+            long_mode: SCROLL_CIRCULAR
+            text_align: CENTER
+
+        # -- Elapsed time --
+        - label:
+            id: lbl_elapsed_c
+            text: "0:00"
+            text_color: 0x77779a
+            text_font: montserrat_14
+            align: CENTER
+            x: -186
+            y: 118
+
+        # -- Linear progress --
+        - bar:
+            id: progress_bar_c
+            width: 300
+            height: 6
+            align: CENTER
+            y: 118
+            min_value: 0
+            max_value: 100
+            value: 0
+            animated: false
+            radius: 3
+            bg_color: 0x1a1a35
+            bg_opa: COVER
+            indicator:
+              bg_color: 0x00cfff
+              radius: 3
+
+        # -- Track length --
+        - label:
+            id: lbl_total_c
+            text: "0:00"
+            text_color: 0x77779a
+            text_font: montserrat_14
+            align: CENTER
+            x: 186
+            y: 118
+
+        # -- Shuffle --
+        - button:
+            id: btn_shuffle_c
+            gesture_bubble: true
+            styles: style_cover_ghost
+            pressed:
+              styles: style_cover_ghost_pressed
+            width: 44
+            height: 44
+            align: CENTER
+            x: -175
+            y: 164
+            widgets:
+              - image:
+                  id: img_shuffle_off_c
+                  src: icon_shuffle_off
+                  align: CENTER
+                  hidden: false
+              - image:
+                  id: img_shuffle_on_c
+                  src: icon_shuffle_on
+                  align: CENTER
+                  hidden: true
+            on_click:
+              - if:
+                  condition:
+                    lambda: |-
+                      return (id(shuffle_state).state == "on" ||
+                              id(shuffle_state).state == "True" ||
+                              id(shuffle_state).state == "true");
+                  then:
+                    - homeassistant.service:
+                        service: media_player.shuffle_set
+                        data:
+                          entity_id: ${player_entity}
+                          shuffle: "off"
+                  else:
+                    - homeassistant.service:
+                        service: media_player.shuffle_set
+                        data:
+                          entity_id: ${player_entity}
+                          shuffle: "on"
+
+        # -- Previous track --
+        - button:
+            id: btn_prev_c
+            gesture_bubble: true
+            styles: style_cover_ghost
+            pressed:
+              styles: style_cover_ghost_pressed
+            width: 52
+            height: 52
+            align: CENTER
+            x: -95
+            y: 164
+            widgets:
+              - label:
+                  text: !lambda return std::string(LV_SYMBOL_PREV);
+                  text_font: montserrat_24
+                  align: CENTER
+            on_click:
+              - logger.log: "Prev button pressed (cover)"
+              # -- media_previous_track restarts at position 0; reset the bar now
+              # -- instead of waiting for the next Home Assistant poll. --
+              - lambda: id(media_position).publish_state(0);
+              - homeassistant.service:
+                  service: media_player.media_previous_track
+                  data:
+                    entity_id: ${player_entity}
+
+        # -- Play / Pause, the one filled accent control on this layout --
+        - button:
+            id: btn_play_pause_c
+            gesture_bubble: true
+            styles: style_cover_play
+            pressed:
+              styles: style_cover_play_pressed
+            width: 66
+            height: 66
+            align: CENTER
+            y: 164
+            widgets:
+              - label:
+                  id: lbl_play_pause_c
+                  text: !lambda return std::string(LV_SYMBOL_PLAY);
+                  text_font: montserrat_28
+                  align: CENTER
+            on_click:
+              - logger.log: "Play/Pause button pressed (cover)"
+              - homeassistant.service:
+                  service: media_player.media_play_pause
+                  data:
+                    entity_id: ${player_entity}
+
+        # -- Next track --
+        - button:
+            id: btn_next_c
+            gesture_bubble: true
+            styles: style_cover_ghost
+            pressed:
+              styles: style_cover_ghost_pressed
+            width: 52
+            height: 52
+            align: CENTER
+            x: 95
+            y: 164
+            widgets:
+              - label:
+                  text: !lambda return std::string(LV_SYMBOL_NEXT);
+                  text_font: montserrat_24
+                  align: CENTER
+            on_click:
+              - logger.log: "Next track button pressed (cover)"
+              - homeassistant.service:
+                  service: media_player.media_next_track
+                  data:
+                    entity_id: ${player_entity}
+
+        # -- Repeat (cycles: off -> all -> one -> off) --
+        - button:
+            id: btn_repeat_c
+            gesture_bubble: true
+            styles: style_cover_ghost
+            pressed:
+              styles: style_cover_ghost_pressed
+            width: 44
+            height: 44
+            align: CENTER
+            x: 175
+            y: 164
+            widgets:
+              - image:
+                  id: img_repeat_off_c
+                  src: icon_repeat_off
+                  align: CENTER
+                  hidden: false
+              - image:
+                  id: img_repeat_all_c
+                  src: icon_repeat_all
+                  align: CENTER
+                  hidden: true
+              - image:
+                  id: img_repeat_one_c
+                  src: icon_repeat_one
+                  align: CENTER
+                  hidden: true
+            on_click:
+              - if:
+                  condition:
+                    lambda: return id(repeat_state).state == "off";
+                  then:
+                    - homeassistant.service:
+                        service: media_player.repeat_set
+                        data:
+                          entity_id: ${player_entity}
+                          repeat: "all"
+              - if:
+                  condition:
+                    lambda: return id(repeat_state).state == "all";
+                  then:
+                    - homeassistant.service:
+                        service: media_player.repeat_set
+                        data:
+                          entity_id: ${player_entity}
+                          repeat: "one"
+              - if:
+                  condition:
+                    lambda: return id(repeat_state).state == "one";
+                  then:
+                    - homeassistant.service:
+                        service: media_player.repeat_set
+                        data:
+                          entity_id: ${player_entity}
+                          repeat: "off"
+
+        # -- Volume --
+        - label:
+            id: lbl_vol_min_c
+            text: !lambda return std::string(LV_SYMBOL_VOLUME_MID);
+            text_color: 0x77779a
+            text_font: montserrat_14
+            align: CENTER
+            x: -162
+            y: 218
+
+        # -- Horizontal drags on the slider must move the knob, never the page,
+        # -- so this one widget does not bubble gestures. Home Assistant is
+        # -- called on release rather than on every step of the drag. --
+        - slider:
+            id: slider_volume_c
+            gesture_bubble: false
+            width: 268
+            height: 8
+            align: CENTER
+            y: 218
+            min_value: 0
+            max_value: 100
+            value: 0
+            radius: 4
+            bg_color: 0x1a1a35
+            bg_opa: COVER
+            indicator:
+              bg_color: 0x00cfff
+              radius: 4
+            knob:
+              bg_color: 0xffffff
+              radius: 9
+              pad_all: 6
+            on_press:
+              - lambda: id(volume_touch_ms) = millis();
+            on_release:
+              - lambda: id(volume_touch_ms) = millis();
+              - homeassistant.service:
+                  service: media_player.volume_set
+                  data:
+                    entity_id: ${player_entity}
+                    volume_level: !lambda |-
+                      int v = (int) lv_slider_get_value(id(slider_volume_c));
+                      char buf[8];
+                      snprintf(buf, sizeof(buf), "%.2f", v / 100.0f);
+                      return std::string(buf);
+
+        - label:
+            id: lbl_vol_max_c
+            text: !lambda return std::string(LV_SYMBOL_VOLUME_MAX);
+            text_color: 0x77779a
+            text_font: montserrat_14
+            align: CENTER
+            x: 162
+            y: 218
     # ════════════════════════════════════════
     # PAGE 2 — Playlists
     # ════════════════════════════════════════
