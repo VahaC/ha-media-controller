@@ -17,7 +17,7 @@ esphome:
   friendly_name: ${friendly_name}
   project:
     name: media_controller.esp32s3
-    version: "0.5.0"
+    version: "0.6.0"
   on_boot:
     priority: -100
     then:
