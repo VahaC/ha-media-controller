@@ -22,6 +22,13 @@ ESP32-S3 + ST7701S + GT911 target, including the Git package installation flow.
 Use the [hardware checklist](#hardware-verification) when installing it on
 another board revision.
 
+The `Minimal Ring` screen style and the UI synchronisation refactor behind it
+are validated by `esphome config` and a full compile only. They have not yet run
+on the physical device: the circular album-art clipping, the runtime image
+scaling, the ring position dot, and the runtime memory cost of a second LVGL
+page all need hardware confirmation. See steps 11–14 of the
+[hardware checklist](#hardware-verification).
+
 ## Supported hardware
 
 - ESP32-S3 (`esp32-s3-devkitc-1`)
@@ -163,6 +170,54 @@ Remote ESPHome packages cannot contain secret lookups. This is why Wi-Fi, API
 encryption, OTA, and the Home Assistant token are in the small user
 configuration rather than the maintained package.
 
+## Screen styles
+
+The home screen ships in two layouts. The device exposes a **Screen Style**
+select entity, so switching between them is a Home Assistant UI action or an
+automation — no recompile and no reflash. The choice is stored on the device and
+survives reboots.
+
+| Option | Layout |
+| --- | --- |
+| `Classic` | Full-bleed album art, 240° progress arc, decoration card with title/artist/volume, transport row, shuffle/repeat, Queue and Playlists buttons. |
+| `Minimal Ring` | Album art as a centred disc inside a 270° progress ring with a glowing position dot, a bare prev / play-pause / next row, small title and artist, corner volume buttons, and a `...` button that opens an overlay with shuffle, repeat, Queue and Playlists. |
+
+Both layouts are live at all times: player state is written to every layout, so
+switching is instant and the newly shown one is already up to date. Swiping left
+or right from either one still opens Room Controls, and Room Controls returns to
+whichever layout is currently selected.
+
+### Appearance entities
+
+These template entities are also stored on the device and applied at boot:
+
+- `Progress Ring Color`, `Progress Ring Fill Color`, `Progress Ring Opacity`
+- `Title Color`, `Artist Color`, `Volume Color`
+- `Decoration Color`, `Decoration Opacity` (Classic only)
+- `Buttons Color`, `Buttons Opacity`
+- `Minimal Controls Color` — Minimal Ring transport glyphs only. It is separate
+  from `Buttons Color` because that layout deliberately keeps the accent colour
+  on the progress ring and renders the controls in neutral grey. Set it to the
+  same value as `Buttons Color` if you prefer them to match.
+- `Album Art Opacity`
+- `Screen Timeout`
+
+Colours are plain six-digit hex without a leading `#`, for example `00cfff`.
+
+### Adding another layout
+
+Layouts are ordinary LVGL pages. To add a third one:
+
+1. Add a page next to `page_player_minimal` in `firmware/media-controller.yaml`.
+2. Add its option to the `screen_style` select.
+3. Add a branch to `show_home_page`, `show_home_page_move_left`, and
+   `show_home_page_move_right`, and to the page check in `apply_screen_style`.
+4. Extend the `ui_sync_*` and `apply_theme` scripts with the new widget IDs.
+
+Navigation never names a home page directly — it always goes through the
+`show_home_page*` scripts — and no sensor writes to a widget directly, so those
+four steps are the whole integration surface.
+
 ## REST token limitation
 
 The firmware currently uses the Home Assistant REST transport for queue,
@@ -195,6 +250,20 @@ On the physical ESP32-S3 + ST7701S + GT911 device, verify all of the following:
    unconfigured mappings affect only their own controls.
 10. Long queues and repeated page navigation do not cause watchdog or memory
     resets; inspect the included heap/PSRAM diagnostics.
+11. Note `Media Controller Heap Free` and `Media Controller Heap Min Free`
+    before and after this firmware version. A second LVGL page costs roughly
+    10–15 KB of internal heap; the album-art buffer is shared and does not
+    double. Investigate anything larger than that.
+12. Switch `Screen Style` between `Classic` and `Minimal Ring` from Home
+    Assistant. The layout must change immediately, already showing the current
+    track, artist, progress, and album art, with no reboot.
+13. On `Minimal Ring`: album art is clipped to a clean circle for both square
+    and non-square source images, the position dot tracks the ring across a
+    whole track, `...` opens and closes the overlay, and shuffle/repeat state in
+    the overlay matches Music Assistant.
+14. Change `Screen Style` while the queue, playlists, or room controls page is
+    open. The device must stay on that page and only apply the new layout when
+    it next returns home.
 
 ## Updating
 
@@ -209,6 +278,37 @@ Pure transformation tests use the standard library:
 ```text
 python -m unittest discover -s tests -v
 ```
+
+When iterating on the firmware, point the device YAML at a working branch
+instead of `main`. Note that `asset_base_url` defaults to the `main` branch, so
+override it as well whenever the branch changes image assets:
+
+```yaml
+substitutions:
+  asset_base_url: "https://raw.githubusercontent.com/VahaC/music-assistant-esp32s34848s040-controller/dev/firmware/assets"
+
+packages:
+  media_controller:
+    url: https://github.com/VahaC/music-assistant-esp32s34848s040-controller
+    ref: dev
+    files:
+      - firmware/media-controller.yaml
+    refresh: 0s
+```
+
+For layout work, a commit per iteration is unnecessary. Include the maintained
+file from a local checkout and keep the assets local too:
+
+```yaml
+substitutions:
+  asset_base_url: assets
+
+packages:
+  media_controller: !include ../music-assistant-esp32s34848s040-controller/firmware/media-controller.yaml
+```
+
+Users should pin a release tag rather than a branch, so that work in progress on
+`main` never reaches them mid-change.
 
 ## License
 
