@@ -954,8 +954,6 @@ script:
           lv_obj_set_style_text_color(id(lbl_volume), col_vol, 0);
           lv_obj_set_style_text_color(id(lbl_elapsed_c), col_vol, 0);
           lv_obj_set_style_text_color(id(lbl_total_c), col_vol, 0);
-          lv_obj_set_style_text_color(id(lbl_vol_min_c), col_vol, 0);
-          lv_obj_set_style_text_color(id(lbl_vol_max_c), col_vol, 0);
 
           // -------- Album art --------
           lv_obj_set_style_img_opa(id(album_art_img), art_opa, 0);
@@ -1006,6 +1004,7 @@ script:
             id(btn_vol_down_m), id(btn_vol_up_m), id(btn_more_m),
             id(btn_prev_c), id(btn_next_c),
             id(btn_to_queue_c), id(btn_to_playlists_c),
+            id(btn_vol_down_c), id(btn_vol_up_c),
           };
           for (auto *b : flat_glyphs) {
             lv_obj_t *child = lv_obj_get_child(b, 0);
@@ -2804,7 +2803,7 @@ lvgl:
             text_font: montserrat_14
             align: CENTER
             x: -186
-            y: 118
+            y: 112
 
         # -- Linear progress --
         - bar:
@@ -2812,7 +2811,7 @@ lvgl:
             width: 300
             height: 6
             align: CENTER
-            y: 118
+            y: 112
             min_value: 0
             max_value: 100
             value: 0
@@ -2832,7 +2831,7 @@ lvgl:
             text_font: montserrat_14
             align: CENTER
             x: 186
-            y: 118
+            y: 112
 
         # -- Shuffle --
         - button:
@@ -2845,7 +2844,7 @@ lvgl:
             height: 44
             align: CENTER
             x: -175
-            y: 164
+            y: 156
             widgets:
               - image:
                   id: img_shuffle_off_c
@@ -2888,7 +2887,7 @@ lvgl:
             height: 52
             align: CENTER
             x: -95
-            y: 164
+            y: 156
             widgets:
               - label:
                   text: !lambda return std::string(LV_SYMBOL_PREV);
@@ -2914,7 +2913,7 @@ lvgl:
             width: 66
             height: 66
             align: CENTER
-            y: 164
+            y: 156
             widgets:
               - label:
                   id: lbl_play_pause_c
@@ -2939,7 +2938,7 @@ lvgl:
             height: 52
             align: CENTER
             x: 95
-            y: 164
+            y: 156
             widgets:
               - label:
                   text: !lambda return std::string(LV_SYMBOL_NEXT);
@@ -2963,7 +2962,7 @@ lvgl:
             height: 44
             align: CENTER
             x: 175
-            y: 164
+            y: 156
             widgets:
               - image:
                   id: img_repeat_off_c
@@ -3009,15 +3008,30 @@ lvgl:
                           entity_id: ${player_entity}
                           repeat: "off"
 
-        # -- Volume --
-        - label:
-            id: lbl_vol_min_c
-            text: !lambda return std::string(LV_SYMBOL_VOLUME_MID);
-            text_color: 0x77779a
-            text_font: montserrat_14
+        # -- Volume down. The glyph doubles as a step button so the slider is
+        # -- not the only way to change volume on this layout. --
+        - button:
+            id: btn_vol_down_c
+            gesture_bubble: true
+            styles: style_cover_ghost
+            pressed:
+              styles: style_cover_ghost_pressed
+            width: 44
+            height: 40
             align: CENTER
-            x: -162
-            y: 218
+            x: -168
+            y: 210
+            widgets:
+              - label:
+                  id: lbl_vol_min_c
+                  text: !lambda return std::string(LV_SYMBOL_VOLUME_MID);
+                  text_font: montserrat_14
+                  align: CENTER
+            on_click:
+              - homeassistant.service:
+                  service: media_player.volume_down
+                  data:
+                    entity_id: ${player_entity}
 
         # -- Horizontal drags on the slider must move the knob, never the page,
         # -- so this one widget does not bubble gestures. Home Assistant is
@@ -3028,7 +3042,7 @@ lvgl:
             width: 268
             height: 8
             align: CENTER
-            y: 218
+            y: 210
             min_value: 0
             max_value: 100
             value: 0
@@ -3056,14 +3070,29 @@ lvgl:
                       snprintf(buf, sizeof(buf), "%.2f", v / 100.0f);
                       return std::string(buf);
 
-        - label:
-            id: lbl_vol_max_c
-            text: !lambda return std::string(LV_SYMBOL_VOLUME_MAX);
-            text_color: 0x77779a
-            text_font: montserrat_14
+        # -- Volume up --
+        - button:
+            id: btn_vol_up_c
+            gesture_bubble: true
+            styles: style_cover_ghost
+            pressed:
+              styles: style_cover_ghost_pressed
+            width: 44
+            height: 40
             align: CENTER
-            x: 162
-            y: 218
+            x: 168
+            y: 210
+            widgets:
+              - label:
+                  id: lbl_vol_max_c
+                  text: !lambda return std::string(LV_SYMBOL_VOLUME_MAX);
+                  text_font: montserrat_14
+                  align: CENTER
+            on_click:
+              - homeassistant.service:
+                  service: media_player.volume_up
+                  data:
+                    entity_id: ${player_entity}
     # ════════════════════════════════════════
     # PAGE 2 — Playlists
     # ════════════════════════════════════════

@@ -181,12 +181,13 @@ survives reboots.
 | --- | --- |
 | `Classic` | Full-bleed album art, 240° progress arc, decoration card with title/artist/volume, transport row, shuffle/repeat, Queue and Playlists buttons. |
 | `Minimal Ring` | Album art as a centred disc inside a 270° progress ring with a glowing position dot, a bare prev / play-pause / next row, small title and artist, corner volume buttons, and a `...` button that opens an overlay with shuffle, repeat, Queue and Playlists. |
-| `Cover Card` | Rounded cover card with a drop shadow, large title and artist, elapsed and total time either side of a linear progress bar, a full transport row with shuffle and repeat inline, a volume slider, and Queue/Playlists in the top corners. Nothing hidden behind an overlay. |
+| `Cover Card` | Rounded cover card with a drop shadow, large title and artist, elapsed and total time either side of a linear progress bar, a full transport row with shuffle and repeat inline, a volume slider flanked by step buttons, and Queue/Playlists in the top corners. Nothing hidden behind an overlay. |
 
-`Cover Card` is the only layout that shows track times and the only one with a
-volume slider rather than step buttons. It shares its pre-sized album art source
-with `Minimal Ring`, so adding it cost no extra image buffer and no extra
-download.
+`Cover Card` is the only layout that shows track times. Its volume row works two
+ways: drag the slider for a large jump, or tap the speaker glyph on either side
+to step the volume the same way the other layouts do. It shares its pre-sized
+album art source with `Minimal Ring`, so adding it cost no extra image buffer and
+no extra download.
 
 Both layouts are live at all times: player state is written to every layout, so
 switching is instant and the newly shown one is already up to date. Swiping left
@@ -286,8 +287,9 @@ On the physical ESP32-S3 + ST7701S + GT911 device, verify all of the following:
     the overlay matches Music Assistant.
 14. On `Cover Card`: the cover renders cleanly, elapsed and total time count
     correctly and read `--:--` for live streams, the volume slider follows Home
-    Assistant but does not jump while being dragged, and releasing it sets the
-    volume once rather than on every step.
+    Assistant but does not jump while being dragged, releasing it sets the volume
+    once rather than on every step, and the speaker glyphs either side of it step
+    the volume and move the knob to match.
 15. A single swipe changes the page exactly once, in both directions and from
     every layout. Repeat with playback running.
 16. Change `Screen Style` while the queue, playlists, or room controls page is
