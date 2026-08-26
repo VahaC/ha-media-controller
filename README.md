@@ -13,6 +13,9 @@ The LVGL interface, display timings, touch pins, media controls, album art,
 queue windowing, playlists, room controls, sleep timer, and consumed wake touch
 are intentionally preserved.
 
+For the build story, photos, and setup walkthrough, see the write-up:
+[Music Assistant ESP32 Media Controller](https://vahac.com/blogs/music-assistant-esp32-media-controller/?utm_source=github).
+
 ## Current validation status
 
 The custom integration transformation tests and static repository checks pass.
