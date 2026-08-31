@@ -12,6 +12,7 @@ from .const import (
     DEFAULT_PLAYLIST_LIMIT,
     DEFAULT_QUEUE_WINDOW_BEFORE,
     DEFAULT_QUEUE_WINDOW_SIZE,
+    PLAYLIST_PAGE_SIZE,
 )
 from .transformations import (
     PlaylistPayload,
@@ -114,15 +115,28 @@ class MusicAssistantAdapter:
         self,
         limit: int = DEFAULT_PLAYLIST_LIMIT,
     ) -> PlaylistPayload:
-        """Fetch a bounded playlist library."""
+        """Fetch the playlist library page by page up to the bound."""
         if limit <= 0:
             return PlaylistPayload()
         client = self._client()
-        items = await client.music.get_library_playlists(
-            limit=limit,
-            offset=0,
-        )
-        return transform_playlists(items, limit=limit)
+
+        collected: list[Any] = []
+        offset = 0
+        while len(collected) < limit:
+            page_size = min(PLAYLIST_PAGE_SIZE, limit - len(collected))
+            page = await client.music.get_library_playlists(
+                limit=page_size,
+                offset=offset,
+            )
+            items = list(page or ())
+            if not items:
+                break
+            collected.extend(items)
+            offset += len(items)
+            if len(items) < page_size:
+                break
+
+        return transform_playlists(collected, limit=limit)
 
     async def async_get_queue(
         self,
