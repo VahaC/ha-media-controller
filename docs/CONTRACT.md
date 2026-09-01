@@ -8,7 +8,11 @@ Treat this file as the change-control surface: a change to anything below
 affects released devices in the field. A change to code that is not described
 here affects one component only.
 
-Contract version: **1** (matches integration `0.7.x`).
+Contract version: **2** (matches integration `0.8.x`).
+
+Version 2 is purely additive. It adds the config sensor and lets proxy lights
+forward colour temperature; it removes nothing and renames no entity a version 1
+client already reads, so a client written against version 1 keeps working.
 
 ## Producer
 
@@ -23,13 +27,24 @@ hardcode them.
 | --- | --- | --- |
 | `sensor.<controller>_queue` | sensor | Bounded queue window |
 | `sensor.<controller>_playlists` | sensor | Library playlists |
-| `light.<controller>_light_1` | light | Room light proxy 1 |
-| `light.<controller>_light_2` | light | Room light proxy 2 |
-| `switch.<controller>_fan` | switch | Room switch proxy, fan |
-| `switch.<controller>_ac` | switch | Room switch proxy, AC |
+| `sensor.<client>_config` | sensor | Room-control layout of one client |
+| `light.<client>_slot_<n>` | light | Room light proxy in slot n |
+| `switch.<client>_slot_<n>` | switch | Room switch proxy in slot n |
 
-The state of both sensors is the constant string `ok`. All data is in the
-attributes, because a Home Assistant state is limited to 255 characters.
+`<client>` is the controller itself for the ESP32 slots, and the panel device
+for every other client.
+
+**Two entity ID spellings are valid and both are permanent.** An installation
+created before integration `0.8.1` keeps `light.<controller>_light_1`,
+`light.<controller>_light_2`, `switch.<controller>_fan`, and
+`switch.<controller>_ac` for slots 1 to 4, because the migration preserves the
+registry rows so that flashed devices need no reflash. An installation created
+after it uses `_slot_1` to `_slot_4`. No client may assume either spelling; the
+ESP32 reads them from substitutions and every other client from the config
+sensor.
+
+The state of every sensor above is the constant string `ok`. All data is in
+the attributes, because a Home Assistant state is limited to 255 characters.
 
 ### Queue sensor attributes
 
@@ -70,19 +85,71 @@ until the contract version is raised. `names` and `uris` are parallel. Entries
 whose name contains `(from library)` are filtered out by the integration. The
 list is capped at `DEFAULT_PLAYLIST_LIMIT` (500), fetched in pages of 100.
 
+### Config sensor attributes
+
+```json
+{
+  "profile": "t560",
+  "slot_count": 6,
+  "player": "media_player.kitchen",
+  "queue": "sensor.controller_queue",
+  "playlists": "sensor.controller_playlists",
+  "slots": [
+    {
+      "slot": 1,
+      "entity": "light.controller_slot_1",
+      "label": "DESK LAMP",
+      "controls": ["toggle", "brightness", "color_temp"],
+      "min_kelvin": 2000,
+      "max_kelvin": 6535
+    }
+  ],
+  "revision": 2098342174
+}
+```
+
+Real attributes, not an encoded string. Rules a client must follow:
+
+- `player`, `queue`, and `playlists` are the controller entities this client
+  reads. They are here so that a client needs no entity ID of its own: a URL,
+  a token, and its own identifier are enough to bootstrap. A payload in which
+  any of them is empty is not yet usable and must be retried, not cached.
+- `entity` is always the **proxy**, never the entity the user selected.
+- Unconfigured slots are **omitted**. Render what arrives, in `slot` order, and
+  handle an empty `slots` list.
+- `controls` is a closed list: `toggle`, `brightness`, `color_temp`. An
+  unknown value must be ignored, not treated as an error, so that a future
+  control can be added without breaking released clients.
+- `min_kelvin` and `max_kelvin` are present only when `controls` contains
+  `color_temp`.
+- `revision` is a checksum of the rest of the payload, not a counter. Equal
+  values mean an unchanged configuration; any change produces a different
+  value. A client uses it to skip a re-layout, never to order versions.
+- A client must cache the last payload it read and start from that cache when
+  Home Assistant is unreachable at boot. A client that cannot store a cache —
+  the ESP32 — must keep working from its compile-time defaults instead, and
+  must not treat a missing config sensor as fatal.
+
+How much of the payload a client uses depends on what it can change at
+runtime. The T560 panel builds its whole room page from it. The ESP32 takes
+only the labels and the visibility of its four buttons: everything else about
+those buttons, including the entity IDs and the service domains, is resolved
+while compiling and cannot follow a configuration change.
+
 ### Proxy entities
 
-A proxy mirrors the state of the entity selected in Options Flow and forwards
-actions to it. A proxy with no configured source, or whose source is missing, is
-`unavailable`; the other controller functions keep working.
+A proxy mirrors the state of the entity selected for its slot and forwards
+actions to it. A proxy whose source is missing is `unavailable`; the other
+controller functions keep working. Clearing a slot removes its proxy.
 
-Proxy lights currently declare `ColorMode.BRIGHTNESS` only. They mirror
-`brightness` and forward `brightness` on turn-on. **They do not forward color
-temperature.** A client that offers a colour-temperature control must point at
-the real light entity for that tile, which is what
-`clients/t560/config/config.ini.example` does for `desk_lamp` and
-`desk_led_strip`. Raising this is a contract change; see
-[ROADMAP.md](ROADMAP.md).
+A slot's domain is fixed when the slot is created, because the ESP32 resolves
+both the entity ID and the service domain of its four buttons at compile time.
+
+Proxy lights mirror the colour modes of their target: `onoff`, `brightness`, or
+`color_temp` with the target's Kelvin bounds. They forward `brightness` and
+`color_temp_kelvin` on turn-on. Colour, effects, and every other light feature
+are **not** forwarded. A client must not address the target entity directly to
+work around that; the slot mechanism is the only supported path.
 
 ## Services
 
@@ -133,4 +200,6 @@ can consume.
 Tests that protect the contract:
 
 - `tests/test_transformations.py` — payload construction;
+- `tests/test_profiles.py` — which controls a client is told to draw;
+- `tests/test_migration.py` — the version 1 slots keep their numbers;
 - `clients/t560/tests/test_json_helpers.c` — payload parsing on the client side.

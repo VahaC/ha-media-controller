@@ -162,5 +162,94 @@ class PlaylistTransformationTests(unittest.TestCase):
         self.assertEqual(payload.count, 0)
 
 
+class ClientConfigTests(unittest.TestCase):
+    """Verify the payload each client reads from its config sensor."""
+
+    def _payload(self):
+        return transformations.ClientConfigPayload(
+            profile="t560",
+            slot_count=6,
+            player_entity="media_player.kitchen",
+            queue_entity="sensor.controller_queue",
+            playlists_entity="sensor.controller_playlists",
+            slots=(
+                transformations.SlotPayload(
+                    slot=1,
+                    entity="light.controller_slot_1",
+                    label="DESK LAMP",
+                    controls=("toggle", "brightness", "color_temp"),
+                    min_kelvin=2000,
+                    max_kelvin=6535,
+                ),
+                transformations.SlotPayload(
+                    slot=3,
+                    entity="switch.controller_slot_3",
+                    label="FAN",
+                    controls=("toggle",),
+                ),
+            ),
+        )
+
+    def test_unconfigured_slots_are_omitted(self) -> None:
+        attributes = self._payload().as_attributes()
+        self.assertEqual(attributes["slot_count"], 6)
+        self.assertEqual([slot["slot"] for slot in attributes["slots"]], [1, 3])
+
+    def test_controller_entities_travel_with_the_layout(self) -> None:
+        # A client bootstraps from a URL, a token, and its panel ID only.
+        attributes = self._payload().as_attributes()
+        self.assertEqual(attributes["player"], "media_player.kitchen")
+        self.assertEqual(attributes["queue"], "sensor.controller_queue")
+        self.assertEqual(
+            attributes["playlists"], "sensor.controller_playlists"
+        )
+
+    def test_revision_changes_with_a_controller_entity(self) -> None:
+        before = self._payload().as_attributes()["revision"]
+        moved = transformations.ClientConfigPayload(
+            profile="t560",
+            slot_count=6,
+            player_entity="media_player.bedroom",
+            queue_entity="sensor.controller_queue",
+            playlists_entity="sensor.controller_playlists",
+            slots=self._payload().slots,
+        )
+        self.assertNotEqual(before, moved.as_attributes()["revision"])
+
+    def test_kelvin_bounds_only_where_they_apply(self) -> None:
+        slots = self._payload().as_attributes()["slots"]
+        self.assertEqual(slots[0]["min_kelvin"], 2000)
+        self.assertNotIn("min_kelvin", slots[1])
+        self.assertNotIn("max_kelvin", slots[1])
+
+    def test_empty_configuration_is_valid(self) -> None:
+        attributes = transformations.ClientConfigPayload().as_attributes()
+        self.assertEqual(attributes["slots"], [])
+        self.assertEqual(attributes["slot_count"], 0)
+
+    def test_revision_is_stable_for_equal_configuration(self) -> None:
+        first = self._payload().as_attributes()["revision"]
+        second = self._payload().as_attributes()["revision"]
+        self.assertEqual(first, second)
+
+    def test_revision_changes_with_the_configuration(self) -> None:
+        before = self._payload().as_attributes()["revision"]
+        after = transformations.ClientConfigPayload(
+            profile="t560",
+            slot_count=6,
+            slots=(
+                transformations.SlotPayload(
+                    slot=1,
+                    entity="light.controller_slot_1",
+                    label="READING LAMP",
+                    controls=("toggle", "brightness", "color_temp"),
+                    min_kelvin=2000,
+                    max_kelvin=6535,
+                ),
+            ),
+        ).as_attributes()["revision"]
+        self.assertNotEqual(before, after)
+
+
 if __name__ == "__main__":
     unittest.main()

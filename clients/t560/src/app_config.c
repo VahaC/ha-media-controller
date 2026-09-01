@@ -17,6 +17,17 @@ gchar *app_config_directory_path(void)
                             "t560-music-panel", NULL);
 }
 
+gchar *app_config_cache_path(const gchar *name)
+{
+    gchar *directory = g_build_filename(g_get_user_cache_dir(),
+                                        "t560-music-panel", NULL);
+    gchar *path = g_build_filename(directory, name, NULL);
+
+    g_mkdir_with_parents(directory, 0700);
+    g_free(directory);
+    return path;
+}
+
 static gchar *read_string(GKeyFile *file, const gchar *group,
                           const gchar *key, const gchar *fallback)
 {
@@ -44,48 +55,24 @@ static gint read_integer(GKeyFile *file, const gchar *group,
     return value;
 }
 
-static gboolean read_room_features(GKeyFile *file, const gchar *key,
-                                   gboolean *brightness,
-                                   gboolean *color_temperature,
-                                   gchar **error_message)
+void panel_layout_clear(PanelLayout *layout)
 {
-    gchar *value = read_string(file, "room_features", key, "");
-    gchar **features = g_strsplit(value, ",", -1);
+    if (layout == NULL)
+        return;
 
-    *brightness = FALSE;
-    *color_temperature = FALSE;
-    for (guint i = 0; features[i] != NULL; i++) {
-        gchar *feature = g_strstrip(features[i]);
-        if (*feature == '\0' || g_str_equal(feature, "none"))
-            continue;
-        if (g_str_equal(feature, "brightness")) {
-            *brightness = TRUE;
-        } else if (g_str_equal(feature, "color_temperature")) {
-            *color_temperature = TRUE;
-        } else {
-            *error_message = g_strdup_printf(
-                "Unsupported room feature '%s' for %s.", feature, key);
-            g_strfreev(features);
-            g_free(value);
-            return FALSE;
-        }
+    g_clear_pointer(&layout->player_entity, g_free);
+    g_clear_pointer(&layout->queue_entity, g_free);
+    g_clear_pointer(&layout->playlists_entity, g_free);
+    for (guint i = 0; i < PANEL_ROOM_MAX; i++) {
+        g_clear_pointer(&layout->rooms[i].entity, g_free);
+        g_clear_pointer(&layout->rooms[i].label, g_free);
     }
-
-    g_strfreev(features);
-    g_free(value);
-    return TRUE;
+    layout->room_count = 0;
+    layout->revision = 0;
 }
 
 static gboolean load_key_file(AppConfig *config, gchar **error_message)
 {
-    static const gchar *room_keys[PANEL_ROOM_COUNT] = {
-        "light_1", "light_2", "fan", "ac", "desk_lamp",
-        "desk_led_strip"
-    };
-    static const gchar *default_labels[PANEL_ROOM_COUNT] = {
-        "LIGHT 1", "LIGHT 2", "FAN", "AC", "DESK LAMP",
-        "DESK LED STRIP"
-    };
     gchar *path = config_path("config.ini");
     GKeyFile *file = g_key_file_new();
 
@@ -100,21 +87,9 @@ static gboolean load_key_file(AppConfig *config, gchar **error_message)
     }
 
     config->base_url = read_string(file, "home_assistant", "url", NULL);
-    config->player_entity = read_string(file, "entities", "player", NULL);
-    config->queue_entity = read_string(file, "entities", "queue", NULL);
-    config->playlists_entity = read_string(file, "entities", "playlists", NULL);
-    for (guint i = 0; i < PANEL_ROOM_COUNT; i++) {
-        config->room_entities[i] = read_string(file, "entities", room_keys[i], NULL);
-        config->room_labels[i] = read_string(file, "labels", room_keys[i],
-                                             default_labels[i]);
-        if (!read_room_features(
-                file, room_keys[i], &config->room_brightness[i],
-                &config->room_color_temperature[i], error_message)) {
-            g_key_file_unref(file);
-            g_free(path);
-            return FALSE;
-        }
-    }
+    config->panel_id = read_string(file, "home_assistant", "panel_id", NULL);
+    config->config_entity = read_string(file, "home_assistant",
+                                        "config_entity", NULL);
     config->poll_interval_ms = (guint)CLAMP(
         read_integer(file, "panel", "poll_interval_ms", PANEL_DEFAULT_POLL_MS),
         500, 30000);
@@ -126,11 +101,21 @@ static gboolean load_key_file(AppConfig *config, gchar **error_message)
     g_key_file_unref(file);
     g_free(path);
 
-    if (config->base_url == NULL || config->player_entity == NULL ||
-        config->queue_entity == NULL || config->playlists_entity == NULL) {
+    if (config->base_url == NULL ||
+        (config->panel_id == NULL && config->config_entity == NULL)) {
         *error_message = g_strdup(
-            "config.ini must define url, player, queue, and playlists.");
+            "config.ini must define url and panel_id.\n\nEvery other setting "
+            "now lives in Home Assistant, in the panel you added to the Media "
+            "Controller integration.");
         return FALSE;
+    }
+
+    /* The integration names the sensor after the panel device, so the entity
+     * ID is predictable. config_entity overrides it for an installation whose
+     * sensor was renamed in Home Assistant. */
+    if (config->config_entity == NULL) {
+        config->config_entity = g_strdup_printf("sensor.%s_config",
+                                                config->panel_id);
     }
 
     while (*config->base_url != '\0' &&
@@ -184,12 +169,8 @@ void app_config_free(AppConfig *config)
 
     g_free(config->base_url);
     g_free(config->token);
-    g_free(config->player_entity);
-    g_free(config->queue_entity);
-    g_free(config->playlists_entity);
-    for (guint i = 0; i < PANEL_ROOM_COUNT; i++) {
-        g_free(config->room_entities[i]);
-        g_free(config->room_labels[i]);
-    }
+    g_free(config->panel_id);
+    g_free(config->config_entity);
+    panel_layout_clear(&config->layout);
     g_free(config);
 }

@@ -8,10 +8,23 @@ substitutions:
   # Copy the entity IDs created by the Media Controller integration.
   queue_entity: sensor.your_controller_queue
   playlists_entity: sensor.your_controller_playlists
-  light1_entity: light.your_controller_light_1
-  light2_entity: light.your_controller_light_2
-  fan_entity: switch.your_controller_fan
-  ac_entity: switch.your_controller_ac
+
+  # Room-control slots 1 to 4 of the controller entry. Slots 1 and 2 are
+  # lights, slots 3 and 4 switches; the integration enforces that. These names
+  # are kept from the first release and must not be renamed: this package is
+  # pulled by ref, so a renamed substitution breaks the next compile.
+  # Installations created before integration 0.8.1 keep entity IDs spelled
+  # light.<controller>_light_1; new ones are spelled light.<controller>_slot_1.
+  light1_entity: light.your_controller_slot_1
+  light2_entity: light.your_controller_slot_2
+  fan_entity: switch.your_controller_slot_3
+  ac_entity: switch.your_controller_slot_4
+
+  # The config sensor of the controller. The four buttons take their labels
+  # from it, and a button whose slot is empty is hidden. Entity IDs above stay
+  # compile-time: changing which entity a slot points at is a Home Assistant
+  # action, changing the slot's domain is a reflash.
+  config_entity: sensor.your_controller_config
 
   # Use a dedicated long-lived HA token stored in the existing ESPHome
   # secrets.yaml. Rename this !secret reference if your key has another name.

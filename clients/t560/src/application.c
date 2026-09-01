@@ -3,6 +3,7 @@
 #include "app_config.h"
 #include "home_assistant_client.h"
 #include "json_helpers.h"
+#include "panel_config.h"
 #include "panel_ui.h"
 #include "system_status.h"
 
@@ -32,12 +33,14 @@ typedef struct {
     gint64 clock_minute;
     guint poll_pending;
     gint64 next_playlist_poll_us;
+    gint64 next_config_poll_us;
     gint queue_selected;
     gint playlist_selected;
     PanelUiStatus poll_status;
     gchar *poll_message;
     gboolean player_playing;
     gboolean shuffle_state;
+    gboolean restarting;
 } PanelApplication;
 
 typedef struct {
@@ -46,6 +49,7 @@ typedef struct {
 } AlbumArtRequest;
 
 typedef enum {
+    POLL_REQUEST_CONFIG,
     POLL_REQUEST_PLAYER,
     POLL_REQUEST_QUEUE,
     POLL_REQUEST_PLAYLISTS,
@@ -61,6 +65,7 @@ typedef struct {
 } PollRequest;
 
 static gboolean poll_states(gpointer user_data);
+static void start_panel(PanelApplication *application);
 
 /* A poll cycle fans out one request per configured entity, so the icon has to
  * describe the whole cycle. The worst state seen is remembered here and
@@ -186,6 +191,14 @@ static gchar *service_json(const gchar *entity, const gchar *key,
     return json;
 }
 
+static const PanelRoom *configured_room(PanelApplication *application,
+                                        gint index)
+{
+    if (index < 0 || (guint)index >= application->config->layout.room_count)
+        return NULL;
+    return &application->config->layout.rooms[index];
+}
+
 static gchar *room_value_json(const gchar *entity, const gchar *key,
                               gint value)
 {
@@ -256,7 +269,7 @@ static void play_selected_queue_item(PanelApplication *application)
     JsonBuilder *builder = json_builder_new();
     json_builder_begin_object(builder);
     json_builder_set_member_name(builder, "entity_id");
-    json_builder_add_string_value(builder, application->config->player_entity);
+    json_builder_add_string_value(builder, application->config->layout.player_entity);
     json_builder_set_member_name(builder, "queue_item_id");
     json_builder_add_string_value(
         builder, g_ptr_array_index(application->queue_ids,
@@ -277,7 +290,7 @@ static void play_selected_playlist(PanelApplication *application)
     JsonBuilder *builder = json_builder_new();
     json_builder_begin_object(builder);
     json_builder_set_member_name(builder, "entity_id");
-    json_builder_add_string_value(builder, application->config->player_entity);
+    json_builder_add_string_value(builder, application->config->layout.player_entity);
     json_builder_set_member_name(builder, "media_id");
     json_builder_add_string_value(
         builder, g_ptr_array_index(application->playlist_uris,
@@ -300,13 +313,13 @@ static void handle_ui_event(PanelUiEvent event, const gchar *value, gint index,
     switch (event) {
     case PANEL_UI_PLAYER_SERVICE:
         call_entity_service(application, "media_player", value,
-                            application->config->player_entity);
+                            application->config->layout.player_entity);
         break;
     case PANEL_UI_TOGGLE_SHUFFLE: {
         application->shuffle_state = !application->shuffle_state;
         panel_ui_set_modes(application->ui, application->shuffle_state,
                            application->repeat_state);
-        gchar *json = service_json(application->config->player_entity,
+        gchar *json = service_json(application->config->layout.player_entity,
                                    "shuffle", NULL,
                                    application->shuffle_state);
         call_service(application, "media_player", "shuffle_set", json);
@@ -322,45 +335,45 @@ static void handle_ui_event(PanelUiEvent event, const gchar *value, gint index,
         g_free(application->repeat_state);
         application->repeat_state = g_strdup(next);
         panel_ui_set_modes(application->ui, application->shuffle_state, next);
-        gchar *json = service_json(application->config->player_entity,
+        gchar *json = service_json(application->config->layout.player_entity,
                                    "repeat", next, -1);
         call_service(application, "media_player", "repeat_set", json);
         g_free(json);
         break;
     }
-    case PANEL_UI_TOGGLE_ROOM:
-        if (index >= 0 && index < PANEL_ROOM_COUNT &&
-            application->config->room_entities[index] != NULL) {
+    case PANEL_UI_TOGGLE_ROOM: {
+        const PanelRoom *room = configured_room(application, index);
+        if (room != NULL) {
             call_entity_service(application, "homeassistant", "toggle",
-                                application->config->room_entities[index]);
+                                room->entity);
         }
         break;
-    case PANEL_UI_SET_ROOM_BRIGHTNESS:
-        if (index >= 0 && index < PANEL_ROOM_COUNT && value != NULL &&
-            application->config->room_entities[index] != NULL &&
-            application->config->room_brightness[index]) {
+    }
+    case PANEL_UI_SET_ROOM_BRIGHTNESS: {
+        const PanelRoom *room = configured_room(application, index);
+        if (room != NULL && value != NULL && room->brightness) {
             gint brightness = (gint)g_ascii_strtoll(value, NULL, 10);
             brightness = CLAMP(brightness, 1, 100);
-            gchar *json = room_value_json(
-                application->config->room_entities[index],
-                "brightness_pct", brightness);
+            gchar *json = room_value_json(room->entity, "brightness_pct",
+                                          brightness);
             call_service(application, "light", "turn_on", json);
             g_free(json);
         }
         break;
-    case PANEL_UI_SET_ROOM_COLOR_TEMPERATURE:
-        if (index >= 0 && index < PANEL_ROOM_COUNT && value != NULL &&
-            application->config->room_entities[index] != NULL &&
-            application->config->room_color_temperature[index]) {
+    }
+    case PANEL_UI_SET_ROOM_COLOR_TEMPERATURE: {
+        const PanelRoom *room = configured_room(application, index);
+        if (room != NULL && value != NULL && room->color_temperature) {
             gint temperature = (gint)g_ascii_strtoll(value, NULL, 10);
-            temperature = CLAMP(temperature, 1000, 10000);
-            gchar *json = room_value_json(
-                application->config->room_entities[index],
-                "color_temp_kelvin", temperature);
+            temperature = CLAMP(temperature, room->min_kelvin,
+                                room->max_kelvin);
+            gchar *json = room_value_json(room->entity, "color_temp_kelvin",
+                                          temperature);
             call_service(application, "light", "turn_on", json);
             g_free(json);
         }
         break;
+    }
     case PANEL_UI_SHOW_PAGE:
         if (g_str_equal(value, "queue"))
             call_service(application, "media_controller", "refresh", "{}");
@@ -565,6 +578,43 @@ static void update_room(PanelApplication *application, guint index,
                       max_color_temperature);
 }
 
+/* The layout is applied once, at start-up. A later change restarts the panel
+ * the same way a config.ini change does: the watchdog brings it back within
+ * about two seconds, and the fresh layout is read from the cache. */
+static gboolean update_config(PanelApplication *application,
+                              JsonObject *state)
+{
+    PanelLayout candidate = {0};
+    gchar *failure = NULL;
+
+    if (!panel_config_parse_state(state, &candidate, &failure)) {
+        note_poll_status(application, PANEL_UI_STATUS_WARNING, failure);
+        return FALSE;
+    }
+
+    if (application->ui == NULL) {
+        panel_layout_clear(&application->config->layout);
+        application->config->layout = candidate;
+        start_panel(application);
+        return TRUE;
+    }
+
+    if (candidate.revision != application->config->layout.revision) {
+        panel_layout_clear(&candidate);
+        /* Quitting takes effect on the next main loop iteration, so the
+         * request is made once even if another poll cycle finishes first. */
+        if (!application->restarting) {
+            application->restarting = TRUE;
+            panel_ui_set_status(application->ui, "Configuration changed",
+                                PANEL_UI_STATUS_CONNECTED);
+            g_application_quit(G_APPLICATION(application->gtk_application));
+        }
+        return TRUE;
+    }
+    panel_layout_clear(&candidate);
+    return TRUE;
+}
+
 static void poll_request_free(gpointer user_data)
 {
     g_free(user_data);
@@ -603,6 +653,10 @@ static void update_state(PanelApplication *application, PollRequestKind kind,
     JsonObject *state = json_node_get_object(json_parser_get_root(parser));
 
     switch (kind) {
+    case POLL_REQUEST_CONFIG:
+        /* Handled in state_finished, which still owns the raw body the cache
+         * is written from. */
+        break;
     case POLL_REQUEST_PLAYER:
         update_player(application, state);
         break;
@@ -700,7 +754,20 @@ static void state_finished(guint status_code, GBytes *body,
         }
 
         if (parse_state(body, &parser, &parse_error)) {
-            update_state(application, request->kind, request->index, parser);
+            if (request->kind == POLL_REQUEST_CONFIG) {
+                /* Only a payload the panel accepted is cached; an unusable
+                 * one must not become the layout of the next boot. */
+                JsonObject *state =
+                    json_node_get_object(json_parser_get_root(parser));
+                if (update_config(application, state)) {
+                    gsize length = 0;
+                    const gchar *data = g_bytes_get_data(body, &length);
+                    panel_config_store_cache(data, length);
+                }
+            } else {
+                update_state(application, request->kind, request->index,
+                             parser);
+            }
         } else {
             note_poll_status(application, PANEL_UI_STATUS_WARNING,
                              g_strdup_printf("Unreadable state for %s",
@@ -742,24 +809,40 @@ static gboolean poll_states(gpointer user_data)
 
     application->poll_status = PANEL_UI_STATUS_CONNECTED;
     g_clear_pointer(&application->poll_message, g_free);
-    start_state_request(application, application->config->player_entity,
-                        POLL_REQUEST_PLAYER, 0);
-    start_state_request(application, application->config->queue_entity,
-                        POLL_REQUEST_QUEUE, 0);
     gint64 now = g_get_monotonic_time();
+
+    /* The layout names every other entity, so it is requested first and, once
+     * known, only as often as the playlists. */
+    if (application->next_config_poll_us == 0 ||
+        now >= application->next_config_poll_us) {
+        start_state_request(application, application->config->config_entity,
+                            POLL_REQUEST_CONFIG, 0);
+        application->next_config_poll_us =
+            now + (gint64)application->config->playlist_poll_interval_ms * 1000;
+    }
+    if (application->config->layout.player_entity == NULL) {
+        /* Nothing else can be requested until the layout arrives. */
+        if (application->poll_pending == 0)
+            apply_poll_status(application);
+        return G_SOURCE_CONTINUE;
+    }
+
+    start_state_request(application, application->config->layout.player_entity,
+                        POLL_REQUEST_PLAYER, 0);
+    start_state_request(application, application->config->layout.queue_entity,
+                        POLL_REQUEST_QUEUE, 0);
     if (application->next_playlist_poll_us == 0 ||
         now >= application->next_playlist_poll_us) {
-        start_state_request(application, application->config->playlists_entity,
+        start_state_request(application,
+                            application->config->layout.playlists_entity,
                             POLL_REQUEST_PLAYLISTS, 0);
         application->next_playlist_poll_us =
             now + (gint64)application->config->playlist_poll_interval_ms * 1000;
     }
-    for (guint i = 0; i < PANEL_ROOM_COUNT; i++) {
-        if (application->config->room_entities[i] != NULL) {
-            start_state_request(application,
-                                application->config->room_entities[i],
-                                POLL_REQUEST_ROOM, i);
-        }
+    for (guint i = 0; i < application->config->layout.room_count; i++) {
+        start_state_request(application,
+                            application->config->layout.rooms[i].entity,
+                            POLL_REQUEST_ROOM, i);
     }
 
     /* Every request was rejected before it started, so no callback will run
@@ -852,6 +935,28 @@ static void panel_application_free(PanelApplication *application)
     g_free(application);
 }
 
+/* Replaces whatever the window currently shows. The panel starts on a
+ * placeholder when no layout has been cached yet. */
+static void set_window_content(PanelApplication *application,
+                               GtkWidget *content)
+{
+    GtkWidget *previous = gtk_bin_get_child(GTK_BIN(application->window));
+
+    if (previous != NULL)
+        gtk_container_remove(GTK_CONTAINER(application->window), previous);
+    gtk_container_add(GTK_CONTAINER(application->window), content);
+    gtk_widget_show_all(application->window);
+}
+
+static void start_panel(PanelApplication *application)
+{
+    application->ui = panel_ui_new(application->config, handle_ui_event,
+                                   application);
+    set_window_content(application, panel_ui_build(application->ui));
+    start_header_updates(application);
+    start_config_monitor(application);
+}
+
 static void activate(GtkApplication *gtk_application, gpointer user_data)
 {
     PanelApplication *application = user_data;
@@ -876,24 +981,38 @@ static void activate(GtkApplication *gtk_application, gpointer user_data)
 
     gchar *failure = NULL;
     application->config = app_config_load(&failure);
-    GtkWidget *content = NULL;
     if (application->config == NULL) {
-        content = panel_ui_build_config_error(failure);
+        set_window_content(application,
+                           panel_ui_build_config_error(failure));
         g_free(failure);
-    } else {
-        application->client = home_assistant_client_new(
-            application->config->base_url, application->config->token);
-        application->ui = panel_ui_new(application->config, handle_ui_event,
-                                       application);
-        content = panel_ui_build(application->ui);
-        start_header_updates(application);
-        start_config_monitor(application);
-        poll_states(application);
-        application->poll_source = g_timeout_add(
-            application->config->poll_interval_ms, poll_states, application);
+        return;
     }
-    gtk_container_add(GTK_CONTAINER(application->window), content);
-    gtk_widget_show_all(application->window);
+
+    application->client = home_assistant_client_new(
+        application->config->base_url, application->config->token);
+
+    /* The cached layout makes a normal start immediate and, more importantly,
+     * makes the panel usable while Home Assistant is down. Only a tablet that
+     * has never reached Home Assistant has to wait. */
+    gchar *cache_failure = NULL;
+    if (panel_config_load_cache(&application->config->layout,
+                                &cache_failure)) {
+        start_panel(application);
+    } else {
+        set_window_content(
+            application,
+            panel_ui_build_config_error(
+                "Waiting for Home Assistant.
+
+The panel reads its layout "
+                "from the Media Controller integration."));
+        g_debug("No cached layout: %s", cache_failure);
+    }
+    g_free(cache_failure);
+
+    poll_states(application);
+    application->poll_source = g_timeout_add(
+        application->config->poll_interval_ms, poll_states, application);
 }
 
 int application_run(int argc, char **argv)

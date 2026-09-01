@@ -1,15 +1,17 @@
-"""Pure queue and playlist transformations.
+"""Pure payload and slot-record structures.
 
-This module deliberately has no Home Assistant imports so its compatibility
-logic can be tested without a Home Assistant runtime.
+This module deliberately has no Home Assistant imports, so the compatibility
+payloads, the stored shape of a room-control slot, and the version 1 migration
+can all be tested without a Home Assistant runtime.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass, field
 import json
 from typing import Any
+import zlib
 
 
 def _value(item: object, key: str, default: Any = None) -> Any:
@@ -95,6 +97,185 @@ class PlaylistPayload:
             "uris": list(self.uris),
             "count": self.count,
         }
+
+
+# Keys of one stored slot record. They appear in config entries on disk, so
+# they are part of the on-disk format and may not be renamed casually.
+SLOT_KEY_INDEX = "slot"
+SLOT_KEY_ENTITY = "entity"
+SLOT_KEY_DOMAIN = "domain"
+SLOT_KEY_LABEL = "label"
+SLOT_KEY_CONTROLS = "controls"
+SLOT_KEY_MIN_KELVIN = "min_kelvin"
+SLOT_KEY_MAX_KELVIN = "max_kelvin"
+
+
+@dataclass(frozen=True, slots=True)
+class SlotConfig:
+    """One configured room control of one client, as stored."""
+
+    index: int
+    target_entity_id: str
+    domain: str
+    label: str = ""
+    controls: tuple[str, ...] = ()
+    min_kelvin: int | None = None
+    max_kelvin: int | None = None
+
+    def as_stored(self) -> dict[str, Any]:
+        """Return the config-entry representation of this slot."""
+        stored: dict[str, Any] = {
+            SLOT_KEY_INDEX: self.index,
+            SLOT_KEY_ENTITY: self.target_entity_id,
+            SLOT_KEY_DOMAIN: self.domain,
+            SLOT_KEY_LABEL: self.label,
+            SLOT_KEY_CONTROLS: list(self.controls),
+        }
+        if self.min_kelvin is not None:
+            stored[SLOT_KEY_MIN_KELVIN] = self.min_kelvin
+        if self.max_kelvin is not None:
+            stored[SLOT_KEY_MAX_KELVIN] = self.max_kelvin
+        return stored
+
+    @classmethod
+    def from_stored(cls, stored: Mapping[str, Any]) -> SlotConfig | None:
+        """Read one stored slot, ignoring an incomplete record."""
+        entity_id = stored.get(SLOT_KEY_ENTITY)
+        index = stored.get(SLOT_KEY_INDEX)
+        if not entity_id or not isinstance(index, int):
+            return None
+        domain = stored.get(SLOT_KEY_DOMAIN) or str(entity_id).split(".")[0]
+        return cls(
+            index=index,
+            target_entity_id=str(entity_id),
+            domain=str(domain),
+            label=str(stored.get(SLOT_KEY_LABEL) or ""),
+            controls=tuple(stored.get(SLOT_KEY_CONTROLS) or ()),
+            min_kelvin=stored.get(SLOT_KEY_MIN_KELVIN),
+            max_kelvin=stored.get(SLOT_KEY_MAX_KELVIN),
+        )
+
+
+def stored_slots(source: Mapping[str, Any], key: str) -> list[SlotConfig]:
+    """Read every valid slot from an entry or subentry mapping."""
+    raw = source.get(key) or ()
+    slots = [
+        slot
+        for record in raw
+        if isinstance(record, Mapping)
+        and (slot := SlotConfig.from_stored(record)) is not None
+    ]
+    slots.sort(key=lambda slot: slot.index)
+    return slots
+
+
+def migrate_v1_section(
+    section: Mapping[str, Any] | None,
+    slots_key: str,
+    player_key: str,
+    legacy_slots: Iterable[tuple[int, str, str]],
+    initial_controls: Callable[[int], tuple[str, ...]],
+) -> dict[str, Any]:
+    """Rewrite one version 1 data or options mapping into numbered slots.
+
+    Capabilities are seeded with the client's minimum and re-resolved from the
+    live target the first time the migrated entry is set up.
+    """
+    if not section:
+        return dict(section or {})
+
+    legacy = tuple(legacy_slots)
+    legacy_keys = {key for _, key, _ in legacy}
+    migrated: dict[str, Any] = {
+        key: value for key, value in section.items() if key not in legacy_keys
+    }
+    slots = [
+        SlotConfig(
+            index=index,
+            target_entity_id=str(section[legacy_key]),
+            domain=domain,
+            controls=initial_controls(index),
+        ).as_stored()
+        for index, legacy_key, domain in legacy
+        if section.get(legacy_key)
+    ]
+    if slots or player_key in migrated:
+        migrated[slots_key] = slots
+    return migrated
+
+
+@dataclass(frozen=True, slots=True)
+class SlotPayload:
+    """One room-control slot as a client reads it."""
+
+    slot: int
+    entity: str
+    label: str
+    controls: tuple[str, ...] = ()
+    min_kelvin: int | None = None
+    max_kelvin: int | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return the client-facing slot object."""
+        payload: dict[str, Any] = {
+            "slot": self.slot,
+            "entity": self.entity,
+            "label": self.label,
+            "controls": list(self.controls),
+        }
+        if self.min_kelvin is not None:
+            payload["min_kelvin"] = self.min_kelvin
+        if self.max_kelvin is not None:
+            payload["max_kelvin"] = self.max_kelvin
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
+class ClientConfigPayload:
+    """Everything one client device needs to draw its room controls."""
+
+    profile: str = ""
+    slot_count: int = 0
+    slots: tuple[SlotPayload, ...] = field(default_factory=tuple)
+    player_entity: str = ""
+    queue_entity: str = ""
+    playlists_entity: str = ""
+
+    def as_attributes(self) -> dict[str, Any]:
+        """Return the Home Assistant attributes of a config sensor.
+
+        Unconfigured slots are omitted rather than sent as nulls: a client
+        renders what it receives, in `slot` order. The three controller
+        entities are included so that a client needs no entity ID of its own:
+        a URL, a token, and its panel ID are enough to bootstrap.
+        """
+        payload: dict[str, Any] = {
+            "profile": self.profile,
+            "slot_count": self.slot_count,
+            "player": self.player_entity,
+            "queue": self.queue_entity,
+            "playlists": self.playlists_entity,
+            "slots": [slot.as_dict() for slot in self.slots],
+        }
+        payload["revision"] = self.revision(payload)
+        return payload
+
+    @staticmethod
+    def revision(payload: Mapping[str, Any]) -> int:
+        """Return a stable fingerprint of one configuration.
+
+        A client compares it with the previous value to decide whether a
+        re-layout is needed. It is a checksum rather than a counter so that it
+        survives restarts without extra stored state, and so that reverting a
+        change restores the previous value.
+        """
+        canonical = json.dumps(
+            payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        return zlib.crc32(canonical.encode("utf-8"))
 
 
 def _queue_title(item: object) -> str:

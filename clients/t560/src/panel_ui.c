@@ -34,18 +34,18 @@ struct _PanelUi {
     GtkWidget *playlist_list;
     gboolean changing_list_selection;
     GPtrArray *navigation_buttons;
-    GtkWidget *room_buttons[PANEL_ROOM_COUNT];
-    GtkWidget *room_adjust_buttons[PANEL_ROOM_COUNT];
-    GtkWidget *room_icons[PANEL_ROOM_COUNT];
-    GtkWidget *room_states[PANEL_ROOM_COUNT];
-    gboolean room_active[PANEL_ROOM_COUNT];
-    gdouble room_active_mix[PANEL_ROOM_COUNT];
-    gdouble room_animation_from[PANEL_ROOM_COUNT];
-    gdouble room_animation_to[PANEL_ROOM_COUNT];
-    gint64 room_animation_start_us[PANEL_ROOM_COUNT];
-    guint room_animation_tick[PANEL_ROOM_COUNT];
-    GdkPixbuf *room_icon_off[PANEL_ROOM_COUNT];
-    GdkPixbuf *room_icon_on[PANEL_ROOM_COUNT];
+    GtkWidget *room_buttons[PANEL_ROOM_MAX];
+    GtkWidget *room_adjust_buttons[PANEL_ROOM_MAX];
+    GtkWidget *room_icons[PANEL_ROOM_MAX];
+    GtkWidget *room_states[PANEL_ROOM_MAX];
+    gboolean room_active[PANEL_ROOM_MAX];
+    gdouble room_active_mix[PANEL_ROOM_MAX];
+    gdouble room_animation_from[PANEL_ROOM_MAX];
+    gdouble room_animation_to[PANEL_ROOM_MAX];
+    gint64 room_animation_start_us[PANEL_ROOM_MAX];
+    guint room_animation_tick[PANEL_ROOM_MAX];
+    GdkPixbuf *room_icon_off[PANEL_ROOM_MAX];
+    GdkPixbuf *room_icon_on[PANEL_ROOM_MAX];
     GtkWidget *room_sheet;
     GtkWidget *room_sheet_title;
     GtkWidget *room_brightness_box;
@@ -55,10 +55,10 @@ struct _PanelUi {
     GtkWidget *room_temperature_scale;
     GtkWidget *room_temperature_value;
     gint room_adjust_index;
-    gint room_brightness[PANEL_ROOM_COUNT];
-    gint room_temperature[PANEL_ROOM_COUNT];
-    gint room_temperature_min[PANEL_ROOM_COUNT];
-    gint room_temperature_max[PANEL_ROOM_COUNT];
+    gint room_brightness[PANEL_ROOM_MAX];
+    gint room_temperature[PANEL_ROOM_MAX];
+    gint room_temperature_min[PANEL_ROOM_MAX];
+    gint room_temperature_max[PANEL_ROOM_MAX];
     gboolean changing_room_adjustment;
     guint brightness_debounce_source;
     guint temperature_debounce_source;
@@ -300,8 +300,8 @@ static void room_adjust_clicked(GtkButton *button, gpointer user_data)
     PanelUi *ui = user_data;
     gint index = GPOINTER_TO_INT(
         g_object_get_data(G_OBJECT(button), "room-index"));
-    gchar *title = g_strdup_printf("%s SETTINGS",
-                                   ui->config->room_labels[index]);
+    const PanelRoom *room = &ui->config->layout.rooms[index];
+    gchar *title = g_strdup_printf("%s SETTINGS", room->label);
     gint brightness = ui->room_brightness[index] >= 0
                           ? ui->room_brightness[index]
                           : 100;
@@ -313,11 +313,9 @@ static void room_adjust_clicked(GtkButton *button, gpointer user_data)
     ui->room_adjust_index = index;
     gtk_label_set_text(GTK_LABEL(ui->room_sheet_title), title);
     g_free(title);
-    gtk_widget_set_visible(ui->room_brightness_box,
-                           ui->config->room_brightness[index]);
-    gtk_widget_set_visible(
-        ui->room_temperature_box,
-        ui->config->room_color_temperature[index]);
+    gtk_widget_set_visible(ui->room_brightness_box, room->brightness);
+    gtk_widget_set_visible(ui->room_temperature_box,
+                           room->color_temperature);
 
     ui->changing_room_adjustment = TRUE;
     gtk_range_set_range(GTK_RANGE(ui->room_temperature_scale),
@@ -926,7 +924,7 @@ static GtkWidget *room_adjust_sheet(PanelUi *ui)
 
 static GtkWidget *room_page(PanelUi *ui)
 {
-    static const gchar *icon_resources[PANEL_ROOM_COUNT] = {
+    static const gchar *icon_resources[PANEL_ROOM_MAX] = {
         "/com/vahac/t560/icons/light-1.png",
         "/com/vahac/t560/icons/light-2.png",
         "/com/vahac/t560/icons/fan.png",
@@ -934,7 +932,7 @@ static GtkWidget *room_page(PanelUi *ui)
         "/com/vahac/t560/icons/desk-lamp.png",
         "/com/vahac/t560/icons/desk-led-strip.png"
     };
-    static const gchar *control_types[PANEL_ROOM_COUNT] = {
+    static const gchar *control_types[PANEL_ROOM_MAX] = {
         "LIGHTING", "LIGHTING", "AIRFLOW", "CLIMATE", "TASK LIGHT",
         "ACCENT LIGHT"
     };
@@ -951,7 +949,7 @@ static GtkWidget *room_page(PanelUi *ui)
     GtkWidget *intro_text = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
     GtkWidget *kicker = new_label("AMBIENT CONTROL", "room-kicker");
     GtkWidget *help = new_label("Tap a device to switch it", "room-help");
-    gchar *count_text = g_strdup_printf("%u CONTROLS", PANEL_ROOM_COUNT);
+    gchar *count_text = g_strdup_printf("%u CONTROLS", layout->room_count);
     GtkWidget *count = new_label(count_text, "room-count");
     g_free(count_text);
     gtk_label_set_ellipsize(GTK_LABEL(kicker), PANGO_ELLIPSIZE_NONE);
@@ -969,7 +967,8 @@ static GtkWidget *room_page(PanelUi *ui)
     gtk_grid_set_row_spacing(GTK_GRID(grid), 16);
     gtk_grid_set_column_spacing(GTK_GRID(grid), 20);
     gtk_widget_set_vexpand(grid, TRUE);
-    for (guint i = 0; i < PANEL_ROOM_COUNT; i++) {
+    for (guint i = 0; i < layout->room_count; i++) {
+        const PanelRoom *room = &layout->rooms[i];
         GtkWidget *tile = gtk_overlay_new();
         GtkWidget *button = gtk_button_new();
         gtk_widget_set_hexpand(tile, TRUE);
@@ -984,7 +983,7 @@ static GtkWidget *room_page(PanelUi *ui)
         add_css_class(box, "room-card-content");
 
         GtkWidget *header = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-        GtkWidget *type = new_label(control_types[i], "room-type");
+        GtkWidget *type = new_label(room_control_type(room), "room-type");
         gtk_label_set_ellipsize(GTK_LABEL(type), PANGO_ELLIPSIZE_NONE);
         gtk_widget_set_halign(type, GTK_ALIGN_START);
         gtk_widget_set_valign(type, GTK_ALIGN_CENTER);
@@ -992,7 +991,8 @@ static GtkWidget *room_page(PanelUi *ui)
         gtk_box_pack_start(GTK_BOX(header), type, TRUE, TRUE, 0);
 
         GtkWidget *icon_shell = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-        GtkWidget *icon = new_room_icon(ui, i, icon_resources[i]);
+        GtkWidget *icon = new_room_icon(
+            ui, i, slot_icon_resource(room->slot, i));
         gtk_widget_set_size_request(icon_shell, 88, 88);
         gtk_widget_set_halign(icon_shell, GTK_ALIGN_CENTER);
         gtk_widget_set_valign(icon_shell, GTK_ALIGN_CENTER);
@@ -1000,15 +1000,11 @@ static GtkWidget *room_page(PanelUi *ui)
         gtk_widget_set_valign(icon, GTK_ALIGN_CENTER);
         add_css_class(icon_shell, "room-icon-shell");
         add_css_class(icon, "room-icon");
-        gtk_widget_set_opacity(
-            icon, ui->config->room_entities[i] != NULL ? 1.0 : 0.35);
         ui->room_icons[i] = icon;
         gtk_box_pack_start(GTK_BOX(icon_shell), icon, TRUE, TRUE, 0);
 
-        GtkWidget *name = new_label(ui->config->room_labels[i], "room-name");
-        ui->room_states[i] = new_label(
-            ui->config->room_entities[i] != NULL ? "--" : "NOT CONFIGURED",
-            "room-state");
+        GtkWidget *name = new_label(room->label, "room-name");
+        ui->room_states[i] = new_label("--", "room-state");
         gtk_widget_set_halign(ui->room_states[i], GTK_ALIGN_CENTER);
         gtk_box_pack_start(GTK_BOX(box), header, FALSE, FALSE, 0);
         gtk_box_pack_start(GTK_BOX(box), icon_shell, TRUE, TRUE, 0);
@@ -1017,12 +1013,10 @@ static GtkWidget *room_page(PanelUi *ui)
         gtk_container_add(GTK_CONTAINER(button), box);
         g_object_set_data(G_OBJECT(button), "room-index", GINT_TO_POINTER(i));
         g_signal_connect(button, "clicked", G_CALLBACK(room_clicked), ui);
-        gtk_widget_set_sensitive(button, ui->config->room_entities[i] != NULL);
         ui->room_buttons[i] = button;
         gtk_container_add(GTK_CONTAINER(tile), button);
 
-        if (ui->config->room_brightness[i] ||
-            ui->config->room_color_temperature[i]) {
+        if (room->brightness || room->color_temperature) {
             GtkWidget *adjust = new_button("ADJUST", "room-adjust-button",
                                            92, PANEL_ROOM_ADJUST_HEIGHT);
             gtk_widget_set_halign(adjust, GTK_ALIGN_END);
@@ -1031,8 +1025,6 @@ static GtkWidget *room_page(PanelUi *ui)
              * the header row instead of floating over the icon. */
             gtk_widget_set_margin_end(adjust, 20);
             gtk_widget_set_margin_top(adjust, 14);
-            gtk_widget_set_sensitive(
-                adjust, ui->config->room_entities[i] != NULL);
             g_object_set_data(G_OBJECT(adjust), "room-index",
                               GINT_TO_POINTER(i));
             g_signal_connect(adjust, "clicked",
@@ -1041,6 +1033,15 @@ static GtkWidget *room_page(PanelUi *ui)
             ui->room_adjust_buttons[i] = adjust;
         }
         gtk_grid_attach(GTK_GRID(grid), tile, i % 2, i / 2, 1, 1);
+    }
+    if (layout->room_count == 0) {
+        GtkWidget *empty = new_label(
+            "No room controls are configured for this panel.
+"
+            "Add them to the panel in Home Assistant.", "room-help");
+        gtk_label_set_line_wrap(GTK_LABEL(empty), TRUE);
+        gtk_widget_set_valign(empty, GTK_ALIGN_CENTER);
+        gtk_grid_attach(GTK_GRID(grid), empty, 0, 0, 2, 1);
     }
     gtk_box_pack_start(GTK_BOX(page), grid, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(page), navigation(ui), FALSE, FALSE, 4);
@@ -1059,7 +1060,7 @@ PanelUi *panel_ui_new(const AppConfig *config, PanelUiEventHandler handler,
     ui->event_user_data = user_data;
     ui->navigation_buttons = g_ptr_array_new();
     ui->room_adjust_index = -1;
-    for (guint i = 0; i < PANEL_ROOM_COUNT; i++) {
+    for (guint i = 0; i < PANEL_ROOM_MAX; i++) {
         ui->room_brightness[i] = -1;
         ui->room_temperature[i] = -1;
         ui->room_temperature_min[i] = 2000;
@@ -1074,14 +1075,14 @@ void panel_ui_free(PanelUi *ui)
         g_source_remove(ui->brightness_debounce_source);
     if (ui->temperature_debounce_source != 0)
         g_source_remove(ui->temperature_debounce_source);
-    for (guint i = 0; i < PANEL_ROOM_COUNT; i++) {
+    for (guint i = 0; i < PANEL_ROOM_MAX; i++) {
         if (ui->room_animation_tick[i] != 0 &&
             ui->room_buttons[i] != NULL) {
             gtk_widget_remove_tick_callback(ui->room_buttons[i],
                                             ui->room_animation_tick[i]);
         }
     }
-    for (guint i = 0; i < PANEL_ROOM_COUNT; i++) {
+    for (guint i = 0; i < PANEL_ROOM_MAX; i++) {
         g_clear_object(&ui->room_icon_off[i]);
         g_clear_object(&ui->room_icon_on[i]);
     }
@@ -1558,7 +1559,7 @@ void panel_ui_set_room(PanelUi *ui, guint index, gboolean active,
                        gint min_color_temp_kelvin,
                        gint max_color_temp_kelvin)
 {
-    g_return_if_fail(index < PANEL_ROOM_COUNT);
+    g_return_if_fail(index < PANEL_ROOM_MAX);
     if (brightness_percent >= 0)
         ui->room_brightness[index] = CLAMP(brightness_percent, 1, 100);
     if (min_color_temp_kelvin > 0 && max_color_temp_kelvin > 0 &&

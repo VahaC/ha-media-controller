@@ -25,16 +25,19 @@ or an on-screen keyboard. All settings are edited over SSH.
 - The link icon reports only whether Home Assistant answers. It is teal and
   whole while every configured entity is read, amber and whole when Home
   Assistant replies but rejects a request, and red and broken only when the
-  server cannot be reached at all. A wrong entity ID in `config.ini` is
-  therefore reported as amber, never as a lost connection. Hold the icon to
+  server cannot be reached at all. An entity that Home Assistant no longer
+  has is therefore reported as amber, never as a lost connection. Hold the icon to
   read a tooltip naming the entity that Home Assistant rejected.
 - Album art, track title, artist, playback progress, and volume.
 - Previous, Play/Pause, Next, Volume Down, and Volume Up controls.
 - Shuffle and Repeat Off/All/One controls.
 - Queue browsing and playback of a selected queue item without replacing the queue.
 - Playlist browsing and playback through `music_assistant.play_media`.
-- Light 1, Light 2, Fan, AC, Desk Lamp, and Desk LED Strip room controls.
-- Configurable brightness and color-temperature adjustment for any room light.
+- Up to six room-control tiles, defined entirely in Home Assistant. The
+  entity, the label, and which controls a tile offers come from the Media
+  Controller integration; nothing about them is configured on the tablet.
+- Brightness and color-temperature controls appear on a tile only when the
+  entity behind it actually supports them, as reported by the integration.
 - Direct Home Assistant REST API access without loading Lovelace.
 - A separate token file with `0600` permissions.
 - Watchdog, desktop entry, Openbox rule, and ARMv7 `APKBUILD`.
@@ -61,26 +64,31 @@ or an on-screen keyboard. All settings are edited over SSH.
 ```text
 ~/.config/t560-music-panel/config.ini
 ~/.config/t560-music-panel/token
+~/.cache/t560-music-panel/layout.json
 ```
 
-The first-installation procedure transfers [config.ini.example](config/config.ini.example)
-into the user-owned configuration directory. Replace every placeholder with
-the entity IDs created by Home Assistant and the Media Controller integration.
-Put the long-lived access token in the separate `token` file. Never commit the
-token.
+`config.ini` holds only the Home Assistant URL, the `panel_id`, and the
+tablet-local settings that the Power button handler and the motion detector
+read: `[panel]` and `[camera]`. Everything else — which entities this panel
+controls, their labels, and which controls each tile offers — is configured in
+Home Assistant and read from `sensor.<panel_id>_config`. Put the long-lived
+access token in the separate `token` file. Never commit the token.
 
-Room adjustment controls are enabled per tile in the `[room_features]` section.
-The supported values are `brightness` and `color_temperature`, separated by a
-comma. Under the normal watchdog launch, saving a valid `config.ini`
-automatically restarts only the panel process within about two seconds. The
-tablet does not reboot. An invalid intermediate file keeps the current panel
-running and reports the configuration error in the log.
+The layout is cached in `layout.json` after every successful read, so the
+panel starts with the last known tiles when Home Assistant is unreachable at
+boot. Only a tablet that has never reached Home Assistant waits on a
+placeholder screen.
+
+A layout change in Home Assistant restarts the panel the same way a
+`config.ini` change does: the watchdog brings it back within about two
+seconds, reading the fresh cache. The tablet does not reboot.
 
 The Media Controller integration in
 [custom_components/media_controller/](../../custom_components/media_controller)
-must be installed and configured in Home Assistant first; see
-[docs/INTEGRATION.md](../../docs/INTEGRATION.md). It creates the queue and
-playlist sensors and the room proxy entities consumed by this application.
+must be installed and configured in Home Assistant first, and this tablet must
+be added there as a panel; see
+[docs/INTEGRATION.md](../../docs/INTEGRATION.md) and
+[docs/ROOM_SLOTS.md](../../docs/ROOM_SLOTS.md).
 
 ## Source architecture
 
@@ -89,6 +97,7 @@ The application is split into focused C modules with explicit interfaces:
 - `application` owns the application lifecycle and coordinates UI events with
   Home Assistant state;
 - `app_config` validates and owns configuration data;
+- `panel_config` reads the layout Home Assistant publishes and caches it;
 - `home_assistant_client` encapsulates authenticated asynchronous HTTP I/O;
 - `panel_ui` builds and updates GTK widgets without knowing API details;
 - `json_helpers` contains reusable, unit-tested JSON accessors;
@@ -113,10 +122,10 @@ The complete guide contains two end-to-end procedures:
 
 See [BUILD_AND_INSTALL.md](docs/BUILD_AND_INSTALL.md).
 
-The repository root already contains a verified `t560-panel` binary. It is a
-44 KB ELF 32-bit ARM EABI5/musl executable built in a clean Alpine 3.20 ARMv7
-container. The source also compiles successfully on x86_64 Alpine as an API
-compatibility check. Checksums are stored in `SHA256SUMS`.
+`SHA256SUMS` describes the last binary built in a clean Alpine 3.20 ARMv7
+container, together with the sources it was built from. **It predates the move
+of the room configuration into Home Assistant**, so it no longer matches
+`src/`; rebuild before deploying and regenerate the file.
 
 The recommended deployment is rootless. The executable and launch scripts are
 installed below `/home/vahac/.local`, and files are transferred through the

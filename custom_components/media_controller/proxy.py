@@ -1,51 +1,83 @@
-"""Shared state tracking for optional room-control proxy entities."""
+"""Shared state tracking for room-control proxy entities."""
 
 from __future__ import annotations
 
 from abc import abstractmethod
-from typing import Any
 
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.config_entries import ConfigEntry, ConfigSubentry
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import Event, State, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.event import async_track_state_change_event
 
-from .const import DOMAIN
+from .const import DOMAIN, slot_translation_key, slot_unique_id
+from .profiles import ClientProfile
+from .slots import ClientConfiguration, SlotConfig
+
+CONTROLLER_MODEL = "ESP32 Music Assistant Media Controller"
+
+
+def controller_device_info(entry: ConfigEntry) -> DeviceInfo:
+    """Return the device shared by the controller's own entities."""
+    return DeviceInfo(
+        identifiers={(DOMAIN, entry.entry_id)},
+        name=entry.title,
+        manufacturer="VahaC",
+        model=CONTROLLER_MODEL,
+    )
+
+
+def panel_device_info(
+    entry: ConfigEntry,
+    subentry: ConfigSubentry,
+    profile: ClientProfile,
+) -> DeviceInfo:
+    """Return the device of one panel client."""
+    return DeviceInfo(
+        identifiers={(DOMAIN, subentry.subentry_id)},
+        name=subentry.title,
+        manufacturer="VahaC",
+        model=profile.name,
+        via_device=(DOMAIN, entry.entry_id),
+    )
 
 
 class ControllerProxyEntity(Entity):
-    """Mirror one user-selected Home Assistant entity."""
+    """Mirror the entity a user put in one room-control slot.
+
+    Clients address the proxy, never the target. It is the only way an ESP32
+    can follow a slot change made in the Home Assistant UI, because ESPHome
+    resolves entity IDs at compile time.
+    """
 
     _attr_has_entity_name = True
     _attr_should_poll = False
 
     def __init__(
         self,
-        entry: ConfigEntry,
-        target_entity_id: str | None,
+        client: ClientConfiguration,
+        slot: SlotConfig,
+        device_info: DeviceInfo,
     ) -> None:
         """Initialize common proxy metadata."""
-        self._target_entity_id = target_entity_id
+        self._client = client
+        self._slot = slot
+        self._target_entity_id = slot.target_entity_id
+        self._attr_unique_id = slot_unique_id(client.owner_id, slot.index)
+        self._attr_translation_key = slot_translation_key(slot.index)
+        self._attr_device_info = device_info
         self._attr_available = False
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, entry.entry_id)},
-            name=entry.title,
-            manufacturer="VahaC",
-            model="ESP32 Music Assistant Media Controller",
-        )
 
     @property
-    def target_entity_id(self) -> str | None:
+    def target_entity_id(self) -> str:
         """Return the configured source entity."""
         return self._target_entity_id
 
     async def async_added_to_hass(self) -> None:
-        """Start mirroring source state changes."""
+        """Publish the assigned entity ID and start mirroring the target."""
         await super().async_added_to_hass()
-        if self._target_entity_id is None:
-            return
+        self._client.async_set_proxy_entity_id(self._slot.index, self.entity_id)
         self._apply_target_state(self.hass.states.get(self._target_entity_id))
         self.async_on_remove(
             async_track_state_change_event(
@@ -73,17 +105,3 @@ class ControllerProxyEntity(Entity):
     @abstractmethod
     def _apply_platform_state(self, state: State | None) -> None:
         """Apply platform-specific source state and attributes."""
-
-    def _require_target(self) -> str:
-        """Return the source entity or raise a clear action error."""
-        if self._target_entity_id is None:
-            from homeassistant.exceptions import HomeAssistantError
-
-            raise HomeAssistantError("This room control is not configured")
-        return self._target_entity_id
-
-
-def configured_value(entry: ConfigEntry, key: str) -> Any:
-    """Return an Options Flow override or initial Config Flow value."""
-    return entry.options.get(key, entry.data.get(key))
-

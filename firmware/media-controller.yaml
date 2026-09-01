@@ -8,6 +8,7 @@ substitutions:
   light2_entity: light.replace_me_light_2
   fan_entity: switch.replace_me_fan
   ac_entity: switch.replace_me_ac
+  config_entity: sensor.replace_me_config
   ha_url: "http://homeassistant.local:8123"
   ha_token: "replace_me"
   asset_base_url: "https://raw.githubusercontent.com/VahaC/ha-media-controller/main/firmware/assets"
@@ -17,7 +18,7 @@ esphome:
   friendly_name: ${friendly_name}
   project:
     name: media_controller.esp32s3
-    version: "0.7.1"
+    version: "0.8.0"
   on_boot:
     priority: -100
     then:
@@ -63,6 +64,7 @@ api:
             id(album_art_small).set_url(full_url.c_str());
           }
       - script.execute: ui_load_album_art
+      - script.execute: ui_load_room_config
       - delay: 2s
       # -- Re-apply switches page button colors from the states HA just pushed on connect --
       - script.execute: apply_light1_style
@@ -877,6 +879,58 @@ script:
   # -- Each layout has its own album art source at its own resolution. Fetch
   # -- only the one that is on screen, so switching styles never triggers two
   # -- concurrent HTTP requests and a hidden layout costs no traffic. --
+  # ════════════════════════════════════════════════════════════
+  # ROOM SLOTS
+  # ════════════════════════════════════════════════════════════
+  # The four buttons are bound to their proxy entities at compile time and
+  # cannot be repointed without a reflash. What they are called, and
+  # whether they are shown at all, comes from the integration at runtime:
+  # an empty slot has no tile.
+
+  - id: ui_load_room_config
+    then:
+      - http_request.get:
+          url: "${ha_url}/api/states/${config_entity}"
+          request_headers:
+            Authorization: "Bearer ${ha_token}"
+          capture_response: true
+          max_response_buffer_size: 8192
+          on_response:
+            then:
+              - lambda: |-
+                  // -- LVGL widgets exist only after the on_boot handler has
+                  //    run. A client that connects earlier is handled by the
+                  //    next reconnect, which runs this script again. --
+                  if (!id(ui_ready)) return;
+                  if (response->status_code != 200) {
+                    ESP_LOGW("slots", "Config sensor HTTP %d",
+                             response->status_code);
+                    return;
+                  }
+                  lv_obj_t *buttons[4] = {
+                    (lv_obj_t *) id(btn_light1)->obj,
+                    (lv_obj_t *) id(btn_light2)->obj,
+                    (lv_obj_t *) id(btn_switch_fan)->obj,
+                    (lv_obj_t *) id(btn_switch_ac)->obj,
+                  };
+                  lv_obj_t *labels[4] = {
+                    (lv_obj_t *) id(lbl_slot1_name)->obj,
+                    (lv_obj_t *) id(lbl_slot2_name)->obj,
+                    (lv_obj_t *) id(lbl_slot3_name)->obj,
+                    (lv_obj_t *) id(lbl_slot4_name)->obj,
+                  };
+                  for (int slot = 1; slot <= 4; slot++) {
+                    std::string label = id(slot_label_parser)(body, slot);
+                    lv_obj_t *button = buttons[slot - 1];
+                    if (label.empty()) {
+                      lv_obj_add_flag(button, LV_OBJ_FLAG_HIDDEN);
+                      continue;
+                    }
+                    lv_label_set_text(labels[slot - 1], label.c_str());
+                    lv_obj_clear_flag(button, LV_OBJ_FLAG_HIDDEN);
+                  }
+                  ESP_LOGD("slots", "Applied the room slots");
+
   - id: ui_load_album_art
     then:
       - if:
@@ -1634,6 +1688,70 @@ globals:
           if (next != std::string::npos && s[next] == ']') break;
         }
         return result;
+      }
+
+  # Reads one slot label out of the config sensor payload. The firmware has
+  # no JSON library, so this walks the "slots" array by brace depth while
+  # skipping string literals, the same hand-rolled style as the playlist
+  # parser above. Returns an empty string when the slot is not configured,
+  # which is what hides the tile.
+  - id: slot_label_parser
+    type: std::string (*)(const std::string &, int)
+    restore_value: no
+    initial_value: |-
+      [](const std::string &body, int slot) -> std::string {
+        size_t slots_pos = body.find("\"slots\":");
+        if (slots_pos == std::string::npos) return std::string();
+        size_t i = body.find('[', slots_pos);
+        if (i == std::string::npos) return std::string();
+
+        int depth = 0;
+        size_t object_start = std::string::npos;
+        for (; i < body.size(); i++) {
+          char c = body[i];
+          if (c == '"') {
+            // -- Skip a string literal so a label containing a brace
+            //    cannot break the depth count. --
+            i++;
+            while (i < body.size()) {
+              if (body[i] == '\\') { i++; }
+              else if (body[i] == '"') break;
+              i++;
+            }
+            continue;
+          }
+          if (c == '{') {
+            if (depth == 0) object_start = i;
+            depth++;
+            continue;
+          }
+          if (c == '}') {
+            depth--;
+            if (depth != 0 || object_start == std::string::npos) continue;
+            std::string object = body.substr(object_start,
+                                             i - object_start + 1);
+            object_start = std::string::npos;
+            size_t slot_pos = object.find("\"slot\":");
+            if (slot_pos == std::string::npos) continue;
+            if (atoi(object.c_str() + slot_pos + 7) != slot) continue;
+            size_t label_pos = object.find("\"label\":\"");
+            if (label_pos == std::string::npos) return std::string();
+            label_pos += 9;
+            std::string label;
+            for (size_t k = label_pos; k < object.size(); k++) {
+              if (object[k] == '\\' && k + 1 < object.size()) {
+                label += object[k + 1];
+                k++;
+                continue;
+              }
+              if (object[k] == '"') break;
+              label += object[k];
+            }
+            return label;
+          }
+          if (c == ']' && depth == 0) break;
+        }
+        return std::string();
       }
 
   - id: playlist_names
@@ -3328,6 +3446,7 @@ lvgl:
                   align: CENTER
                   y: -18
               - label:
+                  id: lbl_slot1_name
                   text: "LIGHT 1"
                   text_font: montserrat_16
                   align: CENTER
@@ -3397,6 +3516,7 @@ lvgl:
                   align: CENTER
                   y: -18
               - label:
+                  id: lbl_slot2_name
                   text: "LIGHT 2"
                   text_font: montserrat_16
                   align: CENTER
@@ -3466,6 +3586,7 @@ lvgl:
                   align: CENTER
                   y: -18
               - label:
+                  id: lbl_slot3_name
                   text: "FAN"
                   text_font: montserrat_16
                   align: CENTER
@@ -3518,6 +3639,7 @@ lvgl:
                   align: CENTER
                   y: -18
               - label:
+                  id: lbl_slot4_name
                   text: "AC"
                   text_font: montserrat_16
                   align: CENTER

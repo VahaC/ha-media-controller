@@ -21,15 +21,20 @@ SOURCES = src/main.c \
 	  src/app_config.c \
 	  src/home_assistant_client.c \
 	  src/json_helpers.c \
+	  src/panel_config.c \
 	  src/panel_ui.c \
 	  src/system_status.c \
 	  $(RESOURCE_SOURCE)
 OBJECTS = $(SOURCES:.c=.o)
 DEPFILES = $(OBJECTS:.o=.d)
-TEST_OBJECTS = tests/test_json_helpers.o src/json_helpers.o
-TEST_DEPFILES = tests/test_json_helpers.d
+TEST_OBJECTS = tests/test_json_helpers.o \
+	       tests/test_panel_config.o \
+	       src/json_helpers.o \
+	       src/panel_config.o \
+	       src/app_config.o
+TEST_DEPFILES = tests/test_json_helpers.d tests/test_panel_config.d
 
-CPPFLAGS += -Isrc $(shell $(PKG_CONFIG) --cflags $(PACKAGES))
+CPPFLAGS += -Isrc -Itests $(shell $(PKG_CONFIG) --cflags $(PACKAGES))
 CFLAGS ?= -Os
 CFLAGS += -std=c11 -Wall -Wextra -Wpedantic -Wformat=2 \
 	  -Wstrict-prototypes -Wmissing-prototypes

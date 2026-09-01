@@ -1,5 +1,7 @@
 #include "json_helpers.h"
 
+#include "test_panel_config.h"
+
 #include <glib.h>
 
 static void test_scalar_accessors(void)
@@ -83,5 +85,6 @@ int main(int argc, char **argv)
     g_test_add_func("/json/string-arrays", test_string_arrays);
     g_test_add_func("/json/large-string-array", test_large_string_array);
     g_test_add_func("/json/builder-serialization", test_builder_serialization);
+    panel_config_tests_register();
     return g_test_run();
 }

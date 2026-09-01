@@ -5,6 +5,9 @@ that component's own documentation.
 
 ## 1. Home Assistant owns the room configuration
 
+**Specified in [ROOM_SLOTS.md](ROOM_SLOTS.md).** That document supersedes the
+planned shape below, which is kept as the record of how the problem was framed.
+
 Today the T560 panel reads its tile list from `config.ini` on the tablet, and
 the ESP32 reads entity IDs from flash-time substitutions. Adding a room control
 therefore means editing a file over SSH, or reflashing. The goal is that every

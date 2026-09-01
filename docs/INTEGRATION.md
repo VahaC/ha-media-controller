@@ -27,18 +27,41 @@ Until this repository is included in the default HACS catalog:
 4. Open Settings → Devices & services → Add integration.
 5. Select **Media Controller**.
 6. Select the required Music Assistant player.
-7. Optionally map Light 1, Light 2, Fan, and AC.
+7. Optionally fill the four room-control slots. The form states the limit: the
+   ESP32-S3 controller drives four of them, slots 1 and 2 lights and slots 3
+   and 4 switches. Leave a slot empty to hide that tile.
 
 The integration creates:
 
 - a bounded queue sensor;
 - a playlists sensor;
-- Light 1 and Light 2 proxy light entities;
-- Fan and AC proxy switch entities.
+- a config sensor per client, carrying the slot layout;
+- one proxy entity per configured slot.
 
 The proxy entities make room mappings changeable through Options Flow without
-reflashing the ESP32. A proxy whose source is not configured or unavailable is
-itself unavailable; the other controller functions continue working.
+reflashing the ESP32. A proxy whose source is unavailable is itself
+unavailable; the other controller functions continue working. Clearing a slot
+removes its proxy.
+
+### Panels
+
+Every client that is not the ESP32 is added as a **panel** subentry: open the
+controller entry and choose *Add a panel*. The device type decides how many
+slots the form offers — the T560 panel drives six. Each panel becomes its own
+Home Assistant device with its own proxies and its own config sensor.
+
+The room controls of the ESP32 live on the controller entry itself rather than
+in a panel subentry, because the firmware resolves their entity IDs at compile
+time and they already exist there. See [ROOM_SLOTS.md](ROOM_SLOTS.md).
+
+### Slot capabilities
+
+The integration reads what the entity in a slot actually supports and publishes
+a plain control list — `toggle`, `brightness`, `color_temp` — in the config
+sensor. Clients draw from that list and never inspect `supported_color_modes`
+themselves. The list is also limited by what the client can draw: a
+colour-temperature lamp in an ESP32 slot is toggled and dimmed, and offers its
+full control set on the T560.
 
 Entity IDs are assigned by Home Assistant's entity registry. Open the new
 controller device and copy its actual entity IDs for the firmware substitutions.
@@ -48,6 +71,10 @@ The integration listens to the Music Assistant player selected in Config Flow.
 The ESPHome device also uses its `player_entity` substitution for native media
 state and control actions. If the selected player is changed later in Options
 Flow, update that substitution during the next ESPHome/OTA update as well.
+
+Changing which entity a slot points at needs no reflash: the ESP32 is bound to
+the slot proxy, and it reads the button labels and which buttons to show from
+the config sensor on every connection.
 
 ### Synchronization behavior
 
@@ -62,9 +89,8 @@ Flow, update that substitution during the next ESPHome/OTA update as well.
   its Music Assistant queue item ID without replacing the queue.
 
 
-The T560 panel reads the same queue and playlists sensors and the same proxy
-entities over the Home Assistant REST API. It needs no firmware substitutions:
-its entity IDs live in `config.ini` on the tablet.
+The T560 panel reads the same queue and playlists sensors and the proxy
+entities of its own panel subentry over the Home Assistant REST API.
 
 ## Services
 

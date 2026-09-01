@@ -198,28 +198,26 @@ command -v nano
 nano "$HOME/.config/t560-music-panel/config.ini"
 ```
 
-Set the actual Home Assistant URL and entity IDs:
+Set the Home Assistant URL and the panel identifier:
 
 ```ini
 [home_assistant]
 url=http://192.168.1.100:8123
-
-[entities]
-player=media_player.actual_music_assistant_player
-queue=sensor.actual_controller_queue
-playlists=sensor.actual_controller_playlists
-light_1=light.actual_controller_light_1
-light_2=light.actual_controller_light_2
-fan=switch.actual_controller_fan
-ac=switch.actual_controller_ac
+panel_id=t560
 ```
 
-The player, queue, and playlists entities are required. Replace every example
-with the exact entity ID shown by Home Assistant. Remove optional room-control
-keys that are not used.
+There are no entity IDs here. Add this tablet as a panel in the Media
+Controller integration first (Settings -> Devices & services -> Media
+Controller -> Add a panel -> T560 panel), fill its room-control slots, and
+`panel_id` is the panel name lowercased with spaces replaced by underscores. A
+panel named `T560` publishes `sensor.t560_config`, and everything the panel
+draws comes from there. Add `config_entity=` only if that sensor was renamed
+in Home Assistant.
 
-The `[panel]` section holds the timing settings, including the inactivity
-timeout that turns the display off:
+The `[panel]` section holds the tablet-local settings: polling timings and
+the inactivity timeout that turns the display off. They stay on the tablet
+because the Power button handler and the motion detector read them directly,
+without going through Home Assistant.
 
 ```ini
 [panel]

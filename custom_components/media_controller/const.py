@@ -6,20 +6,35 @@ from homeassistant.const import Platform
 
 DOMAIN = "media_controller"
 
-PLATFORMS: list[Platform] = [Platform.LIGHT, Platform.SENSOR, Platform.SWITCH]
+# Sensor first: it creates the controller device that every panel device
+# references as its via_device.
+PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.LIGHT, Platform.SWITCH]
+
+ENTRY_VERSION = 2
 
 CONF_PLAYER_ENTITY = "player_entity"
+
+# Room-control slots. See docs/ROOM_SLOTS.md. The keys inside one stored slot
+# record belong to the on-disk format and live in transformations.py.
+CONF_SLOTS = "slots"
+CONF_PROFILE = "profile"
+
+SUBENTRY_TYPE_PANEL = "panel"
+
+# Version 1 keys. They survive only in async_migrate_entry.
 CONF_LIGHT_1_ENTITY = "light_1_entity"
 CONF_LIGHT_2_ENTITY = "light_2_entity"
 CONF_FAN_ENTITY = "fan_entity"
 CONF_AC_ENTITY = "ac_entity"
 
-CONFIG_ENTITY_KEYS = (
-    CONF_PLAYER_ENTITY,
-    CONF_LIGHT_1_ENTITY,
-    CONF_LIGHT_2_ENTITY,
-    CONF_FAN_ENTITY,
-    CONF_AC_ENTITY,
+# Slot index, version 1 config key, and the domain the proxy was created in.
+# The domain cannot be re-derived from the target: a version 1 target may have
+# been removed from Home Assistant since.
+LEGACY_SLOTS: tuple[tuple[int, str, str], ...] = (
+    (1, CONF_LIGHT_1_ENTITY, "light"),
+    (2, CONF_LIGHT_2_ENTITY, "light"),
+    (3, CONF_FAN_ENTITY, "switch"),
+    (4, CONF_AC_ENTITY, "switch"),
 )
 
 DEFAULT_PLAYLIST_LIMIT = 500
@@ -35,3 +50,23 @@ SERVICE_PLAY_QUEUE_ITEM = "play_queue_item"
 ATTR_ENTRY_ID = "entry_id"
 ATTR_ENTITY_ID = "entity_id"
 ATTR_QUEUE_ITEM_ID = "queue_item_id"
+
+
+def slot_entity_key(index: int) -> str:
+    """Return the config-flow field name holding a slot target."""
+    return f"slot_{index}_entity"
+
+
+def slot_label_key(index: int) -> str:
+    """Return the config-flow field name holding a slot label."""
+    return f"slot_{index}_label"
+
+
+def slot_translation_key(index: int) -> str:
+    """Return the entity translation key of a slot proxy."""
+    return f"slot_{index}"
+
+
+def slot_unique_id(owner_id: str, index: int) -> str:
+    """Return the proxy unique ID for one slot of one client."""
+    return f"{owner_id}_slot_{index}"

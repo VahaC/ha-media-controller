@@ -73,10 +73,17 @@ substitutions:
   # Copy the actual entity IDs created by the Media Controller integration.
   queue_entity: sensor.your_controller_queue
   playlists_entity: sensor.your_controller_playlists
-  light1_entity: light.your_controller_light_1
-  light2_entity: light.your_controller_light_2
-  fan_entity: switch.your_controller_fan
-  ac_entity: switch.your_controller_ac
+
+  # Room-control slots 1 to 4 of the controller entry. An installation created
+  # before integration 0.8.1 keeps the older light.<controller>_light_1
+  # spelling; a newer one uses _slot_1. Copy whichever Home Assistant shows.
+  light1_entity: light.your_controller_slot_1
+  light2_entity: light.your_controller_slot_2
+  fan_entity: switch.your_controller_slot_3
+  ac_entity: switch.your_controller_slot_4
+
+  # Button labels and tile visibility are read from here at runtime.
+  config_entity: sensor.your_controller_config
 
   ha_url: "http://homeassistant.local:8123"
   ha_token: !secret media_controller_ha_token
@@ -104,8 +111,8 @@ ota:
 
 Before installing:
 
-1. Replace `device_name`, `player_entity`, and every queue/playlist/room entity
-   placeholder with the actual values from Home Assistant.
+1. Replace `device_name`, `player_entity`, and every queue, playlist, slot, and
+   config entity placeholder with the actual values from Home Assistant.
 2. Keep using the existing global ESPHome `secrets.yaml`; do not create a
    repository-specific secrets file.
 3. Ensure the `!secret` names in the block match keys that already exist in
@@ -124,6 +131,35 @@ esphome compile media-controller.yaml
 Remote ESPHome packages cannot contain secret lookups. This is why Wi-Fi, API
 encryption, OTA, and the Home Assistant token are in the small user
 configuration rather than the maintained package.
+
+## Room slots
+
+The four buttons on the switches page are slots 1 to 4 of the controller
+entry. Which entity a slot points at is changed in Home Assistant, in the
+integration options; the device follows without a reflash, because it is bound
+to the slot proxy rather than to the entity behind it.
+
+Read from `config_entity` on every API connection:
+
+- the label on each button;
+- whether the button is shown at all — an empty slot has no tile.
+
+Fixed at compile time, and therefore a reflash:
+
+- the entity ID each button reads and writes, because `platform: homeassistant`
+  and `homeassistant.service` resolve the substitution while compiling;
+- the **domain** of each slot: buttons 1 and 2 call `light.*` and carry the
+  long-press brightness action, buttons 3 and 4 call `switch.*`. The
+  integration enforces the same split, so a slot cannot be given the wrong
+  kind of entity in the first place;
+- the number of buttons and their positions;
+- the per-button icons, which are compile-time image assets.
+
+A colour-temperature lamp in slot 1 is therefore switched and dimmed here, and
+offers its full control set on a client that can draw it, such as the T560
+panel. `config_entity` is optional: without it the buttons keep their
+compile-time labels and all four stay visible, and the log carries one warning
+per reconnect.
 
 ## Screen styles
 

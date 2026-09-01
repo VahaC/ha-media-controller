@@ -1,45 +1,23 @@
-# Copy to ~/.config/t560-music-panel/config.ini and replace every entity ID
-# with the actual IDs created by Home Assistant and the Media Controller
-# integration. There are no text-entry controls in the tablet application.
+# Copy to ~/.config/t560-music-panel/config.ini.
+#
+# Almost nothing lives here any more. Entity IDs, tile labels, and which
+# controls each tile offers are configured in Home Assistant: open the Media
+# Controller integration, add a panel, and fill its slots. The panel reads
+# that layout from sensor.<panel_id>_config and caches it, so it also starts
+# while Home Assistant is down.
 
 [home_assistant]
 url=http://192.168.1.100:8123
-
-[entities]
-player=media_player.your_music_assistant_player
-queue=sensor.your_controller_queue
-playlists=sensor.your_controller_playlists
-
-# These room controls are optional. Remove a key to disable its tile.
-light_1=light.your_controller_light_1
-light_2=light.your_controller_light_2
-fan=switch.your_controller_fan
-ac=switch.your_controller_ac
-desk_lamp=light.your_desk_lamp
-desk_led_strip=light.your_desk_led_strip
-
-[labels]
-light_1=LIGHT 1
-light_2=LIGHT 2
-fan=FAN
-ac=AC
-desk_lamp=DESK LAMP
-desk_led_strip=DESK LED STRIP
-
-# Optional comma-separated controls: brightness and color_temperature.
-# They can be enabled for any configured room tile that points to a light.
-[room_features]
-light_1=brightness,color_temperature
-light_2=brightness,color_temperature
-fan=none
-ac=none
-desk_lamp=none
-desk_led_strip=brightness,color_temperature
+# The name you gave the panel in Home Assistant, lowercased, spaces replaced
+# with underscores. A panel named "T560" is sensor.t560_config.
+panel_id=t560
+# Only needed when that sensor was renamed in Home Assistant.
+# config_entity=sensor.t560_config
 
 [panel]
 # 1000 ms is responsive while keeping CPU/network use low.
 poll_interval_ms=1000
-# Playlist state can be much larger and changes infrequently.
+# Playlists and the panel layout change infrequently and share this interval.
 playlist_poll_interval_ms=60000
 # Turn the display off after this many seconds without touchscreen, key, or
 # camera-detected activity. Use 0 to keep the display on until the Power

@@ -4,13 +4,17 @@
     "step": {
       "user": {
         "title": "Configure the media controller",
-        "description": "Select the Music Assistant player and optional room controls used by this controller.",
+        "description": "Select the Music Assistant player. The {profile} drives up to {slot_count} room controls; leave a slot empty to hide that tile. Labels are optional and fall back to the entity name.",
         "data": {
           "player_entity": "Music Assistant player",
-          "light_1_entity": "Light 1",
-          "light_2_entity": "Light 2",
-          "fan_entity": "Fan",
-          "ac_entity": "AC"
+          "slot_1_entity": "Slot 1",
+          "slot_1_label": "Slot 1 label",
+          "slot_2_entity": "Slot 2",
+          "slot_2_label": "Slot 2 label",
+          "slot_3_entity": "Slot 3",
+          "slot_3_label": "Slot 3 label",
+          "slot_4_entity": "Slot 4",
+          "slot_4_label": "Slot 4 label"
         }
       }
     },
@@ -25,13 +29,17 @@
     "step": {
       "init": {
         "title": "Controller options",
-        "description": "Remap the player or optional room controls. The integration reloads automatically.",
+        "description": "Remap the player or the room controls of the {profile}, which drives up to {slot_count} of them. The integration reloads automatically.",
         "data": {
           "player_entity": "Music Assistant player",
-          "light_1_entity": "Light 1",
-          "light_2_entity": "Light 2",
-          "fan_entity": "Fan",
-          "ac_entity": "AC"
+          "slot_1_entity": "Slot 1",
+          "slot_1_label": "Slot 1 label",
+          "slot_2_entity": "Slot 2",
+          "slot_2_label": "Slot 2 label",
+          "slot_3_entity": "Slot 3",
+          "slot_3_label": "Slot 3 label",
+          "slot_4_entity": "Slot 4",
+          "slot_4_label": "Slot 4 label"
         }
       }
     },
@@ -40,30 +48,82 @@
       "already_configured": "This Music Assistant player is already used by another controller."
     }
   },
+  "config_subentries": {
+    "panel": {
+      "title": "Panel",
+      "entry_type": "Panel",
+      "initiate_flow": {
+        "user": "Add a panel"
+      },
+      "step": {
+        "user": {
+          "title": "Add a panel",
+          "description": "Select the kind of device. How many room controls it can drive is decided by the device itself.",
+          "data": {
+            "profile": "Device type",
+            "name": "Name"
+          }
+        },
+        "slots": {
+          "title": "Room controls",
+          "description": "The {profile} drives up to {slot_count} room controls. Leave a slot empty to hide that tile. Labels are optional and fall back to the entity name.",
+          "data": {
+            "slot_1_entity": "Slot 1",
+            "slot_1_label": "Slot 1 label",
+            "slot_2_entity": "Slot 2",
+            "slot_2_label": "Slot 2 label",
+            "slot_3_entity": "Slot 3",
+            "slot_3_label": "Slot 3 label",
+            "slot_4_entity": "Slot 4",
+            "slot_4_label": "Slot 4 label",
+            "slot_5_entity": "Slot 5",
+            "slot_5_label": "Slot 5 label",
+            "slot_6_entity": "Slot 6",
+            "slot_6_label": "Slot 6 label"
+          }
+        },
+        "reconfigure": {
+          "title": "Room controls",
+          "description": "The {profile} drives up to {slot_count} room controls. Leave a slot empty to hide that tile. Changing the device type is not possible; remove the panel and add it again.",
+          "data": {
+            "slot_1_entity": "Slot 1",
+            "slot_1_label": "Slot 1 label",
+            "slot_2_entity": "Slot 2",
+            "slot_2_label": "Slot 2 label",
+            "slot_3_entity": "Slot 3",
+            "slot_3_label": "Slot 3 label",
+            "slot_4_entity": "Slot 4",
+            "slot_4_label": "Slot 4 label",
+            "slot_5_entity": "Slot 5",
+            "slot_5_label": "Slot 5 label",
+            "slot_6_entity": "Slot 6",
+            "slot_6_label": "Slot 6 label"
+          }
+        }
+      }
+    }
+  },
   "entity": {
     "light": {
-      "light_1": {
-        "name": "Light 1"
-      },
-      "light_2": {
-        "name": "Light 2"
-      }
-    },
-    "sensor": {
-      "queue": {
-        "name": "Queue"
-      },
-      "playlists": {
-        "name": "Playlists"
-      }
+      "slot_1": { "name": "Slot 1" },
+      "slot_2": { "name": "Slot 2" },
+      "slot_3": { "name": "Slot 3" },
+      "slot_4": { "name": "Slot 4" },
+      "slot_5": { "name": "Slot 5" },
+      "slot_6": { "name": "Slot 6" }
     },
     "switch": {
-      "fan": {
-        "name": "Fan"
-      },
-      "ac": {
-        "name": "AC"
-      }
+      "slot_1": { "name": "Slot 1" },
+      "slot_2": { "name": "Slot 2" },
+      "slot_3": { "name": "Slot 3" },
+      "slot_4": { "name": "Slot 4" },
+      "slot_5": { "name": "Slot 5" },
+      "slot_6": { "name": "Slot 6" }
+    },
+    "sensor": {
+      "queue": { "name": "Queue" },
+      "playlists": { "name": "Playlists" },
+      "config": { "name": "Config" }
     }
   },
   "services": {
