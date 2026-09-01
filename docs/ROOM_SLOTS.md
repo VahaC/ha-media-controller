@@ -4,10 +4,12 @@ Specification for moving room-control configuration out of client files and
 into Home Assistant. It implements [ROADMAP.md](ROADMAP.md) item 1 and replaces
 the four fixed room slots of integration `0.7.x`.
 
-Status: **implemented** in integration `0.8.1` and firmware `0.8.0`. What is left
+Status: **implemented** in integration `0.8.1` and firmware `0.8.0`. A panel
+announces itself, is added from the discovery card, and is handed its own
+access token, so nothing about it is configured on the tablet. What is left
 out of scope here is moving the tablet-local settings — `[panel]` and
-`[camera]` — into Home Assistant; see [Still on the tablet](#still-on-the-tablet).
-Contract version: **2**.
+`[camera]` — into Home Assistant; see
+[Still on the tablet](#still-on-the-tablet). Contract version: **2**.
 
 ## Goal
 
@@ -26,7 +28,7 @@ everything below.
 | --- | --- | --- |
 | 1 | Both clients address **proxy entities**, never the target directly | Slot domain (`light` / `switch`) is fixed when the slot is created |
 | 2 | Client profiles are a **static registry** in the integration | A new client type is a code change, not a UI action |
-| 3 | ESP32 gets **no subentry** | Its four slots stay on the controller config entry, where they already are |
+| 3 | ESP32 has no entry of its own | Its four slots stay on the controller config entry, where they already are |
 | 4 | The form shows **exactly N slots**; empty slot = tile hidden | No "add another" loop |
 | 5 | Every slot has a **label field**; empty falls back to `friendly_name` | |
 | 6 | First iteration supports **`light` and `switch` only** | No RGB, no `fan` domain, no `climate`, no `cover` |
@@ -108,7 +110,12 @@ New profiles live in `custom_components/media_controller/profiles.py`.
 | Client | Slot storage | Reason |
 | --- | --- | --- |
 | ESP32-S3 | The controller config entry (`data` / `options`) | Its four proxies already exist there and it is compile-time bound to them |
-| T560 and later panels | One config subentry of type `panel` per device | Home Assistant renders subentries as an add/edit/delete list, which is the repeatable item the Options Flow cannot express |
+| T560 and later panels | One config entry per device | A panel announces itself over mDNS, and a discovery flow creates an entry — `async_step_zeroconf` exists on `ConfigFlow` and has no subentry equivalent |
+
+A panel entry stores which controller it reads. It never reaches into that
+controller's runtime: the three entity IDs it needs are shared through one
+`ControllerEntities` object per controller, seeded from the entity registry so
+that a panel can load before, or without, its controller.
 
 The controller-level slots are the ESP32's slots for historical reasons, and
 the documentation should say so plainly rather than pretending it is a general
@@ -137,17 +144,23 @@ Slot 4 label             [text, optional]
 The description line states the limit: *"The ESP32-S3 controller drives up to
 4 room controls."*
 
-### Panel subentry flow — two steps
+### Panel discovery flow
 
-`async_get_supported_subentry_types` returns `{"panel": PanelSubentryFlow}`.
+The manifest declares `"zeroconf": ["_media-controller._tcp.local."]`. A panel
+publishes that service with `panel_id`, `profile`, and `name` TXT records;
+`t560-announce-panel` does it with `avahi-publish-service`, so no code in the
+panel process is involved.
 
-1. **`user`** — device type from the profile registry, plus a name. The
-   description of the chosen type carries the limit, so the user reads
-   *"The T560 panel drives up to 6 room controls"* before the slot form.
-2. **`slots`** — `len(profile.slots)` pairs of entity selector and label,
-   each selector restricted to `spec.domains`.
+1. **`zeroconf`** — the unique ID is `panel_<panel_id>`, so a panel that is
+   already configured only has its address updated.
+2. **`panel_confirm`** — which controller the panel plays from. The description
+   names the device, its profile, and its slot count.
+3. **`slots`** — `len(profile.slots)` pairs of entity selector and label, each
+   selector restricted to `spec.domains`.
 
-Editing a panel reruns step `slots` with current values.
+`Add device` offers the same thing manually, for a panel that cannot announce
+itself, with the panel ID typed in. Editing a panel later reruns the slot form
+through its options flow.
 
 ## Capability normalization
 
@@ -174,7 +187,7 @@ One proxy per configured slot, in the domain fixed at creation.
 | | Value |
 | --- | --- |
 | Platform | `light` or `switch` |
-| `unique_id` | `f"{owner_id}_slot_{n}"` where `owner_id` is the entry ID for ESP32 slots and the subentry ID for panel slots |
+| `unique_id` | `f"{owner_id}_slot_{n}"`, where `owner_id` is the entry ID — the controller's for ESP32 slots, the panel's for panel slots |
 | `translation_key` | `slot_1` … `slot_6` |
 | Display name | `Slot N` |
 
@@ -194,7 +207,7 @@ rather than mutating a live entity's colour modes.
 ### Config sensor
 
 One per client: `sensor.<controller>_config` for the ESP32 slots, and
-`sensor.<panel>_config` for each panel subentry. State is the constant `ok`;
+`sensor.<panel>_config` for each panel. State is the constant `ok`;
 everything is in attributes, like the existing queue and playlist sensors.
 
 ```json
@@ -244,6 +257,75 @@ Add `custom_components/media_controller/recorder.py` with
 `async_exclude_attributes` covering the config sensor payload, and the existing
 `queue` and `playlists` attributes while we are there. They currently write a
 large JSON blob to the database on every queue change.
+
+## Panel identity
+
+A panel is identified by a **per-device ID**, not by its hostname. Two tablets
+flashed from the same image share a hostname, and would then claim the same
+Home Assistant device and overwrite each other's configuration.
+
+The ID is `t560_<first 8 hex of sha256(hardware address)>`, written once to
+`~/.config/t560-music-panel/panel-id`. An underscore, not a dash: the ID ends
+up inside an entity ID.
+
+| Event | Identity | What the user does |
+| --- | --- | --- |
+| Application update or reinstall | unchanged — the file is in the preserved config directory | nothing |
+| Tablet wiped | unchanged — derived from the same hardware address again | approve one re-pairing |
+| A second tablet | different — a different hardware address | add it as its own device |
+
+`t560-announce-panel` publishes that same file's value and never derives one
+of its own, so the announcement and the application can never disagree.
+
+The panel does not guess its config sensor either. Home Assistant derives that
+entity ID from the device name, so two panels named alike get `_config` and
+`_config_2`; the entity ID is therefore handed to the panel during pairing and
+cached. Guessing it was the second way two tablets could have read each
+other's layout.
+
+## Pairing
+
+A panel has no keyboard, so its token cannot be typed on it, and Home
+Assistant cannot push anything to a tablet that serves nothing. The panel asks
+instead.
+
+1. A panel with no token shows a six-digit code, generated once and cached so
+   that a watchdog restart does not change the number being read out.
+2. It polls `POST /api/media_controller/provision` every three seconds with
+   its panel ID and that code.
+3. Home Assistant answers only for an **approved** pairing. Approval happens
+   in the flow that adds the panel, or — for a panel that already exists —
+   through the standard reauthentication prompt, which the endpoint raises the
+   first time an unapproved panel asks.
+4. On success the panel receives a token and its config sensor's entity ID,
+   stores the token with mode `0600`, and restarts into normal operation.
+
+The token belongs to a dedicated non-administrator user, `Media Controller
+<name>`, so it can be revoked on its own. Re-pairing mints a new token and
+revokes the old one, but only after the new one exists, so a failure cannot
+leave a panel with neither. Removing the panel revokes the token and deletes
+the user once it owns nothing else.
+
+### Why an unauthenticated endpoint is acceptable
+
+It has to be: a panel asking for its first token has no credentials to
+present. What guards it, in `pairing.py` and covered by `tests/test_pairing.py`:
+
+- it answers only while an approval is open for **that** panel ID;
+- only for a code shown on the device's own screen;
+- for at most five minutes;
+- exactly once — a replay gets nothing;
+- and five wrong codes cancel the approval.
+
+An approval is per panel ID, so one tablet's approval can never hand a token
+to another.
+
+### What this does not protect against
+
+A device on the same network that can both see the panel's screen and reach
+Home Assistant could claim the token during those five minutes. That is the
+same trust boundary as reading the code aloud in the room, and it is the
+reason the window is short and single-use rather than open.
 
 ## Client changes
 
@@ -339,9 +421,10 @@ must keep reading it.
 Labels are empty after migration, so tiles fall back to `friendly_name` until
 the user sets them.
 
-The T560 keeps working on its `config.ini` until its subentry is created. The
-first release must not delete the local sections; a later release removes them
-once the panel has been observed reading the config sensor.
+A panel created while panels were still config subentries has to be removed
+and added again: an entry and a subentry are different records. Its entities
+are cleaned up on the first load, and nothing else in Home Assistant is
+affected.
 
 ## Contract version 2
 
@@ -360,22 +443,34 @@ Changes to record in [CONTRACT.md](CONTRACT.md) before any code lands:
 ## Tests
 
 - `tests/test_transformations.py` — config payload construction, empty slots
-  omitted, revision increments.
-- New `tests/test_profiles.py` — capability normalization table above, including
-  `onoff`-only lights and missing targets.
-- New `tests/test_migration.py` — v1 → v2 keeps every slot number and drops
-  the legacy keys.
-- `clients/t560/tests/test_json_helpers.c` — parsing the config payload,
+  omitted, the revision changing with the configuration.
+- `tests/test_profiles.py` — the capability normalization table above,
+  including `onoff`-only lights and missing targets.
+- `tests/test_migration.py` — v1 → v2 keeps every slot number and drops the
+  legacy keys.
+- `tests/test_pairing.py` — what guards the unauthenticated endpoint: single
+  use, expiry, attempt limit, and that one panel's approval never serves
+  another.
+- `clients/t560/tests/test_panel_config.c` — parsing the config payload,
   including an unknown control name, which must be ignored rather than fatal.
+
+None of these need a Home Assistant runtime: every rule they cover lives in a
+module with no Home Assistant imports, which is why `transformations.py`,
+`profiles.py`, and `pairing.py` are separate from the entities and the view
+that use them.
 
 ## Order of work
 
 1. **Integration.** Done in `0.8.1`: profiles, migration, slot proxies with
    capability forwarding, config sensor, recorder exclusion, `strings.json`.
    The ESP32 keeps working unchanged, because its entity IDs are preserved.
-2. **T560.** Done: panel subentry, config sensor, dynamic tiles, offline
-   cache. `config.ini` shrank to `url`, `panel_id`, and the tablet-local
-   `[panel]` and `[camera]` sections, beside the token file.
+2. **T560.** Done: config sensor, dynamic tiles, offline cache, mDNS
+   announcement, per-device identity, and pairing. `config.ini` became
+   optional; only the token file remains, and the panel writes that itself.
 3. **ESP32 firmware.** Done: labels and tile visibility from the config
    sensor, and the `config_entity` substitution that names it. Contract
    version 2 is now recorded, with every consumer updated.
+
+The ESP32 is not part of the pairing work: ESPHome holds its own token in
+`secrets.yaml`, which is edited where the device YAML is edited, not on the
+device.

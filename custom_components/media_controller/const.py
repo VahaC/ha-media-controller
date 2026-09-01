@@ -12,6 +12,13 @@ PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.LIGHT, Platform.SWITCH]
 
 ENTRY_VERSION = 2
 
+# One domain, two kinds of config entry. A controller is bound to a Music
+# Assistant player; a panel is a client device that reads one controller.
+# Entries written before panels existed carry no type and are controllers.
+CONF_ENTRY_TYPE = "entry_type"
+ENTRY_TYPE_CONTROLLER = "controller"
+ENTRY_TYPE_PANEL = "panel"
+
 CONF_PLAYER_ENTITY = "player_entity"
 
 # Room-control slots. See docs/ROOM_SLOTS.md. The keys inside one stored slot
@@ -19,7 +26,29 @@ CONF_PLAYER_ENTITY = "player_entity"
 CONF_SLOTS = "slots"
 CONF_PROFILE = "profile"
 
-SUBENTRY_TYPE_PANEL = "panel"
+# Panel entries.
+CONF_PANEL_ID = "panel_id"
+CONF_CONTROLLER_ENTRY_ID = "controller_entry_id"
+CONF_HOST = "host"
+CONF_NAME = "name"
+
+# A panel announces itself on the local network with this service type. It is
+# deliberately not T560-specific: the profile travels as a TXT record, so a
+# second kind of panel needs no second service type.
+ZEROCONF_TYPE = "_media-controller._tcp.local."
+ZEROCONF_PROP_PANEL_ID = "panel_id"
+ZEROCONF_PROP_PROFILE = "profile"
+ZEROCONF_PROP_NAME = "name"
+
+# What a panel needs to be handed once, and what revokes it again.
+CONF_PAIRING_CODE = "pairing_code"
+CONF_REFRESH_TOKEN_ID = "refresh_token_id"
+CONF_USER_ID = "user_id"
+
+# hass.data layout.
+DATA_RUNTIMES = "runtimes"
+DATA_CONTROLLER_ENTITIES = "controller_entities"
+DATA_PROVISIONING = "provisioning"
 
 # Version 1 keys. They survive only in async_migrate_entry.
 CONF_LIGHT_1_ENTITY = "light_1_entity"
@@ -70,3 +99,8 @@ def slot_translation_key(index: int) -> str:
 def slot_unique_id(owner_id: str, index: int) -> str:
     """Return the proxy unique ID for one slot of one client."""
     return f"{owner_id}_slot_{index}"
+
+
+def panel_unique_id(panel_id: str) -> str:
+    """Return the config-entry unique ID of one panel device."""
+    return f"panel_{panel_id}"

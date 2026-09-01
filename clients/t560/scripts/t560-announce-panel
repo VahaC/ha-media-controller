@@ -1,0 +1,91 @@
+#!/bin/sh
+# Announces this panel on the local network so that Home Assistant offers to
+# add it, and resolves the Home Assistant URL the same way.
+#
+# Both halves are Avahi command-line calls rather than C, because nothing in
+# the panel process needs them: the announcement is pure metadata, and the
+# resolved URL is written to a file that app_config reads as a fallback.
+#
+# Usage: t560-announce-panel [panel_id]
+
+set -eu
+
+SERVICE_TYPE="_media-controller._tcp"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/t560-music-panel"
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/t560-music-panel"
+DISCOVERED="$CACHE_DIR/discovered.ini"
+
+log() {
+    echo "t560-announce-panel: $1" >&2
+}
+
+# The panel ID ties the announcement to one Home Assistant device, so it must
+# be unique per tablet and stable for its lifetime. The panel application owns
+# it and writes panel-id on first run; never fall back to the hostname, which
+# two tablets flashed from the same image would share.
+panel_id() {
+    if [ "$#" -ge 1 ] && [ -n "${1:-}" ]; then
+        echo "$1"
+        return
+    fi
+    if [ -r "$CONFIG_DIR/config.ini" ]; then
+        value=$(sed -n 's/^[[:space:]]*panel_id[[:space:]]*=[[:space:]]*//p' \
+            "$CONFIG_DIR/config.ini" | head -n 1)
+        if [ -n "$value" ]; then
+            echo "$value"
+            return
+        fi
+    fi
+    # The application writes this on its first run. Wait briefly in case the
+    # announcer won the race at session start.
+    attempt=0
+    while [ "$attempt" -lt 15 ]; do
+        if [ -r "$CONFIG_DIR/panel-id" ]; then
+            head -n 1 "$CONFIG_DIR/panel-id" | tr -d '[:space:]'
+            return
+        fi
+        attempt=$((attempt + 1))
+        sleep 2
+    done
+}
+
+# Home Assistant advertises itself, so the panel does not need a URL in a
+# file either. Only the token cannot be discovered.
+discover_home_assistant() {
+    command -v avahi-browse >/dev/null 2>&1 || return 1
+    line=$(avahi-browse -rtp _home-assistant._tcp 2>/dev/null \
+        | awk -F';' '$1 == "=" && $3 == "IPv4" { print $8 ";" $9; exit }')
+    [ -n "$line" ] || return 1
+
+    address=${line%;*}
+    port=${line#*;}
+    [ -n "$address" ] && [ -n "$port" ] || return 1
+
+    mkdir -p "$CACHE_DIR"
+    printf '[home_assistant]\nurl=http://%s:%s\n' "$address" "$port" \
+        > "$DISCOVERED"
+    log "Home Assistant at http://$address:$port"
+}
+
+ID=$(panel_id "${1:-}")
+if [ -z "$ID" ]; then
+    log "no panel ID yet; the panel application writes one on its first run"
+    exit 1
+fi
+
+if ! discover_home_assistant; then
+    log "Home Assistant was not found over mDNS; config.ini must supply the URL"
+fi
+
+command -v avahi-publish-service >/dev/null 2>&1 || {
+    log "avahi-publish-service is missing; the panel will not be discovered"
+    exit 1
+}
+
+log "announcing $ID as $SERVICE_TYPE"
+# Port 0: the panel serves nothing. The record exists so that Home Assistant
+# can offer to add the device, and the TXT keys are what the config flow reads.
+exec avahi-publish-service "T560 Music Panel" "$SERVICE_TYPE" 0 \
+    "panel_id=$ID" \
+    "profile=t560" \
+    "name=$(hostname)"

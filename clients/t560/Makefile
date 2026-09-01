@@ -22,6 +22,7 @@ SOURCES = src/main.c \
 	  src/home_assistant_client.c \
 	  src/json_helpers.c \
 	  src/panel_config.c \
+	  src/panel_pairing.c \
 	  src/panel_ui.c \
 	  src/system_status.c \
 	  $(RESOURCE_SOURCE)
@@ -31,6 +32,7 @@ TEST_OBJECTS = tests/test_json_helpers.o \
 	       tests/test_panel_config.o \
 	       src/json_helpers.o \
 	       src/panel_config.o \
+	       src/panel_pairing.o \
 	       src/app_config.o
 TEST_DEPFILES = tests/test_json_helpers.d tests/test_panel_config.d
 
@@ -81,6 +83,7 @@ install: t560-panel
 	install -Dm755 scripts/t560-restart-panel "$(DESTDIR)$(PREFIX)/bin/t560-restart-panel"
 	install -Dm755 scripts/t560-power-button.py "$(DESTDIR)$(PREFIX)/bin/t560-power-button.py"
 	install -Dm755 scripts/t560-motion-detector.py "$(DESTDIR)$(PREFIX)/bin/t560-motion-detector.py"
+	install -Dm755 scripts/t560-announce-panel "$(DESTDIR)$(PREFIX)/bin/t560-announce-panel"
 	install -Dm755 scripts/t560-home-button "$(DESTDIR)$(PREFIX)/bin/t560-home-button"
 	install -Dm755 scripts/t560-configure-openbox.py "$(DESTDIR)$(PREFIX)/bin/t560-configure-openbox.py"
 	install -Dm644 config/config.ini.example "$(DESTDIR)/etc/t560-music-panel/config.ini.example"

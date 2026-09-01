@@ -4,6 +4,7 @@
 #include "home_assistant_client.h"
 #include "json_helpers.h"
 #include "panel_config.h"
+#include "panel_pairing.h"
 #include "panel_ui.h"
 #include "system_status.h"
 
@@ -26,6 +27,9 @@ typedef struct {
     gchar *repeat_state;
     gchar *queue_data;
     guint poll_source;
+    guint pairing_source;
+    gchar *pairing_code;
+    gchar *pairing_message;
     guint clock_source;
     guint battery_source;
     guint config_reload_source;
@@ -913,6 +917,8 @@ static void panel_application_free(PanelApplication *application)
 {
     if (application->poll_source != 0)
         g_source_remove(application->poll_source);
+    if (application->pairing_source != 0)
+        g_source_remove(application->pairing_source);
     if (application->clock_source != 0)
         g_source_remove(application->clock_source);
     if (application->battery_source != 0)
@@ -932,6 +938,8 @@ static void panel_application_free(PanelApplication *application)
     g_free(application->repeat_state);
     g_free(application->queue_data);
     g_free(application->poll_message);
+    g_free(application->pairing_code);
+    g_free(application->pairing_message);
     g_free(application);
 }
 
@@ -946,6 +954,109 @@ static void set_window_content(PanelApplication *application,
         gtk_container_remove(GTK_CONTAINER(application->window), previous);
     gtk_container_add(GTK_CONTAINER(application->window), content);
     gtk_widget_show_all(application->window);
+}
+
+/* ---------------------------------------------------------------- pairing
+ *
+ * A panel with no token asks Home Assistant for one. The person reads the
+ * code off this screen and types it in Home Assistant; nothing is typed on
+ * the tablet, and no token travels over SSH. */
+
+static void show_pairing(PanelApplication *application, const gchar *message)
+{
+    if (g_strcmp0(application->pairing_message, message) == 0)
+        return;
+
+    g_free(application->pairing_message);
+    application->pairing_message = g_strdup(message);
+    set_window_content(
+        application,
+        panel_ui_build_pairing(application->pairing_code, message));
+}
+
+static void pairing_finished(guint status_code, GBytes *body,
+                             const GError *error, gpointer user_data)
+{
+    PanelApplication *application = user_data;
+
+    if (error != NULL) {
+        show_pairing(application,
+                     "Waiting for Home Assistant to answer.");
+        return;
+    }
+    if (status_code == 404) {
+        show_pairing(application,
+                     "This panel is not in Home Assistant yet.\n"
+                     "Add it there, then enter this code.");
+        return;
+    }
+    if (status_code != 200 || body == NULL) {
+        show_pairing(application,
+                     "Enter this code in Home Assistant to finish pairing.");
+        return;
+    }
+
+    JsonParser *parser = NULL;
+    GError *parse_error = NULL;
+    if (!parse_state(body, &parser, &parse_error)) {
+        g_clear_error(&parse_error);
+        show_pairing(application, "Home Assistant sent an unreadable reply.");
+        return;
+    }
+
+    JsonObject *object = json_node_get_object(json_parser_get_root(parser));
+    const gchar *token = json_object_string(object, "token", NULL);
+    const gchar *config_entity = json_object_string(object, "config_entity",
+                                                    NULL);
+    gchar *failure = NULL;
+
+    if (token == NULL || !panel_pairing_store_token(token, config_entity,
+                                                    &failure)) {
+        gchar *message = g_strdup_printf(
+            "The token could not be stored:\n%s",
+            failure != NULL ? failure : "no token in the reply");
+        show_pairing(application, message);
+        g_free(message);
+        g_free(failure);
+        g_object_unref(parser);
+        return;
+    }
+    g_object_unref(parser);
+
+    /* The watchdog restarts the panel, which now finds its token. */
+    show_pairing(application, "Paired. Starting.");
+    g_application_quit(G_APPLICATION(application->gtk_application));
+}
+
+static gboolean request_pairing(gpointer user_data)
+{
+    PanelApplication *application = user_data;
+    JsonBuilder *builder = json_builder_new();
+
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "panel_id");
+    json_builder_add_string_value(builder, application->config->panel_id);
+    json_builder_set_member_name(builder, "code");
+    json_builder_add_string_value(builder, application->pairing_code);
+    json_builder_end_object(builder);
+    gchar *json = json_builder_to_string(builder);
+    g_object_unref(builder);
+
+    home_assistant_client_post_path(application->client,
+                                    "/api/media_controller/provision", json,
+                                    pairing_finished, application, NULL);
+    g_free(json);
+    return G_SOURCE_CONTINUE;
+}
+
+static void start_pairing(PanelApplication *application)
+{
+    application->pairing_code = panel_pairing_code();
+    show_pairing(application,
+                 "Enter this code in Home Assistant to finish pairing.");
+    request_pairing(application);
+    application->pairing_source = g_timeout_add_seconds(3, request_pairing,
+                                                        application);
 }
 
 static void start_panel(PanelApplication *application)
@@ -990,6 +1101,12 @@ static void activate(GtkApplication *gtk_application, gpointer user_data)
 
     application->client = home_assistant_client_new(
         application->config->base_url, application->config->token);
+
+    /* Without a token the panel can do exactly one thing: ask for one. */
+    if (application->config->token == NULL) {
+        start_pairing(application);
+        return;
+    }
 
     /* The cached layout makes a normal start immediate and, more importantly,
      * makes the panel usable while Home Assistant is down. Only a tablet that

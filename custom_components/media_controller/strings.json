@@ -1,10 +1,19 @@
 {
   "title": "Media Controller",
   "config": {
+    "flow_title": "{name} ({profile})",
     "step": {
       "user": {
+        "title": "Media Controller",
+        "description": "What are you adding?",
+        "menu_options": {
+          "controller": "Media controller (Music Assistant player)",
+          "panel": "Panel (a tablet that could not be discovered)"
+        }
+      },
+      "controller": {
         "title": "Configure the media controller",
-        "description": "Select the Music Assistant player. The {profile} drives up to {slot_count} room controls; leave a slot empty to hide that tile. Labels are optional and fall back to the entity name.",
+        "description": "Select the Music Assistant player. The {profile} drives up to {slot_count} room controls. Leave a slot empty to hide that tile. Labels are optional and fall back to the entity name.",
         "data": {
           "player_entity": "Music Assistant player",
           "slot_1_entity": "Slot 1",
@@ -16,13 +25,67 @@
           "slot_4_entity": "Slot 4",
           "slot_4_label": "Slot 4 label"
         }
+      },
+      "panel": {
+        "title": "Add a panel",
+        "description": "A panel normally appears on its own once it announces itself on the network. Add it by hand only when it cannot. The panel ID must match the one the device announces; a panel writes its own to panel-id on first run.",
+        "data": {
+          "profile": "Device type",
+          "panel_id": "Panel ID",
+          "name": "Name",
+          "controller_entry_id": "Media controller"
+        }
+      },
+      "panel_confirm": {
+        "title": "Panel found",
+        "description": "{name} is a {profile} at {host}, and it drives up to {slot_count} room controls. Choose the media controller it should play from.",
+        "data": {
+          "controller_entry_id": "Media controller"
+        }
+      },
+      "slots": {
+        "title": "Room controls",
+        "description": "{name} is a {profile} and drives up to {slot_count} room controls. Leave a slot empty to hide that tile. Labels are optional and fall back to the entity name.",
+        "data": {
+          "slot_1_entity": "Slot 1",
+          "slot_1_label": "Slot 1 label",
+          "slot_2_entity": "Slot 2",
+          "slot_2_label": "Slot 2 label",
+          "slot_3_entity": "Slot 3",
+          "slot_3_label": "Slot 3 label",
+          "slot_4_entity": "Slot 4",
+          "slot_4_label": "Slot 4 label",
+          "slot_5_entity": "Slot 5",
+          "slot_5_label": "Slot 5 label",
+          "slot_6_entity": "Slot 6",
+          "slot_6_label": "Slot 6 label"
+        }
+      },
+      "provision": {
+        "title": "Pair the panel",
+        "description": "{name} is showing a six-digit code on its screen. Type it here and Home Assistant will hand the panel an access token of its own. Nothing has to be typed on the tablet.",
+        "data": {
+          "pairing_code": "Pairing code"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Pair the panel again",
+        "description": "{name} is asking for a new access token, which happens after the tablet is wiped. Type the code it is showing. Its room controls and entity IDs stay as they are; only the token is replaced.",
+        "data": {
+          "pairing_code": "Pairing code"
+        }
       }
     },
     "error": {
-      "not_music_assistant": "Select a media player provided by Music Assistant."
+      "not_music_assistant": "Select a media player provided by Music Assistant.",
+      "invalid_code": "The pairing code is six digits.",
+      "token_failed": "Home Assistant could not create an access token for this panel. Check the log."
     },
     "abort": {
-      "already_configured": "This Music Assistant player is already configured."
+      "already_configured": "This device is already configured.",
+      "reauth_successful": "The panel will pick up its new token within a few seconds.",
+      "no_controller": "Add a media controller first: this panel has to play from one.",
+      "no_panel_id": "The panel did not announce an identifier and cannot be added automatically."
     }
   },
   "options": {
@@ -41,6 +104,24 @@
           "slot_4_entity": "Slot 4",
           "slot_4_label": "Slot 4 label"
         }
+      },
+      "slots": {
+        "title": "Room controls",
+        "description": "Remap the room controls of {name}, a {profile} driving up to {slot_count} of them. Leave a slot empty to hide that tile. Labels are optional and fall back to the entity name.",
+        "data": {
+          "slot_1_entity": "Slot 1",
+          "slot_1_label": "Slot 1 label",
+          "slot_2_entity": "Slot 2",
+          "slot_2_label": "Slot 2 label",
+          "slot_3_entity": "Slot 3",
+          "slot_3_label": "Slot 3 label",
+          "slot_4_entity": "Slot 4",
+          "slot_4_label": "Slot 4 label",
+          "slot_5_entity": "Slot 5",
+          "slot_5_label": "Slot 5 label",
+          "slot_6_entity": "Slot 6",
+          "slot_6_label": "Slot 6 label"
+        }
       }
     },
     "error": {
@@ -48,82 +129,57 @@
       "already_configured": "This Music Assistant player is already used by another controller."
     }
   },
-  "config_subentries": {
-    "panel": {
-      "title": "Panel",
-      "entry_type": "Panel",
-      "initiate_flow": {
-        "user": "Add a panel"
-      },
-      "step": {
-        "user": {
-          "title": "Add a panel",
-          "description": "Select the kind of device. How many room controls it can drive is decided by the device itself.",
-          "data": {
-            "profile": "Device type",
-            "name": "Name"
-          }
-        },
-        "slots": {
-          "title": "Room controls",
-          "description": "The {profile} drives up to {slot_count} room controls. Leave a slot empty to hide that tile. Labels are optional and fall back to the entity name.",
-          "data": {
-            "slot_1_entity": "Slot 1",
-            "slot_1_label": "Slot 1 label",
-            "slot_2_entity": "Slot 2",
-            "slot_2_label": "Slot 2 label",
-            "slot_3_entity": "Slot 3",
-            "slot_3_label": "Slot 3 label",
-            "slot_4_entity": "Slot 4",
-            "slot_4_label": "Slot 4 label",
-            "slot_5_entity": "Slot 5",
-            "slot_5_label": "Slot 5 label",
-            "slot_6_entity": "Slot 6",
-            "slot_6_label": "Slot 6 label"
-          }
-        },
-        "reconfigure": {
-          "title": "Room controls",
-          "description": "The {profile} drives up to {slot_count} room controls. Leave a slot empty to hide that tile. Changing the device type is not possible; remove the panel and add it again.",
-          "data": {
-            "slot_1_entity": "Slot 1",
-            "slot_1_label": "Slot 1 label",
-            "slot_2_entity": "Slot 2",
-            "slot_2_label": "Slot 2 label",
-            "slot_3_entity": "Slot 3",
-            "slot_3_label": "Slot 3 label",
-            "slot_4_entity": "Slot 4",
-            "slot_4_label": "Slot 4 label",
-            "slot_5_entity": "Slot 5",
-            "slot_5_label": "Slot 5 label",
-            "slot_6_entity": "Slot 6",
-            "slot_6_label": "Slot 6 label"
-          }
-        }
-      }
-    }
-  },
   "entity": {
     "light": {
-      "slot_1": { "name": "Slot 1" },
-      "slot_2": { "name": "Slot 2" },
-      "slot_3": { "name": "Slot 3" },
-      "slot_4": { "name": "Slot 4" },
-      "slot_5": { "name": "Slot 5" },
-      "slot_6": { "name": "Slot 6" }
+      "slot_1": {
+        "name": "Slot 1"
+      },
+      "slot_2": {
+        "name": "Slot 2"
+      },
+      "slot_3": {
+        "name": "Slot 3"
+      },
+      "slot_4": {
+        "name": "Slot 4"
+      },
+      "slot_5": {
+        "name": "Slot 5"
+      },
+      "slot_6": {
+        "name": "Slot 6"
+      }
     },
     "switch": {
-      "slot_1": { "name": "Slot 1" },
-      "slot_2": { "name": "Slot 2" },
-      "slot_3": { "name": "Slot 3" },
-      "slot_4": { "name": "Slot 4" },
-      "slot_5": { "name": "Slot 5" },
-      "slot_6": { "name": "Slot 6" }
+      "slot_1": {
+        "name": "Slot 1"
+      },
+      "slot_2": {
+        "name": "Slot 2"
+      },
+      "slot_3": {
+        "name": "Slot 3"
+      },
+      "slot_4": {
+        "name": "Slot 4"
+      },
+      "slot_5": {
+        "name": "Slot 5"
+      },
+      "slot_6": {
+        "name": "Slot 6"
+      }
     },
     "sensor": {
-      "queue": { "name": "Queue" },
-      "playlists": { "name": "Playlists" },
-      "config": { "name": "Config" }
+      "queue": {
+        "name": "Queue"
+      },
+      "playlists": {
+        "name": "Playlists"
+      },
+      "config": {
+        "name": "Config"
+      }
     }
   },
   "services": {

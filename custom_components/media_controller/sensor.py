@@ -23,21 +23,21 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Set up the queue, playlist, and per-client config sensors."""
-    runtime: MediaControllerRuntime = entry.runtime_data
-    controller = runtime.controller_entities
-    assert controller is not None
+    """Set up the config sensor, and the controller's own two sensors."""
+    runtime = entry.runtime_data
+    async_add_entities(
+        [ClientConfigSensor(runtime.client, runtime.device_info)]
+    )
+    if not isinstance(runtime, MediaControllerRuntime):
+        return
+
+    controller = runtime.client.controller
     async_add_entities(
         [
             QueueSensor(entry, runtime.queue, controller),
             PlaylistSensor(entry, runtime.playlists, controller),
         ]
     )
-    for binding in runtime.clients:
-        async_add_entities(
-            [ClientConfigSensor(binding.client, binding.device_info)],
-            config_subentry_id=binding.subentry_id,
-        )
 
 
 class _ControllerSensor(CoordinatorEntity, SensorEntity):

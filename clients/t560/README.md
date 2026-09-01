@@ -62,17 +62,34 @@ or an on-screen keyboard. All settings are edited over SSH.
 ## Tablet configuration files
 
 ```text
-~/.config/t560-music-panel/config.ini
-~/.config/t560-music-panel/token
+~/.config/t560-music-panel/panel-id     (written on the first run)
+~/.config/t560-music-panel/token        (written when pairing succeeds)
+~/.config/t560-music-panel/config.ini   (optional)
 ~/.cache/t560-music-panel/layout.json
+~/.cache/t560-music-panel/discovered.ini
 ```
 
-`config.ini` holds only the Home Assistant URL, the `panel_id`, and the
-tablet-local settings that the Power button handler and the motion detector
-read: `[panel]` and `[camera]`. Everything else — which entities this panel
-controls, their labels, and which controls each tile offers — is configured in
-Home Assistant and read from `sensor.<panel_id>_config`. Put the long-lived
-access token in the separate `token` file. Never commit the token.
+**Only the `token` file is required.** `config.ini` is optional: Home
+Assistant is found over mDNS, and the panel identifies itself by a
+per-device ID derived from its hardware address on the first run. The file
+exists to override one of those, or to hold the tablet-local settings the
+Power button handler and the motion detector read — `[panel]` and `[camera]`.
+
+Everything else — which entities this panel controls, their labels, and which
+controls each tile offers — is configured in Home Assistant and read from the
+panel's own config sensor, whose entity ID Home Assistant hands over during
+pairing.
+
+The token is not written by hand either. A panel without one shows a six-digit
+pairing code and asks Home Assistant for a token; Home Assistant creates one
+for a dedicated user, and the panel stores it with mode 0600. A wiped tablet
+derives the same panel ID again and re-pairs through the standard
+reauthentication prompt, keeping its device and its room controls. Never commit
+the token.
+
+`t560-announce-panel` publishes the panel over mDNS so that Home Assistant
+offers to add it, and writes the resolved Home Assistant URL to
+`discovered.ini`. The Openbox autostart starts it.
 
 The layout is cached in `layout.json` after every successful read, so the
 panel starts with the last known tiles when Home Assistant is unreachable at

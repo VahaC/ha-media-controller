@@ -23,6 +23,14 @@ gboolean home_assistant_client_call_service(HomeAssistantClient *client,
                                             const gchar *json,
                                             HomeAssistantResponse callback,
                                             gpointer user_data);
+/* The pairing request is the only one a panel makes before it has a token,
+ * so a NULL token is valid and simply omits the Authorization header. */
+gboolean home_assistant_client_post_path(HomeAssistantClient *client,
+                                         const gchar *path,
+                                         const gchar *json,
+                                         HomeAssistantResponse callback,
+                                         gpointer user_data,
+                                         GDestroyNotify user_data_destroy);
 gboolean home_assistant_client_get_url(HomeAssistantClient *client,
                                        const gchar *url,
                                        gint priority,

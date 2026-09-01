@@ -198,7 +198,11 @@ command -v nano
 nano "$HOME/.config/t560-music-panel/config.ini"
 ```
 
-Set the Home Assistant URL and the panel identifier:
+`config.ini` is optional. The panel finds Home Assistant over mDNS and
+identifies itself by a per-device ID it derives on first run, so a default
+installation needs no URL, no entity IDs, and no token file written by hand.
+
+Write the file only to override something:
 
 ```ini
 [home_assistant]
@@ -206,13 +210,15 @@ url=http://192.168.1.100:8123
 panel_id=t560
 ```
 
-There are no entity IDs here. Add this tablet as a panel in the Media
-Controller integration first (Settings -> Devices & services -> Media
-Controller -> Add a panel -> T560 panel), fill its room-control slots, and
-`panel_id` is the panel name lowercased with spaces replaced by underscores. A
-panel named `T560` publishes `sensor.t560_config`, and everything the panel
-draws comes from there. Add `config_entity=` only if that sensor was renamed
-in Home Assistant.
+Once the tablet is running, Home Assistant shows it under Settings -> Devices
+& services as a discovered device. Press *Configure*, choose the media
+controller it plays from, and fill its room-control slots. Everything the panel
+draws comes from there.
+
+`panel_id` is written to `~/.config/t560-music-panel/panel-id` on the first
+run and is derived from the tablet's hardware address, so two tablets never
+claim the same Home Assistant device. Override it here only if you have a
+reason to.
 
 The `[panel]` section holds the tablet-local settings: polling timings and
 the inactivity timeout that turns the display off. They stay on the tablet
@@ -231,18 +237,27 @@ pressed. Other values are clamped to 5-3600 seconds.
 
 In `nano`, save with `Ctrl+O`, press `Enter`, and exit with `Ctrl+X`.
 
-## 6. Create the Home Assistant token file
+## 6. Pair the panel
 
-Create a dedicated long-lived access token in the Home Assistant user profile.
-Edit the token file over SSH:
+Do not create a token by hand. A panel with no token shows a six-digit pairing
+code on its screen and asks Home Assistant for one:
 
-```sh
-nano "$HOME/.config/t560-music-panel/token"
-chmod 600 "$HOME/.config/t560-music-panel/token"
-```
+1. start the panel and read the code off the tablet;
+2. in Home Assistant, finish the panel's setup — the last step asks for that
+   code;
+3. Home Assistant creates a long-lived token for a dedicated
+   `Media Controller` user, the panel collects it within a few seconds, stores
+   it as `~/.config/t560-music-panel/token` with mode `0600`, and restarts.
 
-The file must contain only the token value, without quotes, labels, or shell
-syntax. Never commit or transfer this token back into the source repository.
+The token never passes through SSH, and nothing is typed on the tablet.
+Deleting the panel in Home Assistant revokes the token.
+
+**Re-pairing.** Updating or reinstalling the application keeps the token file,
+so nothing has to be done. A tablet that was wiped derives the same panel ID
+again, shows a new code, and Home Assistant raises its standard
+*reauthentication* prompt: enter the code and the panel is back, with the same
+device, the same room controls, and the same entity IDs. The panel is never
+added a second time.
 
 ## 7. Stop Badwolf for the current session
 

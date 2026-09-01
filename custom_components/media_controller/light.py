@@ -19,7 +19,6 @@ from homeassistant.core import HomeAssistant, State
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from . import MediaControllerRuntime
 from .profiles import CONTROL_BRIGHTNESS, CONTROL_COLOR_TEMP
 from .proxy import ControllerProxyEntity
 from .slots import ClientConfiguration, SlotConfig
@@ -31,17 +30,12 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Create a light proxy for every slot whose domain is light."""
-    runtime: MediaControllerRuntime = entry.runtime_data
-    for binding in runtime.clients:
-        entities = [
-            ControllerLight(binding.client, slot, binding.device_info)
-            for slot in binding.client.slots
-            if slot.domain == LIGHT_DOMAIN
-        ]
-        if entities:
-            async_add_entities(
-                entities, config_subentry_id=binding.subentry_id
-            )
+    runtime = entry.runtime_data
+    async_add_entities(
+        ControllerLight(runtime.client, slot, runtime.device_info)
+        for slot in runtime.client.slots
+        if slot.domain == LIGHT_DOMAIN
+    )
 
 
 class ControllerLight(ControllerProxyEntity, LightEntity):

@@ -202,4 +202,6 @@ Tests that protect the contract:
 - `tests/test_transformations.py` — payload construction;
 - `tests/test_profiles.py` — which controls a client is told to draw;
 - `tests/test_migration.py` — the version 1 slots keep their numbers;
-- `clients/t560/tests/test_json_helpers.c` — payload parsing on the client side.
+- `clients/t560/tests/test_panel_config.c` — payload parsing on the client
+  side, including an unknown control name;
+- `tests/test_pairing.py` — the rules that guard the provisioning endpoint.

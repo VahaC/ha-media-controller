@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
-import json
+from dataclasses import dataclass
 import logging
 from typing import Any
 
@@ -20,19 +19,26 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from .const import (
     ATTR_ENTRY_ID,
     ATTR_QUEUE_ITEM_ID,
+    CONF_CONTROLLER_ENTRY_ID,
+    CONF_PANEL_ID,
     CONF_PLAYER_ENTITY,
     CONF_PROFILE,
     CONF_SLOTS,
+    CONF_REFRESH_TOKEN_ID,
+    CONF_USER_ID,
+    DATA_CONTROLLER_ENTITIES,
+    DATA_PROVISIONING,
+    DATA_RUNTIMES,
     DOMAIN,
     ENTRY_VERSION,
     LEGACY_SLOTS,
     PLATFORMS,
     SERVICE_PLAY_QUEUE_ITEM,
     SERVICE_REFRESH,
-    SUBENTRY_TYPE_PANEL,
     slot_unique_id,
 )
 from .coordinator import PlaylistCoordinator, QueueCoordinator
+from .entries import is_panel_entry
 from .music_assistant import MusicAssistantAdapter, MusicAssistantUnavailable
 from .profiles import (
     CONTROL_TOGGLE,
@@ -40,6 +46,8 @@ from .profiles import (
     limit_controls,
     panel_profile,
 )
+from .pairing import PairingStore
+from .provision import PanelProvisionView
 from .proxy import controller_device_info, panel_device_info
 from .slots import (
     ClientConfiguration,
@@ -47,30 +55,32 @@ from .slots import (
     resolve_slots,
     stored_slots,
 )
+from .tokens import async_revoke_panel_token
 from .transformations import SlotConfig, migrate_v1_section
 
 _LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
-class ClientBinding:
-    """One client device: its slots, its Home Assistant device, its owner."""
+class PanelRuntime:
+    """Runtime objects owned by one panel entry."""
 
     client: ClientConfiguration
     device_info: DeviceInfo
-    subentry_id: str | None = None
+
+    async def async_shutdown(self) -> None:
+        """A panel owns no timers of its own."""
 
 
 @dataclass(slots=True)
 class MediaControllerRuntime:
-    """Runtime objects owned by one config entry."""
+    """Runtime objects owned by one controller entry."""
 
     adapter: MusicAssistantAdapter
     queue: QueueCoordinator
     playlists: PlaylistCoordinator
-    clients: list[ClientBinding] = field(default_factory=list)
-    controller_entities: ControllerEntities | None = None
-    subentry_fingerprint: str = ""
+    client: ClientConfiguration
+    device_info: DeviceInfo
 
     async def async_shutdown(self) -> None:
         """Stop entry-owned listeners and timers."""
@@ -83,99 +93,66 @@ def _configured_value(entry: ConfigEntry, key: str) -> Any:
     return entry.options.get(key, entry.data.get(key))
 
 
-def _controller_stored_slots(entry: ConfigEntry) -> list[SlotConfig]:
-    """Return the ESP32 slots of a controller entry."""
+def _entry_slots(entry: ConfigEntry) -> list[SlotConfig]:
+    """Return the slots of an entry, options overriding the original data."""
     if CONF_SLOTS in entry.options:
         return stored_slots(entry.options, CONF_SLOTS)
     return stored_slots(entry.data, CONF_SLOTS)
 
 
-def _panel_subentries(entry: ConfigEntry) -> list[Any]:
-    """Return every panel subentry of a controller."""
-    return [
-        subentry
-        for subentry in entry.subentries.values()
-        if subentry.subentry_type == SUBENTRY_TYPE_PANEL
-    ]
-
-
-def _subentry_fingerprint(entry: ConfigEntry) -> str:
-    """Return a value that changes when any subentry changes.
-
-    Options changes are reloaded by the options flow itself, so the update
-    listener must reload only when a panel was added, edited, or removed.
-    """
-    return json.dumps(
-        sorted(
-            (subentry.subentry_id, subentry.title, subentry.data)
-            for subentry in _panel_subentries(entry)
-        ),
-        sort_keys=True,
-        default=str,
-    )
-
-
-def _build_clients(
+@callback
+def _async_controller_entities(
     hass: HomeAssistant,
-    entry: ConfigEntry,
-    controller: ControllerEntities,
-) -> list[ClientBinding]:
-    """Build every client of a controller, capabilities freshly resolved."""
-    clients = [
-        ClientBinding(
-            client=ClientConfiguration(
-                hass,
-                entry.entry_id,
-                CONTROLLER_PROFILE,
-                resolve_slots(
-                    hass, CONTROLLER_PROFILE, _controller_stored_slots(entry)
-                ),
-                controller,
-            ),
-            device_info=controller_device_info(entry),
-        )
-    ]
+    controller_entry: ConfigEntry,
+) -> ControllerEntities:
+    """Return the shared entity record of one controller.
 
-    for subentry in _panel_subentries(entry):
-        profile = panel_profile(subentry.data.get(CONF_PROFILE))
-        clients.append(
-            ClientBinding(
-                client=ClientConfiguration(
-                    hass,
-                    subentry.subentry_id,
-                    profile,
-                    resolve_slots(
-                        hass, profile, stored_slots(subentry.data, CONF_SLOTS)
-                    ),
-                    controller,
-                ),
-                device_info=panel_device_info(entry, subentry, profile),
-                subentry_id=subentry.subentry_id,
-            )
+    A panel is a separate config entry, so it cannot reach into a controller's
+    runtime; both share this object instead. It is seeded from the entity
+    registry, which outlives an unloaded controller, and is then kept current
+    by the controller's own sensors as they are added.
+    """
+    shared: dict[str, ControllerEntities] = hass.data[DOMAIN][
+        DATA_CONTROLLER_ENTITIES
+    ]
+    player_entity = _configured_value(controller_entry, CONF_PLAYER_ENTITY) or ""
+    if (existing := shared.get(controller_entry.entry_id)) is not None:
+        existing.player_entity = player_entity
+        return existing
+
+    entities = ControllerEntities(player_entity)
+    registry = er.async_get(hass)
+    entities.queue_entity_id = (
+        registry.async_get_entity_id(
+            "sensor", DOMAIN, f"{controller_entry.entry_id}_queue"
         )
-    return clients
+        or ""
+    )
+    entities.playlists_entity_id = (
+        registry.async_get_entity_id(
+            "sensor", DOMAIN, f"{controller_entry.entry_id}_playlists"
+        )
+        or ""
+    )
+    shared[controller_entry.entry_id] = entities
+    return entities
 
 
 @callback
 def _async_remove_orphaned_entities(
     hass: HomeAssistant,
     entry: ConfigEntry,
-    clients: list[ClientBinding],
+    client: ClientConfiguration,
+    extra: set[tuple[str, str]] | None = None,
 ) -> None:
-    """Delete registry entries for slots and clients that no longer exist.
+    """Delete registry entries for slots that no longer exist.
 
-    Clearing a slot, or deleting a panel, must not leave a permanently
-    unavailable proxy behind.
+    Clearing a slot must not leave a permanently unavailable proxy behind.
     """
-    expected: set[tuple[str, str]] = {
-        ("sensor", f"{entry.entry_id}_queue"),
-        ("sensor", f"{entry.entry_id}_playlists"),
-    }
-    for binding in clients:
-        owner_id = binding.client.owner_id
-        expected.add(("sensor", f"{owner_id}_config"))
-        for slot in binding.client.slots:
-            expected.add((slot.domain, slot_unique_id(owner_id, slot.index)))
+    expected: set[tuple[str, str]] = set(extra or ())
+    expected.add(("sensor", f"{client.owner_id}_config"))
+    for slot in client.slots:
+        expected.add((slot.domain, slot_unique_id(client.owner_id, slot.index)))
 
     registry = er.async_get(hass)
     for registry_entry in list(
@@ -194,8 +171,10 @@ def _runtime_for_call(
     hass: HomeAssistant,
     call: ServiceCall,
 ) -> MediaControllerRuntime:
-    """Resolve a runtime by entry ID or configured player entity."""
-    runtimes: dict[str, MediaControllerRuntime] = hass.data.get(DOMAIN, {})
+    """Resolve a controller runtime by entry ID or player entity."""
+    runtimes: dict[str, MediaControllerRuntime] = hass.data[DOMAIN][
+        DATA_RUNTIMES
+    ]
     if entry_id := call.data.get(ATTR_ENTRY_ID):
         if runtime := runtimes.get(entry_id):
             return runtime
@@ -216,10 +195,19 @@ def _runtime_for_call(
 
 async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
     """Set up integration-level actions."""
-    hass.data.setdefault(DOMAIN, {})
+    data = hass.data.setdefault(DOMAIN, {})
+    data.setdefault(DATA_RUNTIMES, {})
+    data.setdefault(DATA_CONTROLLER_ENTITIES, {})
+    pairings = data.setdefault(DATA_PROVISIONING, PairingStore())
+
+    # Unauthenticated by necessity: a panel asking for its first token has no
+    # credentials to present. See pairing.py for what guards it instead.
+    hass.http.register_view(PanelProvisionView(hass, pairings))
 
     async def async_handle_refresh(call: ServiceCall) -> None:
-        runtimes: dict[str, MediaControllerRuntime] = hass.data[DOMAIN]
+        runtimes: dict[str, MediaControllerRuntime] = hass.data[DOMAIN][
+            DATA_RUNTIMES
+        ]
         if entry_id := call.data.get(ATTR_ENTRY_ID):
             runtime = runtimes.get(entry_id)
             if runtime is None:
@@ -324,7 +312,17 @@ def _async_migrate_slot_unique_ids(
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up a Media Controller config entry."""
+    """Set up either kind of Media Controller entry."""
+    if is_panel_entry(entry):
+        return await _async_setup_panel(hass, entry)
+    return await _async_setup_controller(hass, entry)
+
+
+async def _async_setup_controller(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+) -> bool:
+    """Set up a controller: the Music Assistant side and the ESP32 slots."""
     player_entity = _configured_value(entry, CONF_PLAYER_ENTITY)
     try:
         adapter = MusicAssistantAdapter.from_player(hass, player_entity)
@@ -333,7 +331,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     queue = QueueCoordinator(hass, entry, adapter)
     playlists = PlaylistCoordinator(hass, entry, adapter)
-    runtime = MediaControllerRuntime(adapter, queue, playlists)
 
     try:
         await asyncio.gather(
@@ -341,33 +338,84 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             playlists.async_config_entry_first_refresh(),
         )
     except Exception:
-        await runtime.async_shutdown()
+        await queue.async_shutdown()
+        await playlists.async_shutdown()
         raise
 
-    runtime.controller_entities = ControllerEntities(player_entity)
-    runtime.clients = _build_clients(hass, entry, runtime.controller_entities)
-    runtime.subentry_fingerprint = _subentry_fingerprint(entry)
-    _async_remove_orphaned_entities(hass, entry, runtime.clients)
+    client = ClientConfiguration(
+        hass,
+        entry.entry_id,
+        CONTROLLER_PROFILE,
+        resolve_slots(hass, CONTROLLER_PROFILE, _entry_slots(entry)),
+        _async_controller_entities(hass, entry),
+    )
+    runtime = MediaControllerRuntime(
+        adapter, queue, playlists, client, controller_device_info(entry)
+    )
+    _async_remove_orphaned_entities(
+        hass,
+        entry,
+        client,
+        {
+            ("sensor", f"{entry.entry_id}_queue"),
+            ("sensor", f"{entry.entry_id}_playlists"),
+        },
+    )
 
     entry.runtime_data = runtime
-    hass.data[DOMAIN][entry.entry_id] = runtime
-    entry.async_on_unload(entry.add_update_listener(_async_entry_updated))
+    hass.data[DOMAIN][DATA_RUNTIMES][entry.entry_id] = runtime
 
     queue.async_start()
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
 
-async def _async_entry_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Reload when a panel subentry was added, edited, or removed."""
-    runtime: MediaControllerRuntime | None = getattr(
-        entry, "runtime_data", None
+async def _async_setup_panel(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Set up a panel: its own proxies and its own config sensor."""
+    controller_entry_id = entry.data.get(CONF_CONTROLLER_ENTRY_ID)
+    controller_entry = (
+        hass.config_entries.async_get_entry(controller_entry_id)
+        if controller_entry_id
+        else None
     )
-    if runtime is None:
+    if controller_entry is None or is_panel_entry(controller_entry):
+        raise ConfigEntryNotReady(
+            "The media controller this panel belongs to no longer exists. "
+            "Remove the panel and add it again."
+        )
+
+    profile = panel_profile(entry.data.get(CONF_PROFILE))
+    client = ClientConfiguration(
+        hass,
+        entry.entry_id,
+        profile,
+        resolve_slots(hass, profile, _entry_slots(entry)),
+        _async_controller_entities(hass, controller_entry),
+    )
+    runtime = PanelRuntime(
+        client, panel_device_info(entry, controller_entry, profile)
+    )
+    _async_remove_orphaned_entities(hass, entry, client)
+
+    entry.runtime_data = runtime
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    return True
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Revoke a deleted panel's token so it cannot be used again."""
+    if not is_panel_entry(entry):
         return
-    if runtime.subentry_fingerprint == _subentry_fingerprint(entry):
-        return
-    await hass.config_entries.async_reload(entry.entry_id)
+    pairings: PairingStore | None = hass.data.get(DOMAIN, {}).get(
+        DATA_PROVISIONING
+    )
+    if pairings is not None:
+        pairings.discard(entry.data.get(CONF_PANEL_ID, ""))
+    await async_revoke_panel_token(
+        hass,
+        entry.data.get(CONF_USER_ID),
+        entry.data.get(CONF_REFRESH_TOKEN_ID),
+    )
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -375,7 +423,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if not unload_ok:
         return False
-    runtime: MediaControllerRuntime = entry.runtime_data
+    runtime = entry.runtime_data
     await runtime.async_shutdown()
-    hass.data[DOMAIN].pop(entry.entry_id, None)
+    hass.data[DOMAIN][DATA_RUNTIMES].pop(entry.entry_id, None)
+    hass.data[DOMAIN][DATA_CONTROLLER_ENTITIES].pop(entry.entry_id, None)
     return True

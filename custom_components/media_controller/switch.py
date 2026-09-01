@@ -15,7 +15,6 @@ from homeassistant.const import ATTR_ENTITY_ID, STATE_ON
 from homeassistant.core import HomeAssistant, State
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from . import MediaControllerRuntime
 from .proxy import ControllerProxyEntity
 
 
@@ -25,17 +24,12 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Create a switch proxy for every slot whose domain is switch."""
-    runtime: MediaControllerRuntime = entry.runtime_data
-    for binding in runtime.clients:
-        entities = [
-            ControllerSwitch(binding.client, slot, binding.device_info)
-            for slot in binding.client.slots
-            if slot.domain == SWITCH_DOMAIN
-        ]
-        if entities:
-            async_add_entities(
-                entities, config_subentry_id=binding.subentry_id
-            )
+    runtime = entry.runtime_data
+    async_add_entities(
+        ControllerSwitch(runtime.client, slot, runtime.device_info)
+        for slot in runtime.client.slots
+        if slot.domain == SWITCH_DOMAIN
+    )
 
 
 class ControllerSwitch(ControllerProxyEntity, SwitchEntity):

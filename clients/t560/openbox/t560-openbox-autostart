@@ -26,6 +26,15 @@ python3 "$HOME/.local/bin/t560-power-button.py" >>"$HOME/.local/state/power-butt
 # motion detection is disabled in config.ini or no camera node is usable.
 python3 "$HOME/.local/bin/t560-motion-detector.py" >>"$HOME/.local/state/motion-detector.log" 2>&1 &
 
+# Announce the panel so Home Assistant offers to add it, and resolve the
+# Home Assistant URL over mDNS. Runs for the whole session: the announcement
+# only exists while the process does.
+announce="$HOME/.local/bin/t560-announce-panel"
+if [ ! -x "$announce" ]; then
+    announce=/usr/bin/t560-announce-panel
+fi
+"$announce" >>"$HOME/.local/state/announce-panel.log" 2>&1 &
+
 # Native panel watchdog replaces t560-badwolf-watchdog.
 panel_watchdog="$HOME/.local/bin/t560-panel-watchdog"
 if [ ! -x "$panel_watchdog" ]; then

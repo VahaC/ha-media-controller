@@ -1,18 +1,24 @@
-# Copy to ~/.config/t560-music-panel/config.ini.
+# Copy to ~/.config/t560-music-panel/config.ini ONLY if you need to override
+# something. The whole file is optional.
 #
-# Almost nothing lives here any more. Entity IDs, tile labels, and which
-# controls each tile offers are configured in Home Assistant: open the Media
-# Controller integration, add a panel, and fill its slots. The panel reads
-# that layout from sensor.<panel_id>_config and caches it, so it also starts
-# while Home Assistant is down.
+# The panel announces itself over mDNS, so Home Assistant offers to add it as
+# a discovered device; it finds Home Assistant the same way, and identifies
+# itself by a per-device ID. Entity IDs, tile labels, and which controls each
+# tile offers are configured in Home Assistant and read from the panel's own
+# config sensor, which the panel caches so that it also starts while Home
+# Assistant is down.
+#
+# The only file that is always required is the access token, beside this one.
 
-[home_assistant]
-url=http://192.168.1.100:8123
-# The name you gave the panel in Home Assistant, lowercased, spaces replaced
-# with underscores. A panel named "T560" is sensor.t560_config.
-panel_id=t560
-# Only needed when that sensor was renamed in Home Assistant.
-# config_entity=sensor.t560_config
+#[home_assistant]
+# Set this only when Home Assistant cannot be found over mDNS.
+#url=http://192.168.1.100:8123
+# The panel writes its own ID to panel-id on the first run, derived from the
+# hardware address so that two tablets never collide. Set this only to
+# override that, and it must match the ID the panel announces.
+#panel_id=t560
+# Set this only when that sensor was renamed in Home Assistant.
+#config_entity=sensor.t560_config
 
 [panel]
 # 1000 ms is responsive while keeping CPU/network use low.

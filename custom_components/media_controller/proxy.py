@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import abstractmethod
 
-from homeassistant.config_entries import ConfigEntry, ConfigSubentry
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import Event, State, callback
 from homeassistant.helpers.device_registry import DeviceInfo
@@ -30,16 +30,16 @@ def controller_device_info(entry: ConfigEntry) -> DeviceInfo:
 
 def panel_device_info(
     entry: ConfigEntry,
-    subentry: ConfigSubentry,
+    controller_entry: ConfigEntry,
     profile: ClientProfile,
 ) -> DeviceInfo:
     """Return the device of one panel client."""
     return DeviceInfo(
-        identifiers={(DOMAIN, subentry.subentry_id)},
-        name=subentry.title,
+        identifiers={(DOMAIN, entry.entry_id)},
+        name=entry.title,
         manufacturer="VahaC",
         model=profile.name,
-        via_device=(DOMAIN, entry.entry_id),
+        via_device=(DOMAIN, controller_entry.entry_id),
     )
 
 

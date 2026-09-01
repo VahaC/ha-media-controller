@@ -45,14 +45,24 @@ removes its proxy.
 
 ### Panels
 
-Every client that is not the ESP32 is added as a **panel** subentry: open the
-controller entry and choose *Add a panel*. The device type decides how many
-slots the form offers — the T560 panel drives six. Each panel becomes its own
-Home Assistant device with its own proxies and its own config sensor.
+A panel — a tablet running the T560 application — **announces itself on the
+local network**. Home Assistant shows it as a discovered device: press
+*Configure*, choose which media controller it plays from, fill its room-control
+slots, and it is done. Nothing is typed on the tablet, and nothing but the
+access token is configured there.
 
-The room controls of the ESP32 live on the controller entry itself rather than
-in a panel subentry, because the firmware resolves their entity IDs at compile
-time and they already exist there. See [ROOM_SLOTS.md](ROOM_SLOTS.md).
+A panel that cannot announce itself is added with *Add device* → *Panel*, where
+the panel ID has to match the one the device uses. A panel derives that ID
+from its own hardware on first run and writes it to
+`~/.config/t560-music-panel/panel-id`, so two tablets never claim the same
+device.
+
+Each panel is its own config entry and its own Home Assistant device, with its
+own slot proxies and its own config sensor, linked to the controller it reads.
+
+The room controls of the ESP32 live on the controller entry itself, because the
+firmware resolves their entity IDs at compile time and they already exist there.
+See [ROOM_SLOTS.md](ROOM_SLOTS.md).
 
 ### Slot capabilities
 
@@ -90,7 +100,7 @@ the config sensor on every connection.
 
 
 The T560 panel reads the same queue and playlists sensors and the proxy
-entities of its own panel subentry over the Home Assistant REST API.
+entities of its own panel entry over the Home Assistant REST API.
 
 ## Services
 

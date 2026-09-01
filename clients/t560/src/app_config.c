@@ -1,5 +1,7 @@
 #include "app_config.h"
 
+#include "panel_pairing.h"
+
 #include <string.h>
 
 static gchar *config_path(const gchar *name)
@@ -39,6 +41,10 @@ static gchar *read_string(GKeyFile *file, const gchar *group,
         return fallback == NULL ? NULL : g_strdup(fallback);
     }
     g_strstrip(value);
+    if (*value == '\0') {
+        g_free(value);
+        return fallback == NULL ? NULL : g_strdup(fallback);
+    }
     return value;
 }
 
@@ -53,6 +59,22 @@ static gint read_integer(GKeyFile *file, const gchar *group,
         return fallback;
     }
     return value;
+}
+
+/* Written by t560-announce-panel once it has resolved Home Assistant over
+ * mDNS, so that the tablet needs no URL of its own. */
+static gchar *discovered_base_url(void)
+{
+    gchar *path = app_config_cache_path("discovered.ini");
+    GKeyFile *file = g_key_file_new();
+    gchar *url = NULL;
+
+    if (g_key_file_load_from_file(file, path, G_KEY_FILE_NONE, NULL))
+        url = read_string(file, "home_assistant", "url", NULL);
+
+    g_key_file_unref(file);
+    g_free(path);
+    return url;
 }
 
 void panel_layout_clear(PanelLayout *layout)
@@ -71,78 +93,83 @@ void panel_layout_clear(PanelLayout *layout)
     layout->revision = 0;
 }
 
+static void strip_trailing_slashes(gchar *url)
+{
+    gsize length = strlen(url);
+
+    while (length > 0 && url[length - 1] == '/') {
+        url[length - 1] = '\0';
+        length--;
+    }
+}
+
+/* config.ini is optional. Home Assistant is found over mDNS, the panel ID
+ * defaults to the hostname, and every entity comes from Home Assistant. The
+ * file exists only to override one of those, or to hold the tablet-local
+ * settings that the button handler and the motion detector read. */
 static gboolean load_key_file(AppConfig *config, gchar **error_message)
 {
     gchar *path = config_path("config.ini");
     GKeyFile *file = g_key_file_new();
 
-    if (!g_key_file_load_from_file(file, path, G_KEY_FILE_NONE, NULL)) {
-        *error_message = g_strdup_printf(
-            "Configuration is missing.\n\nCreate:\n%s\n\nCopy "
-            "config.ini.example and edit it over SSH. This application has "
-            "no keyboard or text input.", path);
-        g_key_file_unref(file);
-        g_free(path);
-        return FALSE;
+    if (g_key_file_load_from_file(file, path, G_KEY_FILE_NONE, NULL)) {
+        config->base_url = read_string(file, "home_assistant", "url", NULL);
+        config->panel_id = read_string(file, "home_assistant", "panel_id",
+                                       NULL);
+        config->config_entity = read_string(file, "home_assistant",
+                                            "config_entity", NULL);
+        config->poll_interval_ms = (guint)CLAMP(
+            read_integer(file, "panel", "poll_interval_ms",
+                         PANEL_DEFAULT_POLL_MS),
+            500, 30000);
+        config->playlist_poll_interval_ms = (guint)CLAMP(
+            read_integer(file, "panel", "playlist_poll_interval_ms",
+                         PANEL_DEFAULT_PLAYLIST_POLL_MS),
+            10000, 3600000);
     }
-
-    config->base_url = read_string(file, "home_assistant", "url", NULL);
-    config->panel_id = read_string(file, "home_assistant", "panel_id", NULL);
-    config->config_entity = read_string(file, "home_assistant",
-                                        "config_entity", NULL);
-    config->poll_interval_ms = (guint)CLAMP(
-        read_integer(file, "panel", "poll_interval_ms", PANEL_DEFAULT_POLL_MS),
-        500, 30000);
-    config->playlist_poll_interval_ms = (guint)CLAMP(
-        read_integer(file, "panel", "playlist_poll_interval_ms",
-                     PANEL_DEFAULT_PLAYLIST_POLL_MS),
-        10000, 3600000);
-
     g_key_file_unref(file);
     g_free(path);
 
-    if (config->base_url == NULL ||
-        (config->panel_id == NULL && config->config_entity == NULL)) {
+    if (config->base_url == NULL)
+        config->base_url = discovered_base_url();
+    if (config->base_url == NULL) {
         *error_message = g_strdup(
-            "config.ini must define url and panel_id.\n\nEvery other setting "
-            "now lives in Home Assistant, in the panel you added to the Media "
-            "Controller integration.");
+            "Home Assistant was not found on the network.\n\nCheck that the "
+            "tablet and Home Assistant share a network, or set url= under "
+            "[home_assistant] in config.ini.");
         return FALSE;
     }
+    strip_trailing_slashes(config->base_url);
 
-    /* The integration names the sensor after the panel device, so the entity
-     * ID is predictable. config_entity overrides it for an installation whose
-     * sensor was renamed in Home Assistant. */
+    if (config->panel_id == NULL)
+        config->panel_id = panel_pairing_device_id();
+
+    /* Home Assistant derives the config sensor's entity ID from the device
+     * name, so it is handed over during pairing rather than guessed. The
+     * derived name below is only a fallback for an installation that was
+     * paired before the value was stored. */
+    if (config->config_entity == NULL)
+        config->config_entity = panel_pairing_config_entity();
     if (config->config_entity == NULL) {
         config->config_entity = g_strdup_printf("sensor.%s_config",
                                                 config->panel_id);
     }
-
-    while (*config->base_url != '\0' &&
-           config->base_url[strlen(config->base_url) - 1] == '/') {
-        config->base_url[strlen(config->base_url) - 1] = '\0';
-    }
     return TRUE;
 }
 
-static gboolean load_token(AppConfig *config, gchar **error_message)
+/* A missing token is not an error. The panel shows a pairing code and asks
+ * Home Assistant for one instead, so that nothing has to be typed on a tablet
+ * that has no keyboard. */
+static void load_token(AppConfig *config)
 {
     gchar *path = config_path("token");
 
-    if (!g_file_get_contents(path, &config->token, NULL, NULL)) {
-        *error_message = g_strdup_printf(
-            "Home Assistant token is missing.\n\nCreate this file over SSH "
-            "and set mode 600:\n%s", path);
-        g_free(path);
-        return FALSE;
+    if (g_file_get_contents(path, &config->token, NULL, NULL)) {
+        g_strstrip(config->token);
+        if (*config->token == '\0')
+            g_clear_pointer(&config->token, g_free);
     }
     g_free(path);
-    g_strstrip(config->token);
-    if (*config->token == '\0') {
-        *error_message = g_strdup("The token file is empty.");
-        return FALSE;
-    }
-    return TRUE;
 }
 
 AppConfig *app_config_load(gchar **error_message)
@@ -154,11 +181,11 @@ AppConfig *app_config_load(gchar **error_message)
     config->poll_interval_ms = PANEL_DEFAULT_POLL_MS;
     config->playlist_poll_interval_ms = PANEL_DEFAULT_PLAYLIST_POLL_MS;
 
-    if (!load_key_file(config, error_message) ||
-        !load_token(config, error_message)) {
+    if (!load_key_file(config, error_message)) {
         app_config_free(config);
         return NULL;
     }
+    load_token(config);
     return config;
 }
 

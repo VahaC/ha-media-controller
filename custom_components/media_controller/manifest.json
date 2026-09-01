@@ -2,13 +2,21 @@
   "domain": "media_controller",
   "name": "Media Controller",
   "after_dependencies": [],
-  "codeowners": ["@VahaC"],
+  "codeowners": [
+    "@VahaC"
+  ],
   "config_flow": true,
-  "dependencies": ["music_assistant"],
+  "dependencies": [
+    "http",
+    "music_assistant"
+  ],
   "documentation": "https://github.com/VahaC/ha-media-controller",
-  "integration_type": "service",
+  "integration_type": "device",
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/VahaC/ha-media-controller/issues",
   "requirements": [],
-  "version": "0.8.1"
+  "version": "0.8.1",
+  "zeroconf": [
+    "_media-controller._tcp.local."
+  ]
 }

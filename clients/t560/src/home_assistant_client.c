@@ -20,12 +20,16 @@ struct _HomeAssistantClient {
 
 static void add_headers(HomeAssistantClient *client, SoupMessage *message)
 {
-    gchar *authorization = g_strdup_printf("Bearer %s", client->token);
     SoupMessageHeaders *headers = soup_message_get_request_headers(message);
 
-    soup_message_headers_append(headers, "Authorization", authorization);
+    /* A panel that has not been paired yet has no token, and the only request
+     * it makes is the one that asks for one. */
+    if (client->token != NULL) {
+        gchar *authorization = g_strdup_printf("Bearer %s", client->token);
+        soup_message_headers_append(headers, "Authorization", authorization);
+        g_free(authorization);
+    }
     soup_message_headers_append(headers, "Accept", "application/json");
-    g_free(authorization);
 }
 
 static void request_finished(GObject *source, GAsyncResult *result,
@@ -142,6 +146,21 @@ gboolean home_assistant_client_call_service(HomeAssistantClient *client,
     gboolean started = send_request(client, "POST", url, json,
                                     G_PRIORITY_DEFAULT, callback, user_data,
                                     NULL);
+    g_free(url);
+    return started;
+}
+
+gboolean home_assistant_client_post_path(HomeAssistantClient *client,
+                                         const gchar *path,
+                                         const gchar *json,
+                                         HomeAssistantResponse callback,
+                                         gpointer user_data,
+                                         GDestroyNotify user_data_destroy)
+{
+    gchar *url = g_strdup_printf("%s%s", client->base_url, path);
+    gboolean started = send_request(client, "POST", url, json,
+                                    G_PRIORITY_DEFAULT, callback, user_data,
+                                    user_data_destroy);
     g_free(url);
     return started;
 }

@@ -41,6 +41,9 @@ PanelUi *panel_ui_new(const AppConfig *config, PanelUiEventHandler handler,
 void panel_ui_free(PanelUi *ui);
 GtkWidget *panel_ui_build(PanelUi *ui);
 GtkWidget *panel_ui_build_config_error(const gchar *message);
+/* Shown while the panel has no token: the code the person reads out to Home
+ * Assistant, and what the panel is currently waiting for. */
+GtkWidget *panel_ui_build_pairing(const gchar *code, const gchar *message);
 void panel_ui_install_styles(void);
 
 void panel_ui_set_status(PanelUi *ui, const gchar *text,

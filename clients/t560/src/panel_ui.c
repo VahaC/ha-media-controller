@@ -1323,6 +1323,30 @@ GtkWidget *panel_ui_build_config_error(const gchar *message)
     return box;
 }
 
+GtkWidget *panel_ui_build_pairing(const gchar *code, const gchar *message)
+{
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 24);
+    gtk_widget_set_valign(box, GTK_ALIGN_CENTER);
+    gtk_widget_set_margin_start(box, 60);
+    gtk_widget_set_margin_end(box, 60);
+
+    GtkWidget *digits = new_label(code, "pairing-code");
+    GtkWidget *status = new_label(message, "config-error");
+    gtk_label_set_line_wrap(GTK_LABEL(status), TRUE);
+    gtk_label_set_justify(GTK_LABEL(status), GTK_JUSTIFY_CENTER);
+    gtk_widget_set_halign(digits, GTK_ALIGN_CENTER);
+
+    gtk_box_pack_start(GTK_BOX(box),
+                       new_label("T560 Music Panel", "setup-title"),
+                       FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(box),
+                       new_label("PAIRING CODE", "room-kicker"),
+                       FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(box), digits, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(box), status, FALSE, FALSE, 0);
+    return box;
+}
+
 static void install_css(const gchar *css)
 {
     GtkCssProvider *provider = gtk_css_provider_new();
@@ -1381,7 +1405,11 @@ void panel_ui_install_styles(void)
         ".list-view:selected{background:#12373c;color:#75f1e9}"
         ".play-selected{font-size:20px;font-weight:700;border-color:#43d8d0}"
         ".setup-title{font-size:38px;font-weight:700;color:#56e5dc}"
-        ".config-error{font-size:21px}";
+        ".config-error{font-size:21px}"
+        /* Read out loud from across the room, so it is the largest text the
+         * panel ever draws. */
+        ".pairing-code{font-size:96px;font-weight:700;letter-spacing:14px;"
+        "color:#f2f6ff}";
     static const gchar room_css[] =
         ".room-page{background:transparent}"
         ".room-kicker{font-size:12px;font-weight:700;letter-spacing:2px;color:#54ded6}"
