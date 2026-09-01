@@ -1,0 +1,16 @@
+#!/bin/sh
+
+export DISPLAY="${DISPLAY:-:0}"
+export GTK_THEME="${GTK_THEME:-Adwaita:dark}"
+
+if [ -f "$HOME/.Xauthority" ]; then
+    export XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}"
+fi
+
+pkill -x t560-panel 2>/dev/null || true
+
+if ! pgrep -f '[t]560-panel-watchdog' >/dev/null 2>&1; then
+    nohup "$HOME/.local/bin/t560-panel-watchdog" \
+        >/dev/null 2>&1 </dev/null &
+fi
+

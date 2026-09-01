@@ -1,0 +1,24 @@
+# Maintainer: VahaC
+pkgname=t560-music-panel
+pkgver=0.1.0
+pkgrel=0
+pkgdesc="Lightweight Music Assistant touch controller for Samsung SM-T560"
+url="https://github.com/VahaC/ha-media-controller"
+arch="armv7"
+license="MIT"
+depends="gtk+3.0 libsoup3 json-glib xdotool libxscrnsaver"
+makedepends="build-base gtk+3.0-dev libsoup3-dev json-glib-dev"
+options="!check"
+source="$pkgname-$pkgver.tar.gz"
+builddir="$srcdir/$pkgname-$pkgver"
+
+build() {
+	make
+}
+
+package() {
+	make DESTDIR="$pkgdir" PREFIX=/usr install
+}
+
+sha512sums="SKIP"
+

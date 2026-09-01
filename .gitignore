@@ -20,3 +20,7 @@ Thumbs.db
 docs/IMPLEMENTATION_PLAN.md
 CODEX_HANDOFF.md
 AGENTS.md
+
+# Client build output (see clients/t560/.gitignore for the full list)
+clients/t560/t560-panel
+clients/t560/build/

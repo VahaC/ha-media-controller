@@ -1,0 +1,22 @@
+#!/bin/sh
+
+export DISPLAY="${DISPLAY:-:0}"
+export LANG="${LANG:-en_US.UTF-8}"
+export GTK_THEME="Adwaita:dark"
+
+if [ -d "$HOME/.local/lib" ]; then
+    export LD_LIBRARY_PATH="$HOME/.local/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
+
+mkdir -p "$HOME/.local/state"
+: >"$HOME/.local/state/t560-music-panel.log"
+
+panel_bin="${T560_PANEL_BIN:-$HOME/.local/bin/t560-panel}"
+if [ ! -x "$panel_bin" ]; then
+    panel_bin=/usr/bin/t560-panel
+fi
+
+while true; do
+    "$panel_bin" >>"$HOME/.local/state/t560-music-panel.log" 2>&1
+    sleep 2
+done

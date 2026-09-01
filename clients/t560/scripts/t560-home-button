@@ -1,0 +1,5 @@
+#!/bin/sh
+
+# The persistent button handler remembers whether the display was off before
+# this Openbox action was dispatched.
+pkill -USR1 -f '[t]560-power-button.py'

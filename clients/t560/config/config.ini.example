@@ -1,0 +1,84 @@
+# Copy to ~/.config/t560-music-panel/config.ini and replace every entity ID
+# with the actual IDs created by Home Assistant and the Media Controller
+# integration. There are no text-entry controls in the tablet application.
+
+[home_assistant]
+url=http://192.168.1.100:8123
+
+[entities]
+player=media_player.your_music_assistant_player
+queue=sensor.your_controller_queue
+playlists=sensor.your_controller_playlists
+
+# These room controls are optional. Remove a key to disable its tile.
+light_1=light.your_controller_light_1
+light_2=light.your_controller_light_2
+fan=switch.your_controller_fan
+ac=switch.your_controller_ac
+desk_lamp=light.your_desk_lamp
+desk_led_strip=light.your_desk_led_strip
+
+[labels]
+light_1=LIGHT 1
+light_2=LIGHT 2
+fan=FAN
+ac=AC
+desk_lamp=DESK LAMP
+desk_led_strip=DESK LED STRIP
+
+# Optional comma-separated controls: brightness and color_temperature.
+# They can be enabled for any configured room tile that points to a light.
+[room_features]
+light_1=brightness,color_temperature
+light_2=brightness,color_temperature
+fan=none
+ac=none
+desk_lamp=none
+desk_led_strip=brightness,color_temperature
+
+[panel]
+# 1000 ms is responsive while keeping CPU/network use low.
+poll_interval_ms=1000
+# Playlist state can be much larger and changes infrequently.
+playlist_poll_interval_ms=60000
+# Turn the display off after this many seconds without touchscreen, key, or
+# camera-detected activity. Use 0 to keep the display on until the Power
+# button is pressed. Values are clamped to 5-3600 seconds. The Power and Home
+# button handler reads this key at start-up.
+screen_off_seconds=30
+
+# Front camera motion detection. While the display is off, detected motion
+# turns it on; while motion continues, the automatic screen off above is
+# postponed. Analysis runs in the separate t560-motion-detector.py daemon,
+# never in the panel process.
+[camera]
+# The built-in SM-T560 camera cannot be used: its DCAM driver rejects
+# VIDIOC_REQBUFS, so no application can capture frames from it. Keep this off
+# on that tablet. Set it to on for hardware whose camera answers
+# `t560-motion-detector.py --probe` with "capture works".
+motion_detection=off
+# auto probes every /dev/video* capture node in ascending order. Set the node
+# of the front camera explicitly when several nodes accept capture; see
+# docs/CAMERA.md for the identification commands.
+device=auto
+# Capture resolution. The frames are only compared block by block, so the
+# lowest resolution the sensor accepts is enough. Clamped to 160-640x120-480.
+width=320
+height=240
+# Time between two analysed frames, 100-5000 ms. 400 ms is 2.5 frames/s.
+frame_interval_ms=400
+# A block counts as changed when its average brightness moves this far away
+# from the change of the whole frame, 2-128.
+pixel_threshold=12
+# Share of the 16x12 blocks that must change before a frame counts as motion,
+# 1-100 percent. Raise it when the sensor is noisy.
+motion_area_percent=8
+# Consecutive changed frames required before motion is reported, 1-10.
+motion_frames=2
+# Minimum interval between two reported motion events, 1-60 seconds.
+cooldown_seconds=2
+# Motion is ignored for this long after the Power button turned the display
+# off, so that the person who pressed it does not immediately wake it again,
+# 0-600 seconds. After an automatic screen off, motion wakes the display
+# within a few seconds regardless of this value.
+motion_wake_grace_seconds=30

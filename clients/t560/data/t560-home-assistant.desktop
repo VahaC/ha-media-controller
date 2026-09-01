@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Restart Music Panel
+Comment=Restart and show the native Music Assistant panel
+Exec=/home/vahac/.local/bin/t560-restart-panel
+Icon=t560-music-panel
+Terminal=false
+Categories=AudioVideo;Audio;
+

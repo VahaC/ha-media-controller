@@ -1,0 +1,167 @@
+# T560 Music Panel
+
+A native touch-only controller for the Samsung Galaxy Tab E SM-T560
+(`gtelwifi`, ARMv7) running postmarketOS and Openbox. It follows the interaction
+model of the ESP32 controller that lives in [firmware/](../../firmware), but
+runs as a lightweight GTK3 application on the tablet.
+
+It is one of the two clients of the Media Controller integration in this
+repository; the other is the [ESP32-S3 controller](../../docs/ESP32_CONTROLLER.md).
+Both read the same [contract](../../docs/CONTRACT.md).
+
+The application does not use WebKit, a browser, HTML/JavaScript, text fields,
+or an on-screen keyboard. All settings are edited over SSH.
+
+## Implemented features
+
+- Native dark UI designed for the 800x1219 usable screen area.
+- The window runs fullscreen and covers the whole display, without
+  decorations or window manager panels above it.
+- A header row with the page title, a centered clock showing the time and
+  the date, a Home Assistant link icon, and an upright battery indicator
+  with the charge percentage.
+- The battery indicator turns green and shows a bolt while the tablet is
+  charging, and amber or red as the charge drops.
+- The link icon reports only whether Home Assistant answers. It is teal and
+  whole while every configured entity is read, amber and whole when Home
+  Assistant replies but rejects a request, and red and broken only when the
+  server cannot be reached at all. A wrong entity ID in `config.ini` is
+  therefore reported as amber, never as a lost connection. Hold the icon to
+  read a tooltip naming the entity that Home Assistant rejected.
+- Album art, track title, artist, playback progress, and volume.
+- Previous, Play/Pause, Next, Volume Down, and Volume Up controls.
+- Shuffle and Repeat Off/All/One controls.
+- Queue browsing and playback of a selected queue item without replacing the queue.
+- Playlist browsing and playback through `music_assistant.play_media`.
+- Light 1, Light 2, Fan, AC, Desk Lamp, and Desk LED Strip room controls.
+- Configurable brightness and color-temperature adjustment for any room light.
+- Direct Home Assistant REST API access without loading Lovelace.
+- A separate token file with `0600` permissions.
+- Watchdog, desktop entry, Openbox rule, and ARMv7 `APKBUILD`.
+- A dedicated launcher icon installed into the `hicolor` icon theme, so the
+  desktop launcher and the task bar show the panel icon. The icon is
+  regenerated from geometry by `tools/make-app-icon.py`.
+- A short Power press turns the display off; any key or touchscreen input wakes it.
+- The tap that wakes the display only wakes it: the button handler holds a
+  pointer grab while the display is off, so no control is pressed by mistake.
+- The display turns off automatically after a configurable inactivity timeout
+  (`screen_off_seconds`, 30 seconds by default).
+- Camera motion detection: movement turns the display on while it is off, and
+  postpones the automatic screen off while it continues. It is off by default
+  because the built-in camera of this tablet cannot stream to userspace; see
+  [CAMERA.md](docs/CAMERA.md).
+- Camera analysis runs in a separate low-priority daemon, never in the panel
+  process, and the panel keeps working when no camera node is usable.
+- The physical Home button toggles between the panel and desktop while the
+  display is on, and only wakes the display while it is off.
+- The existing long-press Power menu is retained.
+
+## Tablet configuration files
+
+```text
+~/.config/t560-music-panel/config.ini
+~/.config/t560-music-panel/token
+```
+
+The first-installation procedure transfers [config.ini.example](config/config.ini.example)
+into the user-owned configuration directory. Replace every placeholder with
+the entity IDs created by Home Assistant and the Media Controller integration.
+Put the long-lived access token in the separate `token` file. Never commit the
+token.
+
+Room adjustment controls are enabled per tile in the `[room_features]` section.
+The supported values are `brightness` and `color_temperature`, separated by a
+comma. Under the normal watchdog launch, saving a valid `config.ini`
+automatically restarts only the panel process within about two seconds. The
+tablet does not reboot. An invalid intermediate file keeps the current panel
+running and reports the configuration error in the log.
+
+The Media Controller integration in
+[custom_components/media_controller/](../../custom_components/media_controller)
+must be installed and configured in Home Assistant first; see
+[docs/INTEGRATION.md](../../docs/INTEGRATION.md). It creates the queue and
+playlist sensors and the room proxy entities consumed by this application.
+
+## Source architecture
+
+The application is split into focused C modules with explicit interfaces:
+
+- `application` owns the application lifecycle and coordinates UI events with
+  Home Assistant state;
+- `app_config` validates and owns configuration data;
+- `home_assistant_client` encapsulates authenticated asynchronous HTTP I/O;
+- `panel_ui` builds and updates GTK widgets without knowing API details;
+- `json_helpers` contains reusable, unit-tested JSON accessors;
+- `system_status` reads the battery charge and charging state from
+  `/sys/class/power_supply`;
+- `main` is the minimal process entry point.
+
+Two Python helpers run beside the application. `t560-power-button.py` owns
+DPMS: it handles the Power and Home buttons, the inactivity timeout, and the
+motion events. `t560-motion-detector.py` captures camera frames and reports
+motion to that handler with `SIGUSR2`.
+
+The Makefile tracks header dependencies automatically. Run `make test` for the
+unit tests and `make` for the application.
+
+## Build and installation
+
+The complete guide contains two end-to-end procedures:
+
+- first installation on an unmodified tablet user account;
+- updating an existing installation without replacing configuration or tokens.
+
+See [BUILD_AND_INSTALL.md](docs/BUILD_AND_INSTALL.md).
+
+The repository root already contains a verified `t560-panel` binary. It is a
+44 KB ELF 32-bit ARM EABI5/musl executable built in a clean Alpine 3.20 ARMv7
+container. The source also compiles successfully on x86_64 Alpine as an API
+compatibility check. Checksums are stored in `SHA256SUMS`.
+
+The recommended deployment is rootless. The executable and launch scripts are
+installed below `/home/vahac/.local`, and files are transferred through the
+existing SSH connection without requiring SCP, SFTP, or administrative access.
+
+## Openbox autostart
+
+The ready-to-use [t560-openbox-autostart](openbox/t560-openbox-autostart)
+starts Tint2, the cursor helper, the included Power button handler, and the
+camera motion detector. A short Power press turns the display off, while any
+key, touchscreen input, or detected motion wakes it. The same handler makes
+Home screen-aware and retains the existing long-press Power menu. The autostart
+does not start Badwolf, WebKit, or Matchbox Keyboard. Back up the current
+autostart file before replacing it.
+
+The first-installation procedure transfers the provided file as a candidate,
+backs up the current Openbox autostart, tests the panel, and activates the new
+autostart only after the test succeeds. The configuration helper changes only
+the `Home` and `XF86HomePage` key bindings in `rc.xml` and keeps a backup.
+
+## Alpine APK
+
+The [APKBUILD](packaging/APKBUILD) limits the package to `armv7`. APK packaging
+is optional and is not the recommended installation method on the current
+tablet because it requires intentionally configured administrative access.
+
+## Camera motion detection
+
+`t560-motion-detector.py` captures the front camera through V4L2 at 320x240 and
+2.5 FPS by default, compares consecutive frames as a 16x12 grid of block
+averages, and reports confirmed motion to the button handler. A frame-wide
+brightness change, such as a room light or the backlight itself, is subtracted
+before the comparison and does not count as motion. The daemon needs only the
+Python standard library and no OpenCV or neural-network runtime.
+
+Every setting lives in the `[camera]` section of `config.ini`.
+`motion_detection` is `off` by default: the `/dev/video0` DCAM shim of the
+SM-T560 rejects `VIDIOC_REQBUFS`, so no application can capture frames from
+the built-in sensor under the 3.10.17 kernel. `t560-motion-detector.py
+--probe` reports each node and the exact call at which capture stops, and the
+feature works as soon as a camera answers it with `capture works`, for example
+a USB camera on the OTG port.
+
+The measured driver behaviour, the architecture, and the tuning notes are
+documented in [CAMERA.md](docs/CAMERA.md), and the kernel and root filesystem
+changes that would make the built-in camera usable are listed in
+[CAMERA_FIRMWARE.md](docs/CAMERA_FIRMWARE.md). Object recognition should still run
+on a more powerful LAN server after the tablet detects motion.

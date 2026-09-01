@@ -1,0 +1,12 @@
+# Build output
+build/
+t560-panel
+*.o
+*.d
+*.apk
+*.tar.gz
+tests/test-json-helpers
+
+# Python tooling
+__pycache__/
+*.py[cod]

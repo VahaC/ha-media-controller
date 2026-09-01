@@ -1,368 +1,94 @@
-# VahaC ESP32 Music Assistant Media Controller
+# Home Assistant Media Controller
 
-An ESPHome touchscreen controller for Home Assistant and Music Assistant,
-built for the ESP32-S3 480×480 ST7701S + GT911 board commonly sold as
-`ESP32-S3-4848S040`.
+A Home Assistant custom integration and two touch controllers for Music
+Assistant.
 
-The project packages the existing working controller as:
-
-- a HACS-compatible Home Assistant custom integration;
-- a reusable ESPHome package with all build assets in this repository.
-
-The LVGL interface, display timings, touch pins, media controls, album art,
-queue windowing, playlists, room controls, sleep timer, and consumed wake touch
-are intentionally preserved.
+The integration turns Music Assistant queue and playlist data into a form small
+devices can consume, and provides remappable room proxy entities. The clients
+render it. Both clients speak exactly the same
+[entity and service contract](docs/CONTRACT.md), so a room control remapped in
+Home Assistant changes on every screen without reflashing or redeploying
+anything.
 
 For the build story, photos, and setup walkthrough, see the write-up:
 [Music Assistant ESP32 Media Controller](https://vahac.com/blogs/music-assistant-esp32-media-controller/?utm_source=github).
 
-## Current validation status
+## Components
 
-The custom integration transformation tests and static repository checks pass.
-The packaged firmware also passes `esphome config` and a complete ESPHome
-2026.8.0 compile. The firmware was successfully verified on the physical
-ESP32-S3 + ST7701S + GT911 target, including the Git package installation flow.
-Use the [hardware checklist](#hardware-verification) when installing it on
-another board revision.
-
-The `Minimal Ring` and `Cover Card` screen styles, the UI synchronisation
-refactor behind them, and the swipe debounce are validated by `esphome config`
-and a full compile. `Minimal Ring` has run on the physical device; `Cover Card`
-has not. Album art rendering, the volume slider, the track time readout, and the
-runtime cost of a third LVGL page still need hardware confirmation. See steps
-11–16 of the [hardware checklist](#hardware-verification).
-
-## Supported hardware
-
-- ESP32-S3 (`esp32-s3-devkitc-1`)
-- ESP-IDF framework
-- 16 MB flash
-- Octal PSRAM at 80 MHz
-- ST7701S RGB display, 480×480
-- GT911 capacitive touchscreen
-
-The working ST7701S initialization, RGB/SPI/I²C pins, sync timings, 12 MHz
-pixel clock, and PSRAM configuration are hardware-critical.
-
-## Prerequisites
-
-1. A current Home Assistant installation.
-2. The official Music Assistant integration with at least one exposed
-   `media_player` entity.
-3. HACS for custom-integration installation.
-4. ESPHome for validation, compilation, and flashing.
-5. A dedicated Home Assistant long-lived access token for the v1 REST
-   transport. See [REST token limitation](#rest-token-limitation).
-
-## Install the Home Assistant integration
-
-Until this repository is included in the default HACS catalog:
-
-1. Open HACS → Integrations → Custom repositories.
-2. Add
-   `https://github.com/VahaC/ha-media-controller`
-   as an **Integration** repository.
-3. Install **Media Controller** and restart Home Assistant.
-4. Open Settings → Devices & services → Add integration.
-5. Select **Media Controller**.
-6. Select the required Music Assistant player.
-7. Optionally map Light 1, Light 2, Fan, and AC.
-
-The integration creates:
-
-- a bounded queue sensor;
-- a playlists sensor;
-- Light 1 and Light 2 proxy light entities;
-- Fan and AC proxy switch entities.
-
-The proxy entities make room mappings changeable through Options Flow without
-reflashing the ESP32. A proxy whose source is not configured or unavailable is
-itself unavailable; the other controller functions continue working.
-
-Entity IDs are assigned by Home Assistant's entity registry. Open the new
-controller device and copy its actual entity IDs for the firmware substitutions.
-Do not assume the example IDs are the IDs Home Assistant chose.
-
-The integration listens to the Music Assistant player selected in Config Flow.
-The ESPHome device also uses its `player_entity` substitution for native media
-state and control actions. If the selected player is changed later in Options
-Flow, update that substitution during the next ESPHome/OTA update as well.
-
-### Synchronization behavior
-
-- Playlists refresh during integration setup and every six hours.
-- Queue data refreshes after a Music Assistant title change with a cancellable
-  three-second debounce.
-- Only 50 queue entries are requested, starting up to five entries before the
-  current item.
-- Rapid changes cancel obsolete delays and queue calls cannot overlap.
-- `media_controller.refresh` refreshes queue and playlists on demand.
-- `media_controller.play_queue_item` starts the selected queue item by
-  its Music Assistant queue item ID without replacing the queue.
-
-## Configure and flash ESPHome
-
-The ESPHome device YAML is intentionally small. Paste the complete block below
-into the device configuration in ESPHome Device Builder. Do not copy the
-2,000+ line `firmware/media-controller.yaml` file into Home Assistant: the
-`packages:` section downloads that maintained file and all required image
-assets from this repository during validation and compilation.
-
-```yaml
-substitutions:
-  # Keep the existing ESPHome device name when updating an already adopted
-  # device; changing it creates a different device identity in Home Assistant.
-  device_name: media-controller
-  friendly_name: Media Controller
-
-  # Use the same Music Assistant player selected in the integration Config Flow.
-  player_entity: media_player.your_music_assistant_player
-
-  # Copy the actual entity IDs created by the Media Controller integration.
-  queue_entity: sensor.your_controller_queue
-  playlists_entity: sensor.your_controller_playlists
-  light1_entity: light.your_controller_light_1
-  light2_entity: light.your_controller_light_2
-  fan_entity: switch.your_controller_fan
-  ac_entity: switch.your_controller_ac
-
-  ha_url: "http://homeassistant.local:8123"
-  ha_token: !secret media_controller_ha_token
-
-packages:
-  media_controller:
-    url: https://github.com/VahaC/ha-media-controller
-    ref: main
-    files:
-      - firmware/media-controller.yaml
-    refresh: 1d
-
-wifi:
-  ssid: !secret wifi_ssid
-  password: !secret wifi_password
-
-api:
-  encryption:
-    key: !secret media_controller_api_encryption_key
-
-ota:
-  - platform: esphome
-    password: !secret media_controller_ota_password
-```
-
-Before installing:
-
-1. Replace `device_name`, `player_entity`, and every queue/playlist/room entity
-   placeholder with the actual values from Home Assistant.
-2. Keep using the existing global ESPHome `secrets.yaml`; do not create a
-   repository-specific secrets file.
-3. Ensure the `!secret` names in the block match keys that already exist in
-   that global file. Rename the references in the device YAML if your keys have
-   different names.
-4. In ESPHome Device Builder, select **Validate**, then **Install**. Use USB for
-   the first flash and OTA for later updates.
-
-For command-line validation and compilation:
-
-```text
-esphome config media-controller.yaml
-esphome compile media-controller.yaml
-```
-
-Remote ESPHome packages cannot contain secret lookups. This is why Wi-Fi, API
-encryption, OTA, and the Home Assistant token are in the small user
-configuration rather than the maintained package.
-
-## Screen styles
-
-The home screen ships in three layouts. The device exposes a **Screen Style**
-select entity, so switching between them is a Home Assistant UI action or an
-automation — no recompile and no reflash. The choice is stored on the device and
-survives reboots.
-
-| Option | Layout |
-| --- | --- |
-| `Classic` | Full-bleed album art, 240° progress arc, decoration card with title/artist/volume, transport row, shuffle/repeat, Queue and Playlists buttons. |
-| `Minimal Ring` | Album art as a centred disc inside a 270° progress ring with a glowing position dot, a bare prev / play-pause / next row, small title and artist, corner volume buttons, and a `...` button that opens an overlay with shuffle, repeat, Queue and Playlists. |
-| `Cover Card` | Rounded cover card with a drop shadow, large title and artist, elapsed and total time either side of a linear progress bar, a full transport row with shuffle and repeat inline, a volume slider flanked by step buttons, and Queue/Playlists in the top corners. Nothing hidden behind an overlay. |
-
-`Cover Card` is the only layout that shows track times. Its volume row works two
-ways: drag the slider for a large jump, or tap the speaker glyph on either side
-to step the volume the same way the other layouts do. It shares its pre-sized
-album art source with `Minimal Ring`, so adding it cost no extra image buffer and
-no extra download.
-
-Both layouts are live at all times: player state is written to every layout, so
-switching is instant and the newly shown one is already up to date. Swiping left
-or right from either one still opens Room Controls, and Room Controls returns to
-whichever layout is currently selected.
-
-### Appearance entities
-
-These template entities are also stored on the device and applied at boot:
-
-- `Progress Ring Color`, `Progress Ring Fill Color`, `Progress Ring Opacity`
-- `Title Color`, `Artist Color`, `Volume Color`
-- `Decoration Color`, `Decoration Opacity` (Classic only)
-- `Buttons Color`, `Buttons Opacity`
-- `Flat Controls Color` — transport glyphs on `Minimal Ring` and `Cover Card`.
-  It is separate from `Buttons Color` because both layouts deliberately reserve
-  the accent for the progress indicator and the play button, and render
-  everything else in neutral grey. Set it to the same value as `Buttons Color`
-  if you prefer them to match.
-- `Album Art Opacity`
-- `Screen Timeout`
-
-Colours are plain six-digit hex without a leading `#`, for example `00cfff`.
-
-### Adding another layout
-
-Layouts are ordinary LVGL pages. To add one:
-
-1. Add a page next to `page_player_cover` in `firmware/media-controller.yaml`.
-2. Add its option to the `screen_style` select.
-3. Add a branch to `show_home_page`, `show_home_page_move_left`, and
-   `show_home_page_move_right`, and to the page check in `apply_screen_style`.
-4. Extend the `ui_sync_*` and `apply_theme` scripts with the new widget IDs.
-5. If it needs album art at a new size, add an `online_image` with the matching
-   `resize:` and route it in `ui_load_album_art`.
-
-Navigation never names a home page directly — it always goes through the
-`show_home_page*` scripts — and no sensor writes to a widget directly, so those
-steps are the whole integration surface.
-
-### Album art sizing
-
-Every layout decodes album art at the size it draws it:
-
-| Source | Size | Used by |
+| Component | Path | What it is |
 | --- | --- | --- |
-| `album_art` | 480×480 | `Classic`, full screen |
-| `album_art_small` | 244×244 | `Minimal Ring` disc, `Cover Card` cover |
+| Media Controller integration | [custom_components/media_controller/](custom_components/media_controller) | HACS custom integration. Queue and playlist sensors, room proxy entities, two services. Required by both clients. |
+| ESP32-S3 controller | [firmware/](firmware) | ESPHome package for the 480x480 ST7701S + GT911 board sold as `ESP32-S3-4848S040`. Three LVGL screen styles. |
+| T560 panel | [clients/t560/](clients/t560) | Native GTK3 application for a Samsung Galaxy Tab E SM-T560 (ARMv7) running postmarketOS and Openbox. No browser, no WebKit. |
 
-Only the source the active layout needs is downloaded. `resize:` preserves the
-aspect ratio, so non-square art is letterboxed rather than stretched.
+Choose either client, or run both against one Home Assistant.
 
-### Album art must never be scaled at draw time
+## Documentation
 
-This build sets `LV_COLOR_16_SWAP` and leaves `LV_DRAW_SW_SUPPORT_SWAPPED` off,
-so LVGL's software renderer cannot transform a swapped RGB565 image. Asking it
-to (via `lv_image_set_scale`, `zoom:`, or `scale:`) produces striped garbage
-instead of the cover, and the per-frame cost of transforming a full-resolution
-download is high enough to stall the main loop.
+| Document | Read it when |
+| --- | --- |
+| [docs/INTEGRATION.md](docs/INTEGRATION.md) | Installing or configuring the Home Assistant side. Start here — both clients depend on it. |
+| [docs/ESP32_CONTROLLER.md](docs/ESP32_CONTROLLER.md) | Flashing, configuring, or modifying the ESP32-S3 controller. |
+| [clients/t560/README.md](clients/t560/README.md) | Building, deploying, or modifying the tablet panel. |
+| [docs/CONTRACT.md](docs/CONTRACT.md) | Changing anything a client reads. This is the change-control surface. |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Planned work: Home Assistant-owned panel layout, colour-temperature proxies, portability. |
+| [docs/MERGE.md](docs/MERGE.md) | Understanding why the repository is laid out this way, and which paths must never move. |
 
-Give each layout an `online_image` whose `resize:` already matches the widget,
-and share one source between layouts that need the same size. `resize:`
-preserves aspect ratio, so non-square art is letterboxed rather than stretched.
+## Quick start
 
-## REST token limitation
+1. Install the **Media Controller** integration through HACS by adding
+   `https://github.com/VahaC/ha-media-controller` as a custom **Integration**
+   repository, then configure it against a Music Assistant player.
+   Full steps: [docs/INTEGRATION.md](docs/INTEGRATION.md).
+2. Copy the actual entity IDs Home Assistant assigned to the new controller
+   device.
+3. Set up a client:
+   - ESP32-S3 — [docs/ESP32_CONTROLLER.md](docs/ESP32_CONTROLLER.md);
+   - T560 tablet — [clients/t560/docs/BUILD_AND_INSTALL.md](clients/t560/docs/BUILD_AND_INSTALL.md).
 
-The firmware currently uses the Home Assistant REST transport for queue,
-playlist, and album-art requests. The ESP32 sends a bearer token only to the
-configured local `ha_url`.
-
-Use a dedicated token, store it only in `secrets.yaml`, do not commit it, and
-keep the ESPHome device and Home Assistant on a trusted local network. Removing
-the token is a later security milestone that requires payload-size, ESP32
-memory, reconnect, and album-art testing, so it remains a separate follow-up.
-
-## Hardware verification
-
-On the physical ESP32-S3 + ST7701S + GT911 device, verify all of the following:
-
-1. Cold boot initializes the 480×480 display without artifacts.
-2. GT911 tap, hold, and swipe work while the screen is awake.
-3. Let the idle/paused screen turn off. The first touch or gesture must only
-   turn on the backlight. It must not click, toggle, long-press, swipe, navigate,
-   play media, or select a queue item. LVGL must resume only after release.
-4. Title, artist, progress, volume, previous, play/pause, next, shuffle, and
-   repeat still work.
-5. Album art loads initially and reloads after Home Assistant reconnects.
-6. Playlists load, Unicode names render correctly, and the selected playlist
-   starts through Music Assistant.
-7. Queue remains bounded, highlights the correct current entry, safely handles
-   an empty queue, and single/double selection behavior remains intact.
-8. Queue item playback jumps within the existing queue.
-9. Optional Light 1/Light 2/Fan/AC proxies reflect state and forward actions;
-   unconfigured mappings affect only their own controls.
-10. Long queues and repeated page navigation do not cause watchdog or memory
-    resets; inspect the included heap/PSRAM diagnostics.
-11. Note `Media Controller Heap Free` and `Media Controller Heap Min Free`.
-    Each extra LVGL page costs roughly 10–15 KB of internal heap; album art
-    buffers are shared between layouts of the same size and do not multiply.
-
-    `Media Controller Loop Time` is the **longest single loop iteration** in the
-    last update interval, not an average, so one expensive frame — a page load
-    animation, an album art decode, a queue response — sets it. Occasional peaks
-    of tens of milliseconds are normal and are not evidence of a stall.
-
-    `Reset Reason` is carried over from the previous boot and stays there until
-    the next one, so it can look alarming long after a one-off reset. Watch
-    `Media Controller Uptime` instead: if it keeps climbing, the device is not
-    rebooting whatever the reset reason says.
-12. Switch `Screen Style` through all three options from Home Assistant. The
-    layout must change immediately, already showing the current track, artist,
-    progress, and album art, with no reboot.
-13. On `Minimal Ring`: album art is clipped to a clean circle for both square
-    and non-square source images, the position dot tracks the ring across a
-    whole track, `...` opens and closes the overlay, and shuffle/repeat state in
-    the overlay matches Music Assistant.
-14. On `Cover Card`: the cover renders cleanly, elapsed and total time count
-    correctly and read `--:--` for live streams, the volume slider follows Home
-    Assistant but does not jump while being dragged, releasing it sets the volume
-    once rather than on every step, and the speaker glyphs either side of it step
-    the volume and move the knob to match.
-15. A single swipe changes the page exactly once, in both directions and from
-    every layout. Repeat with playback running.
-16. Change `Screen Style` while the queue, playlists, or room controls page is
-    open. The device must stay on that page and only apply the new layout when
-    it next returns home.
-
-## Updating
-
-- Update the Home Assistant integration through HACS.
-- Revalidate and install firmware updates through ESPHome/OTA.
-- Review release notes before adopting changes to hardware-critical sections.
-
-## Development
-
-Pure transformation tests use the standard library:
+## Repository layout
 
 ```text
-python -m unittest discover -s tests -v
+custom_components/media_controller/   Home Assistant integration (HACS)
+firmware/                             ESPHome package and image assets
+clients/t560/                         GTK3 tablet panel (C, Python helpers)
+docs/                                 Cross-component documentation
+tests/                                Integration transformation tests
 ```
 
-When iterating on the firmware, point the device YAML at a working branch
-instead of `main`. Note that `asset_base_url` defaults to the `main` branch, so
-override it as well whenever the branch changes image assets:
+`custom_components/media_controller/` and `firmware/` are frozen paths. Device
+configurations in the field point at `firmware/media-controller.yaml` and at
+`firmware/assets/` by raw URL, and HACS downloads the integration from its path.
+Moving either breaks installations that already exist. See
+[docs/MERGE.md](docs/MERGE.md).
 
-```yaml
-substitutions:
-  asset_base_url: "https://raw.githubusercontent.com/VahaC/ha-media-controller/dev/firmware/assets"
+## Versioning
 
-packages:
-  media_controller:
-    url: https://github.com/VahaC/ha-media-controller
-    ref: dev
-    files:
-      - firmware/media-controller.yaml
-    refresh: 0s
+Each component is released on its own tag, because their audiences and update
+mechanisms are different:
+
+```text
+integration-vX.Y.Z    custom_components/**
+firmware-vX.Y.Z       firmware/**
+panel-vX.Y.Z          clients/t560/**
 ```
 
-For layout work, a commit per iteration is unnecessary. Include the maintained
-file from a local checkout and keep the assets local too:
+`version` in `custom_components/media_controller/manifest.json` is bumped only
+when the integration itself changes; it drives the HACS update prompt and must
+not move for a client-only change.
 
-```yaml
-substitutions:
-  asset_base_url: assets
+A change to [docs/CONTRACT.md](docs/CONTRACT.md) requires a coordinated release
+of the integration and every affected client.
 
-packages:
-  media_controller: !include ../ha-media-controller/firmware/media-controller.yaml
+## Tests
+
+```text
+python -m unittest discover -s tests -v          # integration transformations
+cd clients/t560 && make test                     # panel JSON parsing + helpers
+esphome config firmware/media-controller.yaml    # firmware validation
 ```
-
-Users should pin a release tag rather than a branch, so that work in progress on
-`main` never reaches them mid-change.
 
 ## License
 
-MIT — see `LICENSE`.
+MIT — see [LICENSE](LICENSE). It covers the integration, the firmware package,
+and the clients.

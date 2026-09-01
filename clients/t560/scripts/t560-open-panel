@@ -1,0 +1,14 @@
+#!/bin/sh
+
+window_id="$(xdotool search --class T560MusicPanel 2>/dev/null | tail -n 1)"
+if [ -n "$window_id" ]; then
+    xdotool windowmap "$window_id"
+    xdotool windowraise "$window_id"
+    xdotool windowactivate "$window_id"
+else
+    panel_bin="${T560_PANEL_BIN:-$HOME/.local/bin/t560-panel}"
+    if [ ! -x "$panel_bin" ]; then
+        panel_bin=/usr/bin/t560-panel
+    fi
+    "$panel_bin" &
+fi

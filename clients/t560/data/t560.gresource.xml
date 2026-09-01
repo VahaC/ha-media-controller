@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <gresource prefix="/com/vahac/t560">
+    <file>icons/light-1.png</file>
+    <file>icons/light-2.png</file>
+    <file>icons/fan.png</file>
+    <file>icons/ac.png</file>
+    <file>icons/desk-lamp.png</file>
+    <file>icons/desk-led-strip.png</file>
+  </gresource>
+</gresources>

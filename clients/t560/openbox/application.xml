@@ -1,0 +1,11 @@
+<!-- Reference copy of the rule that t560-configure-openbox.py keeps inside
+     <applications> in rc.xml. Merge it manually only when the script is not
+     used. -->
+<application name="t560-music-panel" class="T560MusicPanel">
+  <decor>no</decor>
+  <focus>yes</focus>
+  <desktop>all</desktop>
+  <layer>normal</layer>
+  <fullscreen>yes</fullscreen>
+  <maximized>yes</maximized>
+</application>
