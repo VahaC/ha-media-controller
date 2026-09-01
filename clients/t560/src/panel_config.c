@@ -140,7 +140,7 @@ gboolean panel_config_load_cache(PanelLayout *layout, gchar **error_message)
     gsize length = 0;
 
     if (!g_file_get_contents(path, &data, &length, NULL)) {
-        *error_message = g_strdup_printf(
+        *error_message = g_strdup(
             "Home Assistant is unreachable and no configuration has been "
             "cached yet.\n\nStart the panel once while Home Assistant "
             "answers at the URL in config.ini.");

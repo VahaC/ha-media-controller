@@ -1002,9 +1002,7 @@ static void activate(GtkApplication *gtk_application, gpointer user_data)
         set_window_content(
             application,
             panel_ui_build_config_error(
-                "Waiting for Home Assistant.
-
-The panel reads its layout "
+                "Waiting for Home Assistant.\n\nThe panel reads its layout "
                 "from the Media Controller integration."));
         g_debug("No cached layout: %s", cache_failure);
     }

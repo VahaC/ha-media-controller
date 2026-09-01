@@ -922,9 +922,11 @@ static GtkWidget *room_adjust_sheet(PanelUi *ui)
     return revealer;
 }
 
-static GtkWidget *room_page(PanelUi *ui)
+/* Icons follow the slot number, so a tile keeps its icon when the entity
+ * behind it is changed in Home Assistant. */
+static const gchar *slot_icon_resource(guint slot, guint fallback_index)
 {
-    static const gchar *icon_resources[PANEL_ROOM_MAX] = {
+    static const gchar *icons[PANEL_ROOM_MAX] = {
         "/com/vahac/t560/icons/light-1.png",
         "/com/vahac/t560/icons/light-2.png",
         "/com/vahac/t560/icons/fan.png",
@@ -932,10 +934,21 @@ static GtkWidget *room_page(PanelUi *ui)
         "/com/vahac/t560/icons/desk-lamp.png",
         "/com/vahac/t560/icons/desk-led-strip.png"
     };
-    static const gchar *control_types[PANEL_ROOM_MAX] = {
-        "LIGHTING", "LIGHTING", "AIRFLOW", "CLIMATE", "TASK LIGHT",
-        "ACCENT LIGHT"
-    };
+    guint index = slot >= 1 && slot <= PANEL_ROOM_MAX ? slot - 1
+                                                      : fallback_index;
+    return icons[MIN(index, (guint)PANEL_ROOM_MAX - 1)];
+}
+
+/* A slot is generic now, so the kicker above a tile comes from the proxy
+ * domain rather than from a hardcoded list of tile names. */
+static const gchar *room_control_type(const PanelRoom *room)
+{
+    return g_str_has_prefix(room->entity, "light.") ? "LIGHTING" : "POWER";
+}
+
+static GtkWidget *room_page(PanelUi *ui)
+{
+    const PanelLayout *layout = &ui->config->layout;
 
     GtkWidget *page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 14);
     gtk_widget_set_margin_start(page, 20);
@@ -1036,8 +1049,7 @@ static GtkWidget *room_page(PanelUi *ui)
     }
     if (layout->room_count == 0) {
         GtkWidget *empty = new_label(
-            "No room controls are configured for this panel.
-"
+            "No room controls are configured for this panel.\n"
             "Add them to the panel in Home Assistant.", "room-help");
         gtk_label_set_line_wrap(GTK_LABEL(empty), TRUE);
         gtk_widget_set_valign(empty, GTK_ALIGN_CENTER);
