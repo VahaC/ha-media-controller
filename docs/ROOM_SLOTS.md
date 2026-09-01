@@ -4,7 +4,7 @@ Specification for moving room-control configuration out of client files and
 into Home Assistant. It implements [ROADMAP.md](ROADMAP.md) item 1 and replaces
 the four fixed room slots of integration `0.7.x`.
 
-Status: **implemented** in integration `0.8.1` and firmware `0.8.0`. A panel
+Status: **implemented** in integration `0.8.2` and firmware `0.8.0`. A panel
 announces itself, is added from the discovery card, and is handed its own
 access token, so nothing about it is configured on the tablet. What is left
 out of scope here is moving the tablet-local settings — `[panel]` and
@@ -461,7 +461,7 @@ that use them.
 
 ## Order of work
 
-1. **Integration.** Done in `0.8.1`: profiles, migration, slot proxies with
+1. **Integration.** Done in `0.8.2`: profiles, migration, slot proxies with
    capability forwarding, config sensor, recorder exclusion, `strings.json`.
    The ESP32 keeps working unchanged, because its entity IDs are preserved.
 2. **T560.** Done: config sensor, dynamic tiles, offline cache, mDNS

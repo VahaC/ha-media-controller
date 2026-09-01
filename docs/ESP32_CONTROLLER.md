@@ -75,7 +75,7 @@ substitutions:
   playlists_entity: sensor.your_controller_playlists
 
   # Room-control slots 1 to 4 of the controller entry. An installation created
-  # before integration 0.8.1 keeps the older light.<controller>_light_1
+  # before integration 0.8.2 keeps the older light.<controller>_light_1
   # spelling; a newer one uses _slot_1. Copy whichever Home Assistant shows.
   light1_entity: light.your_controller_slot_1
   light2_entity: light.your_controller_slot_2

@@ -13,7 +13,7 @@ substitutions:
   # lights, slots 3 and 4 switches; the integration enforces that. These names
   # are kept from the first release and must not be renamed: this package is
   # pulled by ref, so a renamed substitution breaks the next compile.
-  # Installations created before integration 0.8.1 keep entity IDs spelled
+  # Installations created before integration 0.8.2 keep entity IDs spelled
   # light.<controller>_light_1; new ones are spelled light.<controller>_slot_1.
   light1_entity: light.your_controller_slot_1
   light2_entity: light.your_controller_slot_2

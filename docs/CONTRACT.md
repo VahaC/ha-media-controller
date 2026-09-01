@@ -35,7 +35,7 @@ hardcode them.
 for every other client.
 
 **Two entity ID spellings are valid and both are permanent.** An installation
-created before integration `0.8.1` keeps `light.<controller>_light_1`,
+created before integration `0.8.2` keeps `light.<controller>_light_1`,
 `light.<controller>_light_2`, `switch.<controller>_fan`, and
 `switch.<controller>_ac` for slots 1 to 4, because the migration preserves the
 registry rows so that flashed devices need no reflash. An installation created
