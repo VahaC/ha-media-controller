@@ -12,6 +12,7 @@ __pycache__/
 .venv/
 
 # Editor and OS files
+.claude/
 .vscode/
 .idea/
 .DS_Store
