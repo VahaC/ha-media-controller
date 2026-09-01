@@ -20,7 +20,7 @@ substitutions:
 
 packages:
   media_controller:
-    url: https://github.com/VahaC/music-assistant-esp32s34848s040-controller
+    url: https://github.com/VahaC/ha-media-controller
     ref: main
     files:
       - firmware/media-controller.yaml

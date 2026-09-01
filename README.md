@@ -60,7 +60,7 @@ Until this repository is included in the default HACS catalog:
 
 1. Open HACS → Integrations → Custom repositories.
 2. Add
-   `https://github.com/VahaC/music-assistant-esp32s34848s040-controller`
+   `https://github.com/VahaC/ha-media-controller`
    as an **Integration** repository.
 3. Install **Media Controller** and restart Home Assistant.
 4. Open Settings → Devices & services → Add integration.
@@ -131,7 +131,7 @@ substitutions:
 
 packages:
   media_controller:
-    url: https://github.com/VahaC/music-assistant-esp32s34848s040-controller
+    url: https://github.com/VahaC/ha-media-controller
     ref: main
     files:
       - firmware/media-controller.yaml
@@ -338,11 +338,11 @@ override it as well whenever the branch changes image assets:
 
 ```yaml
 substitutions:
-  asset_base_url: "https://raw.githubusercontent.com/VahaC/music-assistant-esp32s34848s040-controller/dev/firmware/assets"
+  asset_base_url: "https://raw.githubusercontent.com/VahaC/ha-media-controller/dev/firmware/assets"
 
 packages:
   media_controller:
-    url: https://github.com/VahaC/music-assistant-esp32s34848s040-controller
+    url: https://github.com/VahaC/ha-media-controller
     ref: dev
     files:
       - firmware/media-controller.yaml
@@ -357,7 +357,7 @@ substitutions:
   asset_base_url: assets
 
 packages:
-  media_controller: !include ../music-assistant-esp32s34848s040-controller/firmware/media-controller.yaml
+  media_controller: !include ../ha-media-controller/firmware/media-controller.yaml
 ```
 
 Users should pin a release tag rather than a branch, so that work in progress on

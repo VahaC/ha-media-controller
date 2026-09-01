@@ -10,7 +10,7 @@ substitutions:
   ac_entity: switch.replace_me_ac
   ha_url: "http://homeassistant.local:8123"
   ha_token: "replace_me"
-  asset_base_url: "https://raw.githubusercontent.com/VahaC/music-assistant-esp32s34848s040-controller/main/firmware/assets"
+  asset_base_url: "https://raw.githubusercontent.com/VahaC/ha-media-controller/main/firmware/assets"
 
 esphome:
   name: ${device_name}
