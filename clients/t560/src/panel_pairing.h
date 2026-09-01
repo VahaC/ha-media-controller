@@ -32,4 +32,8 @@ gchar *panel_pairing_config_entity(void);
 
 void panel_pairing_forget_code(void);
 
+/* Drops a token Home Assistant no longer accepts, so that the next start
+ * shows a pairing code instead of failing every request. */
+void panel_pairing_forget_token(void);
+
 #endif

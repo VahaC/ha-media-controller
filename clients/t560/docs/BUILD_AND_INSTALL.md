@@ -220,6 +220,12 @@ run and is derived from the tablet's hardware address, so two tablets never
 claim the same Home Assistant device. Override it here only if you have a
 reason to.
 
+The tablet announces itself with Avahi. `deploy-tablet.cmd` checks for it,
+installs it through `doas` or `sudo` when it is missing, enables the service,
+and verifies the announcement before it finishes; it stops with the exact root
+commands when the account cannot install packages. Nothing about mDNS has to
+be set up by hand.
+
 The `[panel]` section holds the tablet-local settings: polling timings and
 the inactivity timeout that turns the display off. They stay on the tablet
 because the Power button handler and the motion detector read them directly,

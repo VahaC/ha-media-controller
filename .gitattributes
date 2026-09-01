@@ -1,0 +1,16 @@
+# Line endings are decided here, not by each contributor's git config.
+#
+# The tablet executes its shell scripts through a shebang. A single trailing
+# CR makes the kernel look for an interpreter called "/bin/sh\r", and the
+# error it reports names the script instead: "No such file or directory" for
+# a file that is plainly there. Checked-out files therefore stay LF whatever
+# core.autocrlf says.
+* text=auto eol=lf
+
+# Run by cmd.exe on Windows.
+*.cmd text eol=crlf
+
+# Never rewritten.
+*.png binary
+*.bin binary
+*.apk binary

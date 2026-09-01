@@ -48,11 +48,21 @@ for %%F in (
     "scripts\t560-motion-detector.py"
     "scripts\t560-home-button"
     "scripts\t560-configure-openbox.py"
+    "scripts\t560-announce-panel"
 ) do (
     if not exist "%%~F" (
         echo ERROR: Missing local file: %%~F
         goto :failure
     )
+)
+
+echo Checking mDNS support on the tablet...
+rem Without Avahi the panel cannot announce itself and Home Assistant will
+rem never offer to add it. -t is used so that doas or sudo can prompt.
+"%SSH_EXE%" -t "%TABLET_TARGET%" "set -eu; if [ $(id -u) = 0 ]; then SU=env; elif command -v doas >/dev/null 2>&1; then SU=doas; elif command -v sudo >/dev/null 2>&1; then SU=sudo; else SU=none; fi; if command -v avahi-publish-service >/dev/null 2>&1 && command -v avahi-browse >/dev/null 2>&1; then echo 'avahi: present'; else if [ $SU = none ]; then echo 'ERROR: Avahi is missing and this account cannot install it.' >&2; echo 'Run once as root: apk add avahi avahi-tools dbus; rc-update add dbus default; rc-update add avahi-daemon default; rc-service dbus start; rc-service avahi-daemon start' >&2; exit 1; fi; echo 'avahi: installing'; $SU apk add --no-cache avahi avahi-tools dbus; fi; if ! pgrep -x avahi-daemon >/dev/null 2>&1; then if [ $SU = none ]; then echo 'ERROR: avahi-daemon is not running and this account cannot start it.' >&2; exit 1; fi; $SU rc-update add dbus default >/dev/null 2>&1 || true; $SU rc-update add avahi-daemon default >/dev/null 2>&1 || true; $SU rc-service dbus start >/dev/null 2>&1 || true; $SU rc-service avahi-daemon start >/dev/null 2>&1 || true; sleep 2; fi; pgrep -x avahi-daemon >/dev/null 2>&1 || { echo 'ERROR: avahi-daemon did not start.' >&2; exit 1; }; echo 'avahi-daemon: running'"
+if errorlevel 1 (
+    echo ERROR: mDNS could not be set up on the tablet.
+    goto :failure
 )
 
 echo Deploying the T560 panel to %TABLET_TARGET%...
@@ -75,6 +85,8 @@ call :send_file "scripts\t560-home-button" "%REMOTE_BIN%/t560-home-button.new"
 if errorlevel 1 goto :failure
 call :send_file "scripts\t560-configure-openbox.py" "%REMOTE_BIN%/t560-configure-openbox.py.new"
 if errorlevel 1 goto :failure
+call :send_file "scripts\t560-announce-panel" "%REMOTE_BIN%/t560-announce-panel.new"
+if errorlevel 1 goto :failure
 
 echo Deploying the launcher icon and the desktop entries...
 "%SSH_EXE%" "%TABLET_TARGET%" "mkdir -p '%REMOTE_APPS%' '%REMOTE_ICONS%/16x16/apps' '%REMOTE_ICONS%/24x24/apps' '%REMOTE_ICONS%/32x32/apps' '%REMOTE_ICONS%/48x48/apps' '%REMOTE_ICONS%/64x64/apps' '%REMOTE_ICONS%/128x128/apps' '%REMOTE_ICONS%/256x256/apps' '%REMOTE_ICONS%/512x512/apps'"
@@ -96,7 +108,7 @@ echo WARNING: The launcher icon was not updated. The panel deployment continues.
 :icons_done
 
 echo Validating runtime dependencies...
-"%SSH_EXE%" "%TABLET_TARGET%" "set -eu; chmod 755 '%REMOTE_BIN%/t560-panel.new' '%REMOTE_BIN%/t560-panel-watchdog.new' '%REMOTE_BIN%/t560-open-panel.new' '%REMOTE_BIN%/t560-restart-panel.new' '%REMOTE_BIN%/t560-power-button.py.new' '%REMOTE_BIN%/t560-motion-detector.py.new' '%REMOTE_BIN%/t560-home-button.new' '%REMOTE_BIN%/t560-configure-openbox.py.new'; python3 -m py_compile '%REMOTE_BIN%/t560-power-button.py.new' '%REMOTE_BIN%/t560-motion-detector.py.new' '%REMOTE_BIN%/t560-configure-openbox.py.new'; ldd '%REMOTE_BIN%/t560-panel.new' > '%REMOTE_STATE%/t560-deploy-ldd.log' 2>&1; cat '%REMOTE_STATE%/t560-deploy-ldd.log'; if grep -q 'not found' '%REMOTE_STATE%/t560-deploy-ldd.log'; then echo 'ERROR: A runtime dependency is missing.' >&2; exit 1; fi"
+"%SSH_EXE%" "%TABLET_TARGET%" "set -eu; chmod 755 '%REMOTE_BIN%/t560-panel.new' '%REMOTE_BIN%/t560-panel-watchdog.new' '%REMOTE_BIN%/t560-open-panel.new' '%REMOTE_BIN%/t560-restart-panel.new' '%REMOTE_BIN%/t560-power-button.py.new' '%REMOTE_BIN%/t560-motion-detector.py.new' '%REMOTE_BIN%/t560-home-button.new' '%REMOTE_BIN%/t560-configure-openbox.py.new' '%REMOTE_BIN%/t560-announce-panel.new'; for f in '%REMOTE_BIN%'/*.new; do case "$f" in *t560-panel.new) ;; *) sed -i 's/\r$//' "$f" ;; esac; done; python3 -m py_compile '%REMOTE_BIN%/t560-power-button.py.new' '%REMOTE_BIN%/t560-motion-detector.py.new' '%REMOTE_BIN%/t560-configure-openbox.py.new'; ldd '%REMOTE_BIN%/t560-panel.new' > '%REMOTE_STATE%/t560-deploy-ldd.log' 2>&1; cat '%REMOTE_STATE%/t560-deploy-ldd.log'; if grep -q 'not found' '%REMOTE_STATE%/t560-deploy-ldd.log'; then echo 'ERROR: A runtime dependency is missing.' >&2; exit 1; fi"
 if errorlevel 1 goto :failure
 
 echo Activating the update and restarting the panel...
@@ -105,10 +117,10 @@ echo Activating the update and restarting the panel...
 "%SSH_EXE%" "%TABLET_TARGET%" "pkill -f '[t]560-power-button.py'" >nul 2>&1
 "%SSH_EXE%" "%TABLET_TARGET%" "pkill -f '[t]560-motion-detector.py'" >nul 2>&1
 
-"%SSH_EXE%" "%TABLET_TARGET%" "cp '%REMOTE_BIN%/t560-panel' '%REMOTE_BIN%/t560-panel.previous'; cp '%REMOTE_BIN%/t560-panel-watchdog' '%REMOTE_BIN%/t560-panel-watchdog.previous'; cp '%REMOTE_BIN%/t560-open-panel' '%REMOTE_BIN%/t560-open-panel.previous'; cp '%REMOTE_BIN%/t560-restart-panel' '%REMOTE_BIN%/t560-restart-panel.previous'; cp '%REMOTE_BIN%/t560-power-button.py' '%REMOTE_BIN%/t560-power-button.py.previous'; if test -f '%REMOTE_BIN%/t560-motion-detector.py'; then cp '%REMOTE_BIN%/t560-motion-detector.py' '%REMOTE_BIN%/t560-motion-detector.py.previous'; fi; if test -f '%REMOTE_BIN%/t560-home-button'; then cp '%REMOTE_BIN%/t560-home-button' '%REMOTE_BIN%/t560-home-button.previous'; fi; if test -f '%REMOTE_BIN%/t560-configure-openbox.py'; then cp '%REMOTE_BIN%/t560-configure-openbox.py' '%REMOTE_BIN%/t560-configure-openbox.py.previous'; fi; cp '%REMOTE_HOME%/.config/openbox/rc.xml' '%REMOTE_HOME%/.config/openbox/rc.xml.t560-deploy-previous'"
+"%SSH_EXE%" "%TABLET_TARGET%" "cp '%REMOTE_BIN%/t560-panel' '%REMOTE_BIN%/t560-panel.previous'; cp '%REMOTE_BIN%/t560-panel-watchdog' '%REMOTE_BIN%/t560-panel-watchdog.previous'; cp '%REMOTE_BIN%/t560-open-panel' '%REMOTE_BIN%/t560-open-panel.previous'; cp '%REMOTE_BIN%/t560-restart-panel' '%REMOTE_BIN%/t560-restart-panel.previous'; cp '%REMOTE_BIN%/t560-power-button.py' '%REMOTE_BIN%/t560-power-button.py.previous'; if test -f '%REMOTE_BIN%/t560-motion-detector.py'; then cp '%REMOTE_BIN%/t560-motion-detector.py' '%REMOTE_BIN%/t560-motion-detector.py.previous'; fi; if test -f '%REMOTE_BIN%/t560-home-button'; then cp '%REMOTE_BIN%/t560-home-button' '%REMOTE_BIN%/t560-home-button.previous'; fi; if test -f '%REMOTE_BIN%/t560-configure-openbox.py'; then cp '%REMOTE_BIN%/t560-configure-openbox.py' '%REMOTE_BIN%/t560-configure-openbox.py.previous'; fi; if test -f '%REMOTE_BIN%/t560-announce-panel'; then cp '%REMOTE_BIN%/t560-announce-panel' '%REMOTE_BIN%/t560-announce-panel.previous'; fi; cp '%REMOTE_HOME%/.config/openbox/rc.xml' '%REMOTE_HOME%/.config/openbox/rc.xml.t560-deploy-previous'"
 if errorlevel 1 goto :failure
 
-"%SSH_EXE%" "%TABLET_TARGET%" "mv '%REMOTE_BIN%/t560-panel.new' '%REMOTE_BIN%/t560-panel'; mv '%REMOTE_BIN%/t560-panel-watchdog.new' '%REMOTE_BIN%/t560-panel-watchdog'; mv '%REMOTE_BIN%/t560-open-panel.new' '%REMOTE_BIN%/t560-open-panel'; mv '%REMOTE_BIN%/t560-restart-panel.new' '%REMOTE_BIN%/t560-restart-panel'; mv '%REMOTE_BIN%/t560-power-button.py.new' '%REMOTE_BIN%/t560-power-button.py'; mv '%REMOTE_BIN%/t560-motion-detector.py.new' '%REMOTE_BIN%/t560-motion-detector.py'; mv '%REMOTE_BIN%/t560-home-button.new' '%REMOTE_BIN%/t560-home-button'; mv '%REMOTE_BIN%/t560-configure-openbox.py.new' '%REMOTE_BIN%/t560-configure-openbox.py'; chmod 755 '%REMOTE_BIN%/t560-panel' '%REMOTE_BIN%/t560-panel-watchdog' '%REMOTE_BIN%/t560-open-panel' '%REMOTE_BIN%/t560-restart-panel' '%REMOTE_BIN%/t560-power-button.py' '%REMOTE_BIN%/t560-motion-detector.py' '%REMOTE_BIN%/t560-home-button' '%REMOTE_BIN%/t560-configure-openbox.py'"
+"%SSH_EXE%" "%TABLET_TARGET%" "mv '%REMOTE_BIN%/t560-panel.new' '%REMOTE_BIN%/t560-panel'; mv '%REMOTE_BIN%/t560-panel-watchdog.new' '%REMOTE_BIN%/t560-panel-watchdog'; mv '%REMOTE_BIN%/t560-open-panel.new' '%REMOTE_BIN%/t560-open-panel'; mv '%REMOTE_BIN%/t560-restart-panel.new' '%REMOTE_BIN%/t560-restart-panel'; mv '%REMOTE_BIN%/t560-power-button.py.new' '%REMOTE_BIN%/t560-power-button.py'; mv '%REMOTE_BIN%/t560-motion-detector.py.new' '%REMOTE_BIN%/t560-motion-detector.py'; mv '%REMOTE_BIN%/t560-home-button.new' '%REMOTE_BIN%/t560-home-button'; mv '%REMOTE_BIN%/t560-configure-openbox.py.new' '%REMOTE_BIN%/t560-configure-openbox.py'; mv '%REMOTE_BIN%/t560-announce-panel.new' '%REMOTE_BIN%/t560-announce-panel'; chmod 755 '%REMOTE_BIN%/t560-panel' '%REMOTE_BIN%/t560-panel-watchdog' '%REMOTE_BIN%/t560-open-panel' '%REMOTE_BIN%/t560-restart-panel' '%REMOTE_BIN%/t560-power-button.py' '%REMOTE_BIN%/t560-motion-detector.py' '%REMOTE_BIN%/t560-home-button' '%REMOTE_BIN%/t560-configure-openbox.py' '%REMOTE_BIN%/t560-announce-panel'"
 if errorlevel 1 goto :rollback
 
 "%SSH_EXE%" "%TABLET_TARGET%" "'%REMOTE_BIN%/t560-configure-openbox.py' '%REMOTE_HOME%/.config/openbox/rc.xml' && DISPLAY=:0 openbox --reconfigure"
@@ -120,6 +132,13 @@ if errorlevel 1 goto :rollback
 if errorlevel 1 goto :rollback
 "%SSH_EXE%" "%TABLET_TARGET%" "nohup python3 '%REMOTE_BIN%/t560-motion-detector.py' >>'%REMOTE_STATE%/motion-detector.log' 2>&1 </dev/null &"
 if errorlevel 1 goto :rollback
+
+echo Announcing the panel over mDNS...
+"%SSH_EXE%" "%TABLET_TARGET%" "pkill -f '[t]560-announce-panel'" >nul 2>&1
+"%SSH_EXE%" "%TABLET_TARGET%" "nohup '%REMOTE_BIN%/t560-announce-panel' >>'%REMOTE_STATE%/announce-panel.log' 2>&1 </dev/null &"
+
+echo Verifying the announcement...
+"%SSH_EXE%" "%TABLET_TARGET%" "sleep 3; if avahi-browse -rtp _media-controller._tcp 2>/dev/null | grep -q '^='; then echo 'panel: announced over mDNS'; else echo 'WARNING: the panel is not announcing itself yet.'; echo 'WARNING: see ~/.local/state/announce-panel.log'; fi"
 
 powershell.exe -NoProfile -Command "Start-Sleep -Seconds 4"
 "%SSH_EXE%" "%TABLET_TARGET%" "pgrep -x t560-panel; pgrep -f '[t]560-panel-watchdog'; pgrep -f '[t]560-power-button.py'; grep -q '%REMOTE_BIN%/t560-home-button' '%REMOTE_HOME%/.config/openbox/rc.xml'; tail -n 20 '%REMOTE_STATE%/t560-music-panel.log'; tail -n 5 '%REMOTE_STATE%/power-button.log'; tail -n 5 '%REMOTE_STATE%/motion-detector.log'"
@@ -149,7 +168,7 @@ echo ERROR: The updated panel did not pass the runtime check. Restoring the prev
 "%SSH_EXE%" "%TABLET_TARGET%" "pkill -x t560-panel" >nul 2>&1
 "%SSH_EXE%" "%TABLET_TARGET%" "pkill -f '[t]560-power-button.py'" >nul 2>&1
 "%SSH_EXE%" "%TABLET_TARGET%" "pkill -f '[t]560-motion-detector.py'" >nul 2>&1
-"%SSH_EXE%" "%TABLET_TARGET%" "mv '%REMOTE_BIN%/t560-panel.previous' '%REMOTE_BIN%/t560-panel'; mv '%REMOTE_BIN%/t560-panel-watchdog.previous' '%REMOTE_BIN%/t560-panel-watchdog'; mv '%REMOTE_BIN%/t560-open-panel.previous' '%REMOTE_BIN%/t560-open-panel'; mv '%REMOTE_BIN%/t560-restart-panel.previous' '%REMOTE_BIN%/t560-restart-panel'; mv '%REMOTE_BIN%/t560-power-button.py.previous' '%REMOTE_BIN%/t560-power-button.py'; if test -f '%REMOTE_BIN%/t560-motion-detector.py.previous'; then mv '%REMOTE_BIN%/t560-motion-detector.py.previous' '%REMOTE_BIN%/t560-motion-detector.py'; else rm -f '%REMOTE_BIN%/t560-motion-detector.py'; fi; if test -f '%REMOTE_BIN%/t560-home-button.previous'; then mv '%REMOTE_BIN%/t560-home-button.previous' '%REMOTE_BIN%/t560-home-button'; else rm -f '%REMOTE_BIN%/t560-home-button'; fi; if test -f '%REMOTE_BIN%/t560-configure-openbox.py.previous'; then mv '%REMOTE_BIN%/t560-configure-openbox.py.previous' '%REMOTE_BIN%/t560-configure-openbox.py'; else rm -f '%REMOTE_BIN%/t560-configure-openbox.py'; fi; if test -f '%REMOTE_HOME%/.config/openbox/rc.xml.t560-deploy-previous'; then mv '%REMOTE_HOME%/.config/openbox/rc.xml.t560-deploy-previous' '%REMOTE_HOME%/.config/openbox/rc.xml'; fi; chmod 755 '%REMOTE_BIN%/t560-panel' '%REMOTE_BIN%/t560-panel-watchdog' '%REMOTE_BIN%/t560-open-panel' '%REMOTE_BIN%/t560-restart-panel' '%REMOTE_BIN%/t560-power-button.py'; DISPLAY=:0 openbox --reconfigure"
+"%SSH_EXE%" "%TABLET_TARGET%" "mv '%REMOTE_BIN%/t560-panel.previous' '%REMOTE_BIN%/t560-panel'; mv '%REMOTE_BIN%/t560-panel-watchdog.previous' '%REMOTE_BIN%/t560-panel-watchdog'; mv '%REMOTE_BIN%/t560-open-panel.previous' '%REMOTE_BIN%/t560-open-panel'; mv '%REMOTE_BIN%/t560-restart-panel.previous' '%REMOTE_BIN%/t560-restart-panel'; mv '%REMOTE_BIN%/t560-power-button.py.previous' '%REMOTE_BIN%/t560-power-button.py'; if test -f '%REMOTE_BIN%/t560-motion-detector.py.previous'; then mv '%REMOTE_BIN%/t560-motion-detector.py.previous' '%REMOTE_BIN%/t560-motion-detector.py'; else rm -f '%REMOTE_BIN%/t560-motion-detector.py'; fi; if test -f '%REMOTE_BIN%/t560-home-button.previous'; then mv '%REMOTE_BIN%/t560-home-button.previous' '%REMOTE_BIN%/t560-home-button'; else rm -f '%REMOTE_BIN%/t560-home-button'; fi; if test -f '%REMOTE_BIN%/t560-configure-openbox.py.previous'; then mv '%REMOTE_BIN%/t560-configure-openbox.py.previous' '%REMOTE_BIN%/t560-configure-openbox.py'; else rm -f '%REMOTE_BIN%/t560-configure-openbox.py'; fi; if test -f '%REMOTE_BIN%/t560-announce-panel.previous'; then mv '%REMOTE_BIN%/t560-announce-panel.previous' '%REMOTE_BIN%/t560-announce-panel'; else rm -f '%REMOTE_BIN%/t560-announce-panel'; fi; if test -f '%REMOTE_HOME%/.config/openbox/rc.xml.t560-deploy-previous'; then mv '%REMOTE_HOME%/.config/openbox/rc.xml.t560-deploy-previous' '%REMOTE_HOME%/.config/openbox/rc.xml'; fi; chmod 755 '%REMOTE_BIN%/t560-panel' '%REMOTE_BIN%/t560-panel-watchdog' '%REMOTE_BIN%/t560-open-panel' '%REMOTE_BIN%/t560-restart-panel' '%REMOTE_BIN%/t560-power-button.py'; DISPLAY=:0 openbox --reconfigure"
 "%SSH_EXE%" "%TABLET_TARGET%" "'%REMOTE_BIN%/t560-restart-panel'"
 "%SSH_EXE%" "%TABLET_TARGET%" "nohup python3 '%REMOTE_BIN%/t560-power-button.py' >>'%REMOTE_STATE%/power-button.log' 2>&1 </dev/null &"
 "%SSH_EXE%" "%TABLET_TARGET%" "if test -x '%REMOTE_BIN%/t560-motion-detector.py'; then nohup python3 '%REMOTE_BIN%/t560-motion-detector.py' >>'%REMOTE_STATE%/motion-detector.log' 2>&1 </dev/null & fi"

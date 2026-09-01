@@ -1335,6 +1335,7 @@ GtkWidget *panel_ui_build_pairing(const gchar *code, const gchar *message)
     gtk_label_set_line_wrap(GTK_LABEL(status), TRUE);
     gtk_label_set_justify(GTK_LABEL(status), GTK_JUSTIFY_CENTER);
     gtk_widget_set_halign(digits, GTK_ALIGN_CENTER);
+    gtk_widget_set_size_request(digits, 600, -1);  // Adjust 600 to fit your 6 digit code
 
     gtk_box_pack_start(GTK_BOX(box),
                        new_label("T560 Music Panel", "setup-title"),
@@ -1408,7 +1409,7 @@ void panel_ui_install_styles(void)
         ".config-error{font-size:21px}"
         /* Read out loud from across the room, so it is the largest text the
          * panel ever draws. */
-        ".pairing-code{font-size:96px;font-weight:700;letter-spacing:14px;"
+        ".pairing-code{font-size:86px;font-weight:700;letter-spacing:14px;"
         "color:#f2f6ff}";
     static const gchar room_css[] =
         ".room-page{background:transparent}"

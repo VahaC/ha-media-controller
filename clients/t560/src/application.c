@@ -12,6 +12,11 @@
 
 #define APPLICATION_ID "com.vahac.T560MusicPanel"
 
+/* Home Assistant restarting answers with a refused connection, not a refused
+ * token, so a handful of rejections in a row really does mean the token is
+ * gone rather than that the server is busy. */
+#define UNAUTHORIZED_POLL_LIMIT 3
+
 typedef struct {
     GtkApplication *gtk_application;
     GtkWidget *window;
@@ -36,6 +41,7 @@ typedef struct {
     GFileMonitor *config_monitor;
     gint64 clock_minute;
     guint poll_pending;
+    guint unauthorized_polls;
     gint64 next_playlist_poll_us;
     gint64 next_config_poll_us;
     gint queue_selected;
@@ -732,15 +738,28 @@ static void state_finished(guint status_code, GBytes *body,
                          g_strdup_printf("Unknown entity %s: check config.ini",
                                          request->entity));
     } else if (status_code == 401 || status_code == 403) {
+        /* The token was revoked in Home Assistant, or expired. Nothing the
+         * panel can do will work again, so it drops the token and restarts
+         * into pairing, where Home Assistant offers to issue a new one. A few
+         * cycles are allowed first, so that a momentary refusal does not
+         * throw away a working token. */
+        application->unauthorized_polls++;
         note_poll_status(application, PANEL_UI_STATUS_WARNING,
                          g_strdup_printf("Home Assistant refused the token "
-                                         "(HTTP %u): check config.ini",
-                                         status_code));
+                                         "(HTTP %u)", status_code));
+        if (application->unauthorized_polls >= UNAUTHORIZED_POLL_LIMIT &&
+            !application->restarting) {
+            application->restarting = TRUE;
+            g_warning("Home Assistant rejected the token; pairing again");
+            panel_pairing_forget_token();
+            g_application_quit(G_APPLICATION(application->gtk_application));
+        }
     } else if (status_code != 200 || body == NULL) {
         note_poll_status(application, PANEL_UI_STATUS_WARNING,
                          g_strdup_printf("%s: Home Assistant HTTP %u",
                                          request->entity, status_code));
     } else {
+        application->unauthorized_polls = 0;
         GError *parse_error = NULL;
         JsonParser *parser = NULL;
 

@@ -84,6 +84,18 @@ def _pairing_schema() -> vol.Schema:
     )
 
 
+def _text_property(properties: dict[str, Any], key: str) -> str:
+    """Read one mDNS TXT record as text.
+
+    Home Assistant usually decodes these, but not always: an undecodable
+    record arrives as bytes, and str() on that would yield "b't560'".
+    """
+    value = properties.get(key)
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", "replace")
+    return str(value or "").strip()
+
+
 def _slot_fields(profile: ClientProfile) -> dict[Any, Any]:
     """Build one entity selector and one label field per slot.
 
@@ -252,7 +264,10 @@ class MediaControllerConfigFlow(
     ) -> ConfigFlowResult:
         """Handle a panel that announced itself on the local network."""
         properties = discovery_info.properties or {}
-        panel_id = str(properties.get(ZEROCONF_PROP_PANEL_ID) or "").strip()
+        _LOGGER.debug(
+            "Panel announcement from %s: %s", discovery_info.host, properties
+        )
+        panel_id = _text_property(properties, ZEROCONF_PROP_PANEL_ID)
         if not panel_id:
             return self.async_abort(reason="no_panel_id")
 
@@ -263,11 +278,10 @@ class MediaControllerConfigFlow(
 
         self._panel_id = panel_id
         self._profile = panel_profile(
-            str(properties.get(ZEROCONF_PROP_PROFILE) or "")
+            _text_property(properties, ZEROCONF_PROP_PROFILE)
         )
         self._panel_name = (
-            str(properties.get(ZEROCONF_PROP_NAME) or "").strip()
-            or panel_id
+            _text_property(properties, ZEROCONF_PROP_NAME) or panel_id
         )
         self._panel_host = discovery_info.host
 

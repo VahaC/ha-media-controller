@@ -147,6 +147,17 @@ void panel_pairing_forget_code(void)
     g_free(path);
 }
 
+void panel_pairing_forget_token(void)
+{
+    gchar *path = identity_path("token");
+
+    g_unlink(path);
+    g_free(path);
+    /* A new pairing gets a new code: the one on screen may have been read by
+     * whoever revoked the token. */
+    panel_pairing_forget_code();
+}
+
 gchar *panel_pairing_config_entity(void)
 {
     gchar *path = app_config_cache_path(CONFIG_ENTITY_FILE);
