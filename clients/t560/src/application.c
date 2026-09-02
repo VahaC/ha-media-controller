@@ -1009,6 +1009,14 @@ static void pairing_finished(guint status_code, GBytes *body,
                      "Add it there, then enter this code.");
         return;
     }
+    if (status_code == 202) {
+        /* The code was accepted; the token follows once the rest of the form
+         * in Home Assistant is finished. The panel keeps asking. */
+        show_pairing(application,
+                     "Code accepted.\n"
+                     "Finish the setup in Home Assistant.");
+        return;
+    }
     if (status_code != 200 || body == NULL) {
         show_pairing(application,
                      "Enter this code in Home Assistant to finish pairing.");

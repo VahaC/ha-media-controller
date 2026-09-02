@@ -82,10 +82,12 @@ pairing.
 
 The token is not written by hand either. A panel without one shows a six-digit
 pairing code and asks Home Assistant for a token; Home Assistant creates one
-for a dedicated user, and the panel stores it with mode 0600. A wiped tablet
-derives the same panel ID again and re-pairs through the standard
-reauthentication prompt, keeping its device and its room controls. Never commit
-the token.
+for a dedicated user, and the panel stores it with mode 0600. The code is the
+**first** thing the setup in Home Assistant asks for, so the screen changes to
+"Code accepted" while the rest of the form is filled in, and the token arrives
+a few seconds after it is finished. A wiped tablet derives the same panel ID
+again and re-pairs through the standard reauthentication prompt, keeping its
+device and its room controls. Never commit the token.
 
 `t560-announce-panel` publishes the panel over mDNS so that Home Assistant
 offers to add it, and writes the resolved Home Assistant URL to

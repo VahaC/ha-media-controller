@@ -47,9 +47,19 @@ removes its proxy.
 
 A panel — a tablet running the T560 application — **announces itself on the
 local network**. Home Assistant shows it as a discovered device: press
-*Configure*, choose which media controller it plays from, fill its room-control
-slots, and it is done. Nothing is typed on the tablet, and nothing but the
-access token is configured there.
+*Configure* and the form asks, in this order:
+
+1. **the six-digit code the tablet is showing.** Home Assistant then waits for
+   the panel to answer with the same code, which is the only part of the setup
+   that can fail on its own: the tablet may be off, on another network, or
+   showing a code from an earlier attempt. Nothing is stored and nothing else
+   is asked until it has answered, and a wrong code can simply be retyped.
+2. **which media controller it plays from**;
+3. **its room-control slots.**
+
+Finishing the form is what releases the access token: the tablet collects it on
+its next poll, a few seconds later, and restarts into normal operation. Nothing
+is typed on the tablet, and nothing but the token is configured there.
 
 A panel that cannot announce itself is added with *Add device* → *Panel*, where
 the panel ID has to match the one the device uses. A panel derives that ID
@@ -59,6 +69,9 @@ device.
 
 Each panel is its own config entry and its own Home Assistant device, with its
 own slot proxies and its own config sensor, linked to the controller it reads.
+*Configure* on a panel device reopens the controller choice and the slots, so
+moving a panel to another Music Assistant player is a remapping like any other:
+the tablet keeps its token, its device, and its entity IDs.
 
 The room controls of the ESP32 live on the controller entry itself, because the
 firmware resolves their entity IDs at compile time and they already exist there.

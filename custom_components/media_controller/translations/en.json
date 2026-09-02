@@ -32,20 +32,26 @@
         "data": {
           "profile": "Device type",
           "panel_id": "Panel ID",
-          "name": "Name",
-          "controller_entry_id": "Media controller"
+          "name": "Name"
         }
       },
-      "panel_confirm": {
-        "title": "Panel found",
-        "description": "{name} is a {profile} at {host}, and it drives up to {slot_count} room controls. Choose the media controller it should play from.",
+      "pair": {
+        "title": "Pair the panel",
+        "description": "{name} is showing a six-digit code on its screen. Type it here first: Home Assistant hands the panel an access token of its own, and nothing else is asked until the panel has answered. Nothing has to be typed on the tablet.",
+        "data": {
+          "pairing_code": "Pairing code"
+        }
+      },
+      "controller_link": {
+        "title": "Media controller",
+        "description": "{name} is paired. It is a {profile} and drives up to {slot_count} room controls. Choose the media controller it should play from.",
         "data": {
           "controller_entry_id": "Media controller"
         }
       },
       "slots": {
         "title": "Room controls",
-        "description": "{name} is a {profile} and drives up to {slot_count} room controls. Leave a slot empty to hide that tile. Labels are optional and fall back to the entity name.",
+        "description": "{name} is paired and is a {profile} driving up to {slot_count} room controls. Leave a slot empty to hide that tile. Labels are optional and fall back to the entity name.",
         "data": {
           "slot_1_entity": "Slot 1",
           "slot_1_label": "Slot 1 label",
@@ -61,13 +67,6 @@
           "slot_6_label": "Slot 6 label"
         }
       },
-      "provision": {
-        "title": "Pair the panel",
-        "description": "{name} is showing a six-digit code on its screen. Type it here and Home Assistant will hand the panel an access token of its own. Nothing has to be typed on the tablet.",
-        "data": {
-          "pairing_code": "Pairing code"
-        }
-      },
       "reauth_confirm": {
         "title": "Pair the panel again",
         "description": "{name} is asking for a new access token, which happens after the tablet is wiped. Type the code it is showing. Its room controls and entity IDs stay as they are; only the token is replaced.",
@@ -79,13 +78,18 @@
     "error": {
       "not_music_assistant": "Select a media player provided by Music Assistant.",
       "invalid_code": "The pairing code is six digits.",
-      "token_failed": "Home Assistant could not create an access token for this panel. Check the log."
+      "token_failed": "Home Assistant could not create an access token for this panel. Check the log.",
+      "code_mismatch": "The panel is showing a different code. Read the six digits off the tablet again.",
+      "pairing_timeout": "The panel did not answer. Check that it is on, on the same network, and still showing a pairing code."
     },
     "abort": {
       "already_configured": "This device is already configured.",
       "reauth_successful": "The panel will pick up its new token within a few seconds.",
       "no_controller": "Add a media controller first: this panel has to play from one.",
       "no_panel_id": "The panel did not announce an identifier and cannot be added automatically."
+    },
+    "progress": {
+      "waiting_for_panel": "Waiting for {name} to answer with that code. Leave the tablet on its pairing screen."
     }
   },
   "options": {
@@ -106,9 +110,10 @@
         }
       },
       "slots": {
-        "title": "Room controls",
-        "description": "Remap the room controls of {name}, a {profile} driving up to {slot_count} of them. Leave a slot empty to hide that tile. Labels are optional and fall back to the entity name.",
+        "title": "Panel options",
+        "description": "Choose what {name} plays from and remap its room controls. It is a {profile} driving up to {slot_count} of them. Leave a slot empty to hide that tile. Labels are optional and fall back to the entity name. The panel keeps its token and its entity IDs.",
         "data": {
+          "controller_entry_id": "Media controller",
           "slot_1_entity": "Slot 1",
           "slot_1_label": "Slot 1 label",
           "slot_2_entity": "Slot 2",

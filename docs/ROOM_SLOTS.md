@@ -153,14 +153,20 @@ panel process is involved.
 
 1. **`zeroconf`** — the unique ID is `panel_<panel_id>`, so a panel that is
    already configured only has its address updated.
-2. **`panel_confirm`** — which controller the panel plays from. The description
-   names the device, its profile, and its slot count.
-3. **`slots`** — `len(profile.slots)` pairs of entity selector and label, each
-   selector restricted to `spec.domains`.
+2. **`pair`** — the code the tablet is showing, followed by `pair_wait`, a
+   progress step that ends when the panel answers with the same code. This is
+   first on purpose: it is the only part of the setup that depends on a device
+   that may not be listening, and everything after it is pure form-filling.
+3. **`controller_link`** — which controller the panel plays from. The
+   description names the device, its profile, and its slot count.
+4. **`slots`** — `len(profile.slots)` pairs of entity selector and label, each
+   selector restricted to `spec.domains`. Submitting it creates the entry,
+   which is what releases the token.
 
 `Add device` offers the same thing manually, for a panel that cannot announce
-itself, with the panel ID typed in. Editing a panel later reruns the slot form
-through its options flow.
+itself, with the panel ID typed in. Editing a panel later reruns the controller
+choice and the slot form through its options flow; the device type is not
+offered again, because it decides how many proxies exist.
 
 ## Capability normalization
 
@@ -294,11 +300,27 @@ instead.
 2. It polls `POST /api/media_controller/provision` every three seconds with
    its panel ID and that code.
 3. Home Assistant answers only for an **approved** pairing. Approval happens
-   in the flow that adds the panel, or — for a panel that already exists —
-   through the standard reauthentication prompt, which the endpoint raises the
-   first time an unapproved panel asks.
-4. On success the panel receives a token and its config sensor's entity ID,
+   in the flow that adds the panel — as its **first** step, before the
+   controller and the slots — or, for a panel that already exists, through the
+   standard reauthentication prompt, which the endpoint raises the first time
+   an unapproved panel asks.
+4. The first poll carrying the right code **confirms** the pairing. That is
+   what the setup form waits for: it asks nothing else until the right device
+   has answered, so nobody maps six room controls for a tablet that turns out
+   to be off. Five wrong codes cancel the approval and the form says so.
+5. A confirmed pairing does not yet hand anything over. The token is minted
+   when the form is finished, and travels on the first poll after the panel's
+   config entry and its config sensor exist. Until then the answer is
+   `202 pairing_pending` and the panel keeps asking; each correct poll extends
+   the window, so a slow setup cannot expire underneath it.
+6. On success the panel receives the token and its config sensor's entity ID,
    stores the token with mode `0600`, and restarts into normal operation.
+
+Holding the token back until the entry exists is also what makes the config
+sensor's entity ID always correct: it is read from the entity registry at the
+moment it is handed over, never guessed. And the token is not merely withheld
+until then, it is not minted until then: a setup closed halfway through leaves
+an approval that expires and nothing else.
 
 The token belongs to a dedicated non-administrator user, `Media Controller
 <name>`, so it can be revoked on its own. Re-pairing mints a new token and
@@ -313,7 +335,7 @@ present. What guards it, in `pairing.py` and covered by `tests/test_pairing.py`:
 
 - it answers only while an approval is open for **that** panel ID;
 - only for a code shown on the device's own screen;
-- for at most five minutes;
+- for at most five minutes after the last correct poll;
 - exactly once — a replay gets nothing;
 - and five wrong codes cancel the approval.
 
@@ -323,7 +345,7 @@ to another.
 ### What this does not protect against
 
 A device on the same network that can both see the panel's screen and reach
-Home Assistant could claim the token during those five minutes. That is the
+Home Assistant could claim the token while that window is open. That is the
 same trust boundary as reading the code aloud in the room, and it is the
 reason the window is short and single-use rather than open.
 

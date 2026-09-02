@@ -134,5 +134,135 @@ class PairingStoreTests(unittest.TestCase):
         self.store.discard("nothing")
 
 
+class TwoPhasePairingTests(unittest.TestCase):
+    """Verify confirming and collecting as the two moments they are.
+
+    The person types the code before the panel's config entry exists, so the
+    right code has to be recognised well before the token may travel.
+    """
+
+    def setUp(self) -> None:
+        self.store = pairing.PairingStore()
+
+    def test_states_walk_from_armed_to_collected(self) -> None:
+        self.assertIsNone(self.store.state(PANEL))
+        self.store.arm(PANEL, CODE, TOKEN, now=0.0)
+        self.assertEqual(self.store.state(PANEL, now=1.0), pairing.STATE_ARMED)
+
+        self.assertTrue(self.store.confirm(PANEL, CODE, now=1.0))
+        self.assertEqual(
+            self.store.state(PANEL, now=1.0), pairing.STATE_CONFIRMED
+        )
+        # Confirming does not hand anything over; the flow only learns that
+        # the right device is listening.
+        self.assertTrue(self.store.is_armed(PANEL, now=1.0))
+
+        self.assertEqual(self.store.collect(PANEL, now=2.0), TOKEN)
+        self.assertEqual(
+            self.store.state(PANEL, now=2.0), pairing.STATE_COLLECTED
+        )
+        self.assertFalse(self.store.is_armed(PANEL, now=2.0))
+
+    def test_the_token_is_not_collected_twice(self) -> None:
+        self.store.arm(PANEL, CODE, TOKEN, now=0.0)
+        self.store.confirm(PANEL, CODE, now=1.0)
+        self.assertEqual(self.store.collect(PANEL, now=1.0), TOKEN)
+        self.assertIsNone(self.store.collect(PANEL, now=1.0))
+        self.assertIsNone(self.store.claim(PANEL, CODE, now=1.0))
+
+    def test_nothing_is_collected_before_the_code_arrives(self) -> None:
+        self.store.arm(PANEL, CODE, TOKEN, now=0.0)
+        self.assertIsNone(self.store.collect(PANEL, now=1.0))
+        # And the approval is still open for the panel that has the code.
+        self.assertEqual(self.store.claim(PANEL, CODE, now=1.0), TOKEN)
+
+    def test_polling_with_the_right_code_keeps_the_window_open(self) -> None:
+        # The panel polls every three seconds while the rest of the form is
+        # filled in, so a slow setup must not expire underneath it.
+        self.store.arm(PANEL, CODE, TOKEN, now=0.0)
+        elapsed = 0.0
+        while elapsed < pairing.PAIRING_TIMEOUT * 2:
+            elapsed += 3.0
+            self.assertTrue(self.store.confirm(PANEL, CODE, now=elapsed))
+        self.assertEqual(self.store.collect(PANEL, now=elapsed), TOKEN)
+
+    def test_a_confirmed_approval_still_expires_when_left_alone(self) -> None:
+        self.store.arm(PANEL, CODE, TOKEN, now=0.0)
+        self.store.confirm(PANEL, CODE, now=1.0)
+        self.assertIsNone(
+            self.store.collect(PANEL, now=1.0 + pairing.PAIRING_TIMEOUT)
+        )
+
+    def test_rejection_is_reported_until_the_record_expires(self) -> None:
+        # The flow that is waiting reads this to tell "wrong code" apart from
+        # "the panel never answered".
+        self.store.arm(PANEL, CODE, TOKEN, now=0.0)
+        for _ in range(pairing.MAX_ATTEMPTS):
+            self.store.confirm(PANEL, "000000", now=1.0)
+        self.assertEqual(
+            self.store.state(PANEL, now=1.0), pairing.STATE_REJECTED
+        )
+        self.assertIsNone(self.store.collect(PANEL, now=1.0))
+        self.assertIsNone(self.store.state(PANEL, now=pairing.PAIRING_TIMEOUT))
+
+    def test_a_rejected_approval_keeps_no_token(self) -> None:
+        self.store.arm(PANEL, CODE, TOKEN, now=0.0)
+        for _ in range(pairing.MAX_ATTEMPTS):
+            self.store.confirm(PANEL, "000000", now=1.0)
+        self.assertEqual(self.store.pairings[PANEL].token, "")
+
+    def test_confirming_an_unknown_panel_changes_nothing(self) -> None:
+        self.assertFalse(self.store.confirm(PANEL, CODE, now=1.0))
+        self.assertIsNone(self.store.state(PANEL, now=1.0))
+
+
+class LateTokenTests(unittest.TestCase):
+    """Verify an approval that is opened before a token exists.
+
+    The flow that adds a panel arms the pairing with the typed code and mints
+    the token only when the config entry is about to exist, so a setup that is
+    closed halfway through leaves nothing usable in Home Assistant.
+    """
+
+    def setUp(self) -> None:
+        self.store = pairing.PairingStore()
+
+    def test_nothing_is_handed_over_until_a_token_is_attached(self) -> None:
+        self.store.arm(PANEL, CODE, now=0.0)
+        self.assertTrue(self.store.confirm(PANEL, CODE, now=1.0))
+        self.assertIsNone(self.store.collect(PANEL, now=1.0))
+        # Still confirmed, so the panel keeps its place in the queue.
+        self.assertEqual(
+            self.store.state(PANEL, now=1.0), pairing.STATE_CONFIRMED
+        )
+
+        self.assertTrue(self.store.attach_token(PANEL, TOKEN, now=2.0))
+        self.assertEqual(self.store.collect(PANEL, now=2.0), TOKEN)
+        self.assertIsNone(self.store.collect(PANEL, now=2.0))
+
+    def test_a_token_is_not_attached_before_the_code_arrives(self) -> None:
+        self.store.arm(PANEL, CODE, now=0.0)
+        self.assertFalse(self.store.attach_token(PANEL, TOKEN, now=1.0))
+        self.assertIsNone(self.store.claim(PANEL, CODE, now=1.0))
+
+    def test_a_token_is_not_attached_to_a_cancelled_approval(self) -> None:
+        self.store.arm(PANEL, CODE, now=0.0)
+        for _ in range(pairing.MAX_ATTEMPTS):
+            self.store.confirm(PANEL, "000000", now=1.0)
+        self.assertFalse(self.store.attach_token(PANEL, TOKEN, now=1.0))
+
+    def test_a_token_is_not_attached_to_an_expired_approval(self) -> None:
+        self.store.arm(PANEL, CODE, now=0.0)
+        self.store.confirm(PANEL, CODE, now=1.0)
+        self.assertFalse(
+            self.store.attach_token(
+                PANEL, TOKEN, now=1.0 + pairing.PAIRING_TIMEOUT
+            )
+        )
+
+    def test_an_unknown_panel_takes_no_token(self) -> None:
+        self.assertFalse(self.store.attach_token(PANEL, TOKEN, now=1.0))
+
+
 if __name__ == "__main__":
     unittest.main()

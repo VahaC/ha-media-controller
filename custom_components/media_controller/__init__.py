@@ -372,7 +372,9 @@ async def _async_setup_controller(
 
 async def _async_setup_panel(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up a panel: its own proxies and its own config sensor."""
-    controller_entry_id = entry.data.get(CONF_CONTROLLER_ENTRY_ID)
+    # The controller can be changed in the panel's options, exactly like a
+    # slot, so the option wins over the one chosen when it was added.
+    controller_entry_id = _configured_value(entry, CONF_CONTROLLER_ENTRY_ID)
     controller_entry = (
         hass.config_entries.async_get_entry(controller_entry_id)
         if controller_entry_id
