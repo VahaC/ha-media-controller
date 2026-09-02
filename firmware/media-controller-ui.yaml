@@ -524,6 +524,7 @@ script:
     parameters:
       page: string
     then:
+      - lambda: id(current_page) = page;
       - if:
           condition:
             lambda: return page == "player";
@@ -1686,6 +1687,11 @@ globals:
     type: bool
     restore_value: no
     initial_value: 'false'
+
+  - id: current_page
+    type: std::string
+    restore_value: no
+    initial_value: '"player"'
 
   # Timestamp of the last swipe-driven page change. A screen load animation runs
   # for 300 ms, and a single drag can otherwise be recognised again by the page

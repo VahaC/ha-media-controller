@@ -1356,10 +1356,12 @@ script:
                   char buf[224];
                   snprintf(buf, sizeof(buf),
                            "{\"panel_id\":\"%s\",\"version\":\"%s\","
+                           "\"page\":\"%s\","
                            "\"uptime_seconds\":%u,"
                            "\"display\":{\"available\":true,\"on\":%s,"
                            "\"brightness\":%d}}",
                            get_mac_address().c_str(), "${firmware_version}",
+                           id(current_page).c_str(),
                            (unsigned) (millis() / 1000),
                            id(backlight).remote_values.is_on() ? "true"
                                                                : "false",
