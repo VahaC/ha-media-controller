@@ -1,10 +1,21 @@
 """Config and options flows for Media Controller.
 
-Two kinds of entry live in this domain. A **controller** is bound to a Music
-Assistant player and owns the queue and playlist sensors and the four ESP32
-slots. A **panel** is a client device — a tablet — that reads one controller;
-it is normally created by discovery, when the panel announces itself on the
-local network.
+Two kinds of entry live in this domain, and the flows exist to keep the
+difference obvious. A **media player source** is bound to a Music Assistant
+player and owns the queue and playlist sensors; it is registered as a service,
+so Home Assistant lists it apart from the hardware. A **panel** is a client
+device — a tablet, or an ESP32 on the paired firmware — that reads one source
+and is a device like any other. It is normally created by discovery, when the
+panel announces itself on the local network.
+
+A panel cannot exist without a source, and the ordering is built into the
+flows rather than explained in prose: the menu is skipped while there is no
+source, and a panel that pairs with none offers to make one on the spot.
+
+In code the source is still called a controller. Renaming it across the entry
+data, the shared runtime records and the panel's stored `controller_entry_id`
+would be a migration that buys nothing; the user-facing strings carry the
+name, and they are the ones that were confusing.
 
 A panel is paired first and configured afterwards. The tablet is the one part
 of the setup that can fail on its own — it may be off, on another network, or
@@ -145,8 +156,14 @@ def _slot_fields(profile: ClientProfile) -> dict[Any, Any]:
     return fields
 
 
-def _controller_schema() -> vol.Schema:
-    """Build the shared Config Flow and Options Flow schema."""
+def _player_schema() -> vol.Schema:
+    """Ask for the Music Assistant player a source is bound to.
+
+    This is everything a source is. The four room controls that also live on
+    a source entry belong to an ESP32 running the classic firmware, and asking
+    for them here made a source read like a device with buttons; they are in
+    its options instead, behind a step that says whom they are for.
+    """
     return vol.Schema(
         {
             vol.Required(CONF_PLAYER_ENTITY): selector.EntitySelector(
@@ -155,7 +172,6 @@ def _controller_schema() -> vol.Schema:
                     integration=MUSIC_ASSISTANT_DOMAIN,
                 )
             ),
-            **_slot_fields(CONTROLLER_PROFILE),
         }
     )
 
@@ -181,6 +197,17 @@ def _music_assistant_registry_entry(hass: Any, entity_id: str) -> Any | None:
     if registry_entry is None or registry_entry.platform != MUSIC_ASSISTANT_DOMAIN:
         return None
     return registry_entry
+
+
+def _controller_title(hass: Any, player_entity: str) -> str:
+    """Name a source after the player it is bound to.
+
+    Nothing is prefixed. The integration page already says which integration
+    this belongs to, and a source is registered as a service, so it is listed
+    apart from the panels without the title having to spell the difference out.
+    """
+    state = hass.states.get(player_entity)
+    return state.name if state is not None else player_entity
 
 
 def _controller_unique_id(registry_entry: Any) -> str:
@@ -239,11 +266,19 @@ class MediaControllerConfigFlow(
         self,
         user_input: dict[str, Any] | None = None,
     ) -> ConfigFlowResult:
-        """Ask what is being added.
+        """Ask what is being added, when there is anything to ask.
 
-        Panels normally arrive through discovery; this path exists for a panel
-        that cannot announce itself, and for adding a controller.
+        A panel plays from a source and cannot be attached to one that does
+        not exist, so on a first installation the menu would be offering a
+        choice with one real answer. It is skipped: the source is asked for
+        directly, and the panel is added afterwards — normally by announcing
+        itself, without anybody opening this flow at all.
+
+        Panels normally arrive through discovery; the manual path exists for a
+        panel that cannot announce itself.
         """
+        if not controller_entries(self.hass):
+            return await self.async_step_controller()
         return self.async_show_menu(
             step_id="user",
             menu_options=["controller", "panel"],
@@ -255,7 +290,12 @@ class MediaControllerConfigFlow(
         self,
         user_input: dict[str, Any] | None = None,
     ) -> ConfigFlowResult:
-        """Configure a controller from a Music Assistant player."""
+        """Bind a source to a Music Assistant player.
+
+        A source is created with no room controls. The four that a source can
+        carry are the classic ESP32 firmware's, and it is the only client that
+        reads them; they are filled in from the source's own options.
+        """
         errors: dict[str, str] = {}
         if user_input is not None:
             player_entity = user_input[CONF_PLAYER_ENTITY]
@@ -269,26 +309,17 @@ class MediaControllerConfigFlow(
                     _controller_unique_id(registry_entry)
                 )
                 self._abort_if_unique_id_configured()
-                state = self.hass.states.get(player_entity)
-                title = state.name if state is not None else player_entity
-                slots = slots_from_input(
-                    self.hass, CONTROLLER_PROFILE, user_input
-                )
                 return self.async_create_entry(
-                    title=f"Media Controller – {title}",
-                    data=_stored_controller(player_entity, slots),
+                    title=_controller_title(self.hass, player_entity),
+                    data=_stored_controller(player_entity, []),
                 )
 
         return self.async_show_form(
             step_id="controller",
             data_schema=self.add_suggested_values_to_schema(
-                _controller_schema(), user_input or {}
+                _player_schema(), user_input or {}
             ),
             errors=errors,
-            description_placeholders={
-                "slot_count": str(CONTROLLER_PROFILE.slot_count),
-                "profile": CONTROLLER_PROFILE.name,
-            },
         )
 
     # --------------------------------------------------------------------- panel
@@ -647,10 +678,8 @@ class MediaControllerConfigFlow(
 
         await self.async_set_unique_id(_controller_unique_id(registry_entry))
         self._abort_if_unique_id_configured()
-        state = self.hass.states.get(player_entity)
-        title = state.name if state is not None else player_entity
         return self.async_create_entry(
-            title=f"Media Controller – {title}",
+            title=_controller_title(self.hass, player_entity),
             data=_stored_controller(player_entity, []),
         )
 
@@ -787,13 +816,51 @@ class MediaControllerConfigFlow(
 
 
 class MediaControllerOptionsFlow(OptionsFlowWithReload):
-    """Allow player and ESP32 slot remapping."""
+    """Edit what a source plays, and the classic ESP32's room controls.
+
+    The two are asked for separately. Everybody who has a source has a player;
+    almost nobody has a classic-firmware ESP32, and putting its four slots in
+    the same form as the player made every source look like a device with
+    buttons on it. The menu names who the second step is for.
+
+    Options are stored whole, so each step writes both halves: the one it just
+    asked about, and the one it left alone.
+    """
 
     async def async_step_init(
         self,
         user_input: dict[str, Any] | None = None,
     ) -> ConfigFlowResult:
-        """Manage controller options and reload automatically."""
+        """Offer the two things a source has."""
+        return self.async_show_menu(
+            step_id="init",
+            menu_options=["player", "esp32_slots"],
+        )
+
+    @callback
+    def _options(
+        self,
+        player_entity: str,
+        slots: list[SlotConfig],
+    ) -> dict[str, Any]:
+        """Build the whole options mapping from both halves.
+
+        An empty player is left out rather than written: the value stored when
+        the entry was created is then still what the setup reads, and a source
+        cannot be left bound to nothing by editing its slots.
+        """
+        data: dict[str, Any] = {
+            CONF_SLOTS: [slot.as_stored() for slot in slots]
+        }
+        if player_entity:
+            data[CONF_PLAYER_ENTITY] = player_entity
+        return data
+
+    async def async_step_player(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> ConfigFlowResult:
+        """Move a source to another Music Assistant player."""
         errors: dict[str, str] = {}
         if user_input is not None:
             player_entity = user_input[CONF_PLAYER_ENTITY]
@@ -802,57 +869,75 @@ class MediaControllerOptionsFlow(OptionsFlowWithReload):
             )
             if registry_entry is None:
                 errors[CONF_PLAYER_ENTITY] = "not_music_assistant"
+            elif self._player_taken(_controller_unique_id(registry_entry)):
+                errors[CONF_PLAYER_ENTITY] = "already_configured"
             else:
-                unique_id = _controller_unique_id(registry_entry)
-                for entry in controller_entries(self.hass):
-                    if entry.entry_id == self.config_entry.entry_id:
-                        continue
-                    other_player = _entry_player_entity(entry)
-                    other_registry_entry = (
-                        _music_assistant_registry_entry(
-                            self.hass, other_player
-                        )
-                        if other_player
-                        else None
-                    )
-                    if (
-                        entry.unique_id == unique_id
-                        or other_registry_entry is not None
-                        and _controller_unique_id(other_registry_entry)
-                        == unique_id
-                    ):
-                        errors[CONF_PLAYER_ENTITY] = "already_configured"
-                        break
-                else:
-                    self.hass.config_entries.async_update_entry(
-                        self.config_entry,
-                        unique_id=unique_id,
-                    )
-                    slots = slots_from_input(
-                        self.hass,
-                        CONTROLLER_PROFILE,
-                        user_input,
+                self.hass.config_entries.async_update_entry(
+                    self.config_entry,
+                    unique_id=_controller_unique_id(registry_entry),
+                )
+                return self.async_create_entry(
+                    data=self._options(
+                        player_entity,
                         _controller_slots(self.config_entry),
                     )
-                    return self.async_create_entry(
-                        data={
-                            CONF_PLAYER_ENTITY: player_entity,
-                            CONF_SLOTS: [
-                                slot.as_stored() for slot in slots
-                            ],
-                        }
-                    )
+                )
 
-        current: dict[str, Any] = {
+        current = {
             CONF_PLAYER_ENTITY: _entry_player_entity(self.config_entry) or ""
         }
-        current.update(suggested_slot_values(_controller_slots(self.config_entry)))
         return self.async_show_form(
-            step_id="init",
+            step_id="player",
             data_schema=self.add_suggested_values_to_schema(
-                _controller_schema(), user_input or current
+                _player_schema(), user_input or current
             ),
             errors=errors,
+        )
+
+    @callback
+    def _player_taken(self, unique_id: str) -> bool:
+        """Return whether another source already holds this player."""
+        for entry in controller_entries(self.hass):
+            if entry.entry_id == self.config_entry.entry_id:
+                continue
+            if entry.unique_id == unique_id:
+                return True
+            other_player = _entry_player_entity(entry)
+            other_registry_entry = (
+                _music_assistant_registry_entry(self.hass, other_player)
+                if other_player
+                else None
+            )
+            if (
+                other_registry_entry is not None
+                and _controller_unique_id(other_registry_entry) == unique_id
+            ):
+                return True
+        return False
+
+    async def async_step_esp32_slots(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> ConfigFlowResult:
+        """Remap the room controls of a classic-firmware ESP32."""
+        current = _controller_slots(self.config_entry)
+        if user_input is not None:
+            slots = slots_from_input(
+                self.hass, CONTROLLER_PROFILE, user_input, current
+            )
+            return self.async_create_entry(
+                data=self._options(
+                    _entry_player_entity(self.config_entry) or "",
+                    slots,
+                )
+            )
+
+        return self.async_show_form(
+            step_id="esp32_slots",
+            data_schema=self.add_suggested_values_to_schema(
+                vol.Schema(_slot_fields(CONTROLLER_PROFILE)),
+                user_input or suggested_slot_values(current),
+            ),
             description_placeholders={
                 "slot_count": str(CONTROLLER_PROFILE.slot_count),
                 "profile": CONTROLLER_PROFILE.name,

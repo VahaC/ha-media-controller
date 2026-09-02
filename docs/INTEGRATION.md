@@ -9,6 +9,28 @@ it.
 
 The exact entity and service surface is specified in [CONTRACT.md](CONTRACT.md).
 
+## Two kinds of thing
+
+The integration adds two kinds of entry, and telling them apart is most of
+knowing how to set it up:
+
+| | **Media player source** | **Panel** |
+| --- | --- | --- |
+| What it is | One Music Assistant player, wrapped so panels can read it | One piece of hardware with a screen |
+| Where Home Assistant lists it | Under **Services**: it has no hardware of its own | Under **Devices** |
+| How many | One per player | Any number, each reading one source |
+| Added by | Choosing the player | The device announcing itself, then a six-digit code |
+
+A panel plays from a source, so a source exists first. Home Assistant does not
+offer the choice while there is none: adding the integration asks for the
+player straight away, and a panel that pairs before any source exists offers to
+build one on the spot.
+
+Both ESP32 firmwares also speak the ESPHome API, so an ESP32 appears twice in
+Home Assistant on purpose: once as its ESPHome device — logs, OTA, diagnostics
+— and once here, as a panel. The two are separate integrations and neither
+replaces the other.
+
 ## Prerequisites
 
 1. A current Home Assistant installation.
@@ -27,10 +49,16 @@ Until this repository is included in the default HACS catalog:
 3. Install **Media Controller** and restart Home Assistant.
 4. Open Settings → Devices & services → Add integration.
 5. Select **Media Controller**.
-6. Select the required Music Assistant player.
-7. Optionally fill the four room-control slots. The form states the limit: the
-   ESP32-S3 controller drives four of them, slots 1 and 2 lights and slots 3
-   and 4 switches. Leave a slot empty to hide that tile.
+6. Select the required Music Assistant player. That is the whole form: a media
+   player source is the player and nothing else.
+
+Panels are added afterwards, and normally add themselves.
+
+An ESP32 running the **classic** firmware needs one more step, and only that
+device does: open *Configure* on the source and pick **Room controls for a
+classic-firmware ESP32**. The form states the limit — four slots, 1 and 2
+lights, 3 and 4 switches — and an empty slot hides that tile. Every other
+client carries its room controls on its own panel entry.
 
 The integration creates:
 
@@ -60,19 +88,17 @@ discovered device: press *Configure* and the form asks, in this order:
    that can fail on its own: the device may be off, on another network, or
    showing a code from an earlier attempt. Nothing is stored and nothing else
    is asked until it has answered, and a wrong code can simply be retyped.
-2. **which media controller it plays from**;
+2. **which media player source it plays from**;
 3. **its room-control slots.**
 
 Finishing the form is what releases the access token: the panel collects it on
 its next poll, a few seconds later, and switches into normal operation. Nothing
 is typed on the panel, and nothing but the token is configured there.
 
-Step 2 has nothing to offer in an installation with no controller yet, so it
-asks for the Music Assistant player instead and creates one. Adding the first
-panel is therefore still one sitting: the code, then what it plays from, then
-its room controls. The controller it builds has no room slots of its own —
-those belong to an ESP32 on the classic firmware — and they can be filled in
-later from its own *Configure*.
+Step 2 has nothing to offer in an installation with no source yet, so it asks
+for the Music Assistant player instead and creates one. Adding the first panel
+is therefore still one sitting: the code, then what it plays from, then its
+room controls.
 
 A panel that cannot announce itself is added with *Add device* → *Panel*, where
 the panel ID has to match the one the device uses. A tablet derives that ID from
@@ -82,8 +108,8 @@ without separators, which its log prints at boot. Either way two devices never
 claim the same Home Assistant device.
 
 Each panel is its own config entry and its own Home Assistant device, with its
-own slot proxies and its own config sensor, linked to the controller it reads.
-*Configure* on a panel device reopens the controller choice and the slots, so
+own slot proxies and its own config sensor, linked to the source it reads.
+*Configure* on a panel device reopens the source choice and the slots, so
 moving a panel to another Music Assistant player is a remapping like any other:
 the device keeps its token, its device, and its entity IDs.
 
@@ -92,8 +118,9 @@ a tablet, four for a paired ESP32, and only the tablet offers colour
 temperature. See [ROOM_SLOTS.md](ROOM_SLOTS.md).
 
 The room controls of an ESP32 running the **classic** firmware are the exception
-to all of this. They live on the controller entry itself, because that firmware
-resolves their entity IDs at compile time and they already exist there.
+to all of this. They live on the source entry itself, behind *Configure* →
+*Room controls for a classic-firmware ESP32*, because that firmware resolves
+their entity IDs at compile time and they already exist there.
 
 ### Panel settings, battery, and display
 

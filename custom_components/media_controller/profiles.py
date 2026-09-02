@@ -106,7 +106,7 @@ T560 = ClientProfile(
 # four buttons and a brightness long-press, and no control to set it with.
 ESP32_S3_PANEL = ClientProfile(
     slug="esp32_s3_panel",
-    name="ESP32-S3 controller (paired)",
+    name="ESP32-S3 panel",
     slots=tuple(
         SlotSpec(
             index,

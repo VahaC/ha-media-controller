@@ -20,7 +20,14 @@ PANEL_PLATFORMS: list[Platform] = [
     Platform.SELECT,
 ]
 
-ENTRY_VERSION = 2
+ENTRY_VERSION = 3
+
+# Version 2 titled every source "Media Controller – <player>". The prefix said
+# nothing the integration page does not already say and made a source read like
+# one more device, so version 3 drops it. Kept here because the migration has
+# to recognise exactly the titles this integration wrote, and leave a title the
+# user has since edited alone.
+LEGACY_TITLE_PREFIX = "Media Controller – "
 
 # One domain, two kinds of config entry. A controller is bound to a Music
 # Assistant player; a panel is a client device that reads one controller.

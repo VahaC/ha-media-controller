@@ -7,7 +7,7 @@ from abc import abstractmethod
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import Event, State, callback
-from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.event import async_track_state_change_event
 
@@ -15,16 +15,21 @@ from .const import DOMAIN, slot_translation_key, slot_unique_id
 from .profiles import ClientProfile
 from .slots import ClientConfiguration, SlotConfig
 
-CONTROLLER_MODEL = "ESP32 Music Assistant Media Controller"
+# A source is not hardware. Both ESP32 firmwares speak the ESPHome API and
+# already have devices of their own; what this integration adds is the binding
+# to one Music Assistant player, which is why it is registered as a service and
+# appears apart from the panels on the integration page.
+CONTROLLER_MODEL = "Media player source"
 
 
 def controller_device_info(entry: ConfigEntry) -> DeviceInfo:
-    """Return the device shared by the controller's own entities."""
+    """Return the service shared by the source's own entities."""
     return DeviceInfo(
         identifiers={(DOMAIN, entry.entry_id)},
         name=entry.title,
         manufacturer="VahaC",
         model=CONTROLLER_MODEL,
+        entry_type=DeviceEntryType.SERVICE,
     )
 
 

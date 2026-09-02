@@ -1,4 +1,4 @@
-"""Tests for the version 1 to version 2 room-control migration.
+"""Tests for the stored halves of the config-entry migrations.
 
 The registry half of the migration needs a Home Assistant runtime and is not
 covered here; this protects the stored shape, which is what decides whether a
@@ -36,6 +36,10 @@ LEGACY_SLOTS = (
 )
 SLOTS_KEY = "slots"
 PLAYER_KEY = "player_entity"
+
+# Mirrors const.LEGACY_TITLE_PREFIX, and duplicated for the same reason.
+# The dash is an en dash, which is what version 2 actually wrote.
+LEGACY_TITLE_PREFIX = "Media Controller – "
 
 
 def migrate(section):
@@ -127,6 +131,47 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(slots[0].target_entity_id, "light.ceiling")
         self.assertEqual(slots[0].domain, "light")
         self.assertEqual(slots[0].label, "")
+
+
+class TitleMigrationTests(unittest.TestCase):
+    """Verify the version 2 title prefix is dropped, and only when intact."""
+
+    def strip(self, title):
+        """Run the title migration with the production prefix."""
+        return transformations.migrate_v2_title(title, LEGACY_TITLE_PREFIX)
+
+    def test_prefix_is_dropped(self) -> None:
+        self.assertEqual(
+            self.strip("Media Controller – JBL Bar 91 true"),
+            "JBL Bar 91 true",
+        )
+
+    def test_an_edited_title_is_left_alone(self) -> None:
+        self.assertEqual(self.strip("Living room"), "Living room")
+
+    def test_a_hyphen_is_not_the_prefix(self) -> None:
+        # Version 2 wrote an en dash. Anything else was typed by a person.
+        self.assertEqual(
+            self.strip("Media Controller - Kitchen"),
+            "Media Controller - Kitchen",
+        )
+
+    def test_a_prefix_in_the_middle_is_left_alone(self) -> None:
+        self.assertEqual(
+            self.strip("Old Media Controller – Kitchen"),
+            "Old Media Controller – Kitchen",
+        )
+
+    def test_a_title_that_is_only_the_prefix_is_kept(self) -> None:
+        # Stripping it would leave an entry with no name at all.
+        self.assertEqual(
+            self.strip("Media Controller – "),
+            "Media Controller – ",
+        )
+
+    def test_running_it_twice_changes_nothing(self) -> None:
+        once = self.strip("Media Controller – Kitchen")
+        self.assertEqual(self.strip(once), once)
 
 
 if __name__ == "__main__":

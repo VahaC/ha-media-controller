@@ -169,6 +169,19 @@ def stored_slots(source: Mapping[str, Any], key: str) -> list[SlotConfig]:
     return slots
 
 
+def migrate_v2_title(title: str, legacy_prefix: str) -> str:
+    """Drop the version 2 title prefix, and only when it is still intact.
+
+    A title is the one piece of an entry a person is invited to rewrite, so
+    anything that is no longer exactly what this integration wrote is left
+    alone. Stripping the prefix off an empty remainder would leave an entry
+    with no name at all, so that is left alone too.
+    """
+    if not title.startswith(legacy_prefix):
+        return title
+    return title[len(legacy_prefix):].strip() or title
+
+
 def migrate_v1_section(
     section: Mapping[str, Any] | None,
     slots_key: str,

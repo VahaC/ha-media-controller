@@ -110,7 +110,7 @@ T560 = ClientProfile(
 # temperature: there is no control on the screen to set one with.
 ESP32_S3_PANEL = ClientProfile(
     slug="esp32_s3_panel",
-    name="ESP32-S3 controller (paired)",
+    name="ESP32-S3 panel",
     slots=tuple(
         SlotSpec(n, ("light", "switch"), ("toggle", "brightness"))
         for n in range(1, 5)
@@ -149,30 +149,48 @@ that a panel can load before, or without, its controller.
 
 The controller-level slots are the ESP32's slots for historical reasons, and
 the documentation should say so plainly rather than pretending it is a general
-concept.
+concept. The flows say so too: they are behind a named step in the source's
+options and are not asked for when a source is created.
+
+In the user interface a controller entry is a **media player source**, and its
+device is registered as a service so that Home Assistant lists it apart from
+the panels. The code keeps the older name throughout — entry data, the shared
+runtime records, and a panel's stored `controller_entry_id` — because renaming
+those would be a migration that changes nothing anyone can see.
 
 ## Flows
 
-### Controller config flow — unchanged shape, new content
+### Source config flow — the player, and only the player
 
-Step `user` keeps the Music Assistant player selector and replaces the four
-named fields with the `esp32_s3` profile slots:
+Step `controller` asks one question:
 
 ```
 Music Assistant player   [entity selector, domain=media_player, integration=music_assistant]
-
-Slot 1                   [entity selector, domain=light]
-Slot 1 label             [text, optional]
-Slot 2                   [entity selector, domain=light]
-Slot 2 label             [text, optional]
-Slot 3                   [entity selector, domain=switch]
-Slot 3 label             [text, optional]
-Slot 4                   [entity selector, domain=switch]
-Slot 4 label             [text, optional]
 ```
 
-The description line states the limit: *"The ESP32-S3 controller drives up to
-4 room controls."*
+The `esp32_s3` slots are not here. They are read by one client — an ESP32 on
+the classic firmware — and asking eight more fields of everybody who adds a
+source made a source look like a device with buttons on it, which is exactly
+the confusion the entry kinds are meant to avoid. A source is created with an
+empty slot list, and the slots are filled in from its options.
+
+Step `user` is a menu only when there is something to choose between. With no
+source configured, a panel cannot be attached to anything, so the menu is
+skipped and `controller` is shown directly.
+
+### Source options flow
+
+A menu, because the two halves have different audiences:
+
+```
+Music Assistant player                        → step `player`
+Room controls for a classic-firmware ESP32    → step `esp32_slots`
+```
+
+`esp32_slots` is the four-slot form above. Options are stored whole, so each
+step writes both halves — the one it asked about and the one it left alone —
+and an empty player is omitted rather than written, so editing slots can never
+unbind a source from its player.
 
 ### Panel discovery flow
 
@@ -191,14 +209,17 @@ of panel needed a new `profile` record and nothing else.
    progress step that ends when the panel answers with the same code. This is
    first on purpose: it is the only part of the setup that depends on a device
    that may not be listening, and everything after it is pure form-filling.
-3. **`controller_link`** — which controller the panel plays from. The
-   description names the device, its profile, and its slot count.
+3. **`controller_link`** — which source the panel plays from. The description
+   names the device, its profile, and its slot count. With no source
+   configured this becomes `new_controller`, which asks for a Music Assistant
+   player and builds one, so that pairing the first panel is still one
+   sitting.
 4. **`slots`** — `len(profile.slots)` pairs of entity selector and label, each
    selector restricted to `spec.domains`. Submitting it creates the entry,
    which is what releases the token.
 
 `Add device` offers the same thing manually, for a panel that cannot announce
-itself, with the panel ID typed in. Editing a panel later reruns the controller
+itself, with the panel ID typed in. Editing a panel later reruns the source
 choice and the slot form through its options flow; the device type is not
 offered again, because it decides how many proxies exist.
 

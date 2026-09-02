@@ -7,23 +7,15 @@
         "title": "Media Controller",
         "description": "What are you adding?",
         "menu_options": {
-          "controller": "Media controller (Music Assistant player)",
-          "panel": "Panel (a device that could not be discovered)"
+          "controller": "Media player source — a Music Assistant player for panels to play from",
+          "panel": "Panel — only if it did not appear as a discovered device"
         }
       },
       "controller": {
-        "title": "Configure the media controller",
-        "description": "Select the Music Assistant player. The {profile} drives up to {slot_count} room controls. Leave a slot empty to hide that tile. Labels are optional and fall back to the entity name.",
+        "title": "Add a media player source",
+        "description": "A media player source binds one Music Assistant player, and panels play from it. It is added first, because a panel has nothing to control without one; a panel then finds it in a list. A source is not a device and Home Assistant lists it under Services rather than Devices.",
         "data": {
-          "player_entity": "Music Assistant player",
-          "slot_1_entity": "Slot 1",
-          "slot_1_label": "Slot 1 label",
-          "slot_2_entity": "Slot 2",
-          "slot_2_label": "Slot 2 label",
-          "slot_3_entity": "Slot 3",
-          "slot_3_label": "Slot 3 label",
-          "slot_4_entity": "Slot 4",
-          "slot_4_label": "Slot 4 label"
+          "player_entity": "Music Assistant player"
         }
       },
       "panel": {
@@ -43,15 +35,15 @@
         }
       },
       "controller_link": {
-        "title": "Media controller",
-        "description": "{name} is paired. It is a {profile} and drives up to {slot_count} room controls. Choose the media controller it should play from.",
+        "title": "Media player source",
+        "description": "{name} is paired. It is a {profile} and drives up to {slot_count} room controls. Choose the media player source it plays from.",
         "data": {
-          "controller_entry_id": "Media controller"
+          "controller_entry_id": "Media player source"
         }
       },
       "new_controller": {
         "title": "Choose what it plays from",
-        "description": "{name} is paired. A panel plays from a media controller and there is none yet, so pick the Music Assistant player and Home Assistant will create one. A controller also drives four room controls of its own, for an ESP32 on the classic firmware; those are left empty here and can be filled in later from its own Configure.",
+        "description": "{name} is paired. A panel plays from a media player source and there is none yet, so pick the Music Assistant player and Home Assistant will create one. Nothing else is needed: room controls are the panel's own and are chosen on the next screen.",
         "data": {
           "player_entity": "Music Assistant player"
         }
@@ -76,7 +68,7 @@
       },
       "reauth_confirm": {
         "title": "Pair the panel again",
-        "description": "{name} is asking for a new access token, which happens after a tablet is wiped or a controller is reflashed. Type the code it is showing. Its room controls and entity IDs stay as they are; only the token is replaced.",
+        "description": "{name} is asking for a new access token, which happens after a tablet is wiped or an ESP32 is reflashed. Type the code it is showing. Its room controls and entity IDs stay as they are; only the token is replaced.",
         "data": {
           "pairing_code": "Pairing code"
         }
@@ -88,7 +80,7 @@
       "token_failed": "Home Assistant could not create an access token for this panel. Check the log.",
       "code_mismatch": "The panel is showing a different code. Read the six digits off the panel's screen again.",
       "pairing_timeout": "The panel did not answer. Check that it is on, on the same network, and still showing a pairing code.",
-      "controller_failed": "Home Assistant could not create the controller. Check the log, or add one from Add device → Media controller."
+      "controller_failed": "Home Assistant could not create the media player source. Check the log, or add one from Add device → Media player source."
     },
     "abort": {
       "already_configured": "This device is already configured.",
@@ -102,10 +94,24 @@
   "options": {
     "step": {
       "init": {
-        "title": "Controller options",
-        "description": "Remap the player or the room controls of the {profile}, which drives up to {slot_count} of them. The integration reloads automatically.",
+        "title": "Media player source",
+        "description": "What would you like to change?",
+        "menu_options": {
+          "player": "Music Assistant player",
+          "esp32_slots": "Room controls for a classic-firmware ESP32"
+        }
+      },
+      "player": {
+        "title": "Music Assistant player",
+        "description": "Move this source to another Music Assistant player. Every panel that plays from it follows. The integration reloads automatically.",
         "data": {
-          "player_entity": "Music Assistant player",
+          "player_entity": "Music Assistant player"
+        }
+      },
+      "esp32_slots": {
+        "title": "Room controls for a classic-firmware ESP32",
+        "description": "These four room controls are read only by an ESP32 running the classic media-controller.yaml firmware. A T560 or a paired ESP32 carries room controls of its own, set on the panel itself. The {profile} drives up to {slot_count} of them. Leave a slot empty to hide that tile. Labels are optional and fall back to the entity name.",
+        "data": {
           "slot_1_entity": "Slot 1",
           "slot_1_label": "Slot 1 label",
           "slot_2_entity": "Slot 2",
@@ -118,9 +124,9 @@
       },
       "slots": {
         "title": "Panel options",
-        "description": "Choose what {name} plays from and remap its room controls. It is a {profile} driving up to {slot_count} of them. Leave a slot empty to hide that tile. Labels are optional and fall back to the entity name. The panel keeps its token and its entity IDs.",
+        "description": "Choose the media player source {name} plays from and remap its room controls. It is a {profile} driving up to {slot_count} of them. Leave a slot empty to hide that tile. Labels are optional and fall back to the entity name. The panel keeps its token and its entity IDs.",
         "data": {
-          "controller_entry_id": "Media controller",
+          "controller_entry_id": "Media player source",
           "slot_1_entity": "Slot 1",
           "slot_1_label": "Slot 1 label",
           "slot_2_entity": "Slot 2",
@@ -138,7 +144,7 @@
     },
     "error": {
       "not_music_assistant": "Select a media player provided by Music Assistant.",
-      "already_configured": "This Music Assistant player is already used by another controller."
+      "already_configured": "This Music Assistant player already has a media player source."
     }
   },
   "entity": {

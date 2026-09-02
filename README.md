@@ -48,14 +48,18 @@ there when you want to move.
 
 1. Install the **Media Controller** integration through HACS by adding
    `https://github.com/VahaC/ha-media-controller` as a custom **Integration**
-   repository, then configure it against a Music Assistant player.
+   repository, then point it at a Music Assistant player. That creates a
+   **media player source** — the thing every client plays from, and the reason
+   this step comes first. Home Assistant lists it under *Services*, because it
+   is a binding rather than hardware.
    Full steps: [docs/INTEGRATION.md](docs/INTEGRATION.md).
-2. Set up a client:
+2. Set up a client. Each one becomes a **panel** device of its own, attached to
+   the source from step 1:
    - ESP32-S3, paired — [docs/ESP32_PAIRED_CONTROLLER.md](docs/ESP32_PAIRED_CONTROLLER.md).
      Flash, type the six digits it shows, choose the rooms in Home Assistant.
    - ESP32-S3, classic — [docs/ESP32_CONTROLLER.md](docs/ESP32_CONTROLLER.md).
-     Copy the entity IDs Home Assistant assigned to the new controller device
-     into the YAML first.
+     Copy the entity IDs Home Assistant assigned to the new source into the
+     YAML first.
    - T560 tablet — [clients/t560/docs/BUILD_AND_INSTALL.md](clients/t560/docs/BUILD_AND_INSTALL.md).
 
 ## Repository layout

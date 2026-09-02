@@ -37,6 +37,7 @@ from .const import (
     DOMAIN,
     ENTRY_VERSION,
     LEGACY_SLOTS,
+    LEGACY_TITLE_PREFIX,
     PANEL_PLATFORMS,
     PLATFORMS,
     SERVICE_PLAY_QUEUE_ITEM,
@@ -69,7 +70,11 @@ from .status import (
     async_unregister_panel,
 )
 from .tokens import async_revoke_panel_token
-from .transformations import SlotConfig, migrate_v1_section
+from .transformations import (
+    SlotConfig,
+    migrate_v1_section,
+    migrate_v2_title,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -288,12 +293,29 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
 
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Migrate the four named room controls to numbered slots."""
+    """Bring an entry up to the current version, one version at a time.
+
+    Each step is written as `version < n` rather than `version == n - 1`, so
+    an entry that has sat through several releases passes through every step
+    in order instead of skipping the ones between where it was and here.
+    """
     if entry.version > ENTRY_VERSION:
         # Downgrading is not supported; refuse rather than corrupt the entry.
         return False
-    if entry.version == ENTRY_VERSION:
-        return True
+
+    if entry.version < 2:
+        _async_migrate_v1_slots(hass, entry)
+    if entry.version < 3:
+        _async_migrate_v2_title(hass, entry)
+
+    if entry.version != ENTRY_VERSION:
+        hass.config_entries.async_update_entry(entry, version=ENTRY_VERSION)
+    return True
+
+
+@callback
+def _async_migrate_v1_slots(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Migrate the four named room controls to numbered slots."""
 
     def initial_controls(index: int) -> tuple[str, ...]:
         return limit_controls((CONTROL_TOGGLE,), CONTROLLER_PROFILE.spec(index))
@@ -309,10 +331,26 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             entry.options, CONF_SLOTS, CONF_PLAYER_ENTITY, LEGACY_SLOTS,
             initial_controls,
         ),
-        version=ENTRY_VERSION,
     )
     _LOGGER.info("Migrated %s to numbered room-control slots", entry.title)
-    return True
+
+
+@callback
+def _async_migrate_v2_title(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Drop the "Media Controller – " prefix from a source's title.
+
+    Only sources carry it, and only the ones whose title has not been edited
+    since. The title is what names the device, so every entity of the source
+    gets a shorter friendly name; entity IDs are registry rows and do not move.
+    """
+    if is_panel_entry(entry):
+        return
+    previous = entry.title
+    title = migrate_v2_title(previous, LEGACY_TITLE_PREFIX)
+    if title == previous:
+        return
+    hass.config_entries.async_update_entry(entry, title=title)
+    _LOGGER.info("Renamed %s to %s", previous, title)
 
 
 @callback

@@ -116,14 +116,16 @@ A ready-made copy of the block above is in
 1. Flash and let the device boot. It shows six digits and
    *Add this device in Home Assistant*.
 2. Home Assistant discovers it. **Settings → Devices & Services** shows a new
-   *ESP32-S3 controller (paired)* card; if it does not appear, add
-   **Media Controller** by hand and choose that device type.
+   *ESP32-S3 panel* card; if it does not appear, add **Media Controller** by
+   hand and choose that device type.
 
-   If this is the first device in a fresh installation and no controller exists
-   yet, step 4 asks for the Music Assistant player and creates one for you.
+   If this is the first device in a fresh installation and no media player
+   source exists yet, step 4 asks for the Music Assistant player and creates
+   one for you.
 3. Type the six digits from the screen.
-4. Choose which controller it plays from, then fill the four room slots. Any of
-   them may be a light or a switch. Leave one empty to hide its tile.
+4. Choose which media player source it plays from, then fill the four room
+   slots. Any of them may be a light or a switch. Leave one empty to hide its
+   tile.
 5. The screen switches to the player by itself. Nothing else is typed.
 
 The code is generated once and kept in flash, so a reboot in the middle of the
@@ -137,7 +139,7 @@ device shows a fresh one after a restart.
 | --- | --- |
 | *Add this device in Home Assistant* | Home Assistant has no panel with this device's ID yet. Add it. |
 | *Enter this code in Home Assistant* | It is waiting for the code, or the one typed was wrong. |
-| *Accepted — finish the setup form* | The code was right. The token follows once you finish choosing the controller and the room slots. |
+| *Accepted — finish the setup form* | The code was right. The token follows once you finish choosing the source and the room slots. |
 | *Home Assistant returned an error* | `ha_url` is wrong, or Home Assistant is unreachable. |
 
 If the token is ever rejected — you removed the device in Home Assistant, or
