@@ -29,7 +29,16 @@ substitutions:
   # if .local names are unreliable on your network.
   ha_url: "http://homeassistant.local:8123"
 
-  firmware_version: "0.2.0"
+  firmware_version: "0.3.0"
+
+  # The version of docs/CONTRACT.md this firmware implements. firmware_version
+  # says when this build shipped; this says what it understands, and it is the
+  # only number worth comparing with the other side. The device sends it in
+  # every status report and reads the integration's own out of the config
+  # sensor, so each half can tell that the other is behind. Raise it in the
+  # same change that raises the number in that document; it is not a knob to
+  # turn per device.
+  contract_version: "5"
   asset_base_url: "https://raw.githubusercontent.com/VahaC/ha-media-controller/main/firmware/assets"
 
 # The interface — display, touchscreen, LVGL pages, theme — is shared with
@@ -1117,6 +1126,32 @@ script:
                         id(queue_entity) = queue;
                         id(playlists_entity) = lists;
 
+                        // -- This device's half of the version check; the
+                        //    integration performs the other half on the
+                        //    report sent above. An integration older than
+                        //    this firmware sends no contract version at all,
+                        //    which reads as 0 and compares like any smaller
+                        //    number. There is nowhere on this screen to say
+                        //    so without taking space from the interface, so
+                        //    it goes to the log, where an ESPHome device
+                        //    reports a configuration problem. Logged once per
+                        //    version seen: the config sensor is read every
+                        //    poll cycle, and a line a second would bury
+                        //    everything else. --
+                        static int warned_contract = -1;
+                        int contract = atoi(
+                            id(json_field)(attrs,
+                                           "contract_version").c_str());
+                        if (contract < ${contract_version} &&
+                            contract != warned_contract) {
+                          warned_contract = contract;
+                          ESP_LOGW("config",
+                                   "Home Assistant speaks contract %d and "
+                                   "this firmware needs %d: update Media "
+                                   "Controller",
+                                   contract, ${contract_version});
+                        }
+
                         // -- Home Assistant owns both poll rates. Clamp them
                         //    here as well as there: a client trusts a payload
                         //    no further than it has to. --
@@ -1391,6 +1426,11 @@ script:
                   std::string json =
                     std::string("{\"panel_id\":\"") + get_mac_address() +
                     "\",\"version\":\"${firmware_version}\","
+                    // -- The release number above says when this build
+                    // -- shipped; this says what it understands, and is what
+                    // -- lets Home Assistant notice a device running a build
+                    // -- older than the contract it speaks. --
+                    "\"contract_version\":${contract_version},"
                     "\"page\":\"" + id(current_page) + "\","
                     "\"uptime_seconds\":" +
                     std::to_string((unsigned) (millis() / 1000));

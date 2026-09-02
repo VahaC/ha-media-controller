@@ -253,6 +253,12 @@ class ClientConfigPayload:
     player_entity: str = ""
     queue_entity: str = ""
     playlists_entity: str = ""
+    # Which version of the client contract the integration publishing this
+    # payload implements, so that a client can tell whether the two of them
+    # still speak the same protocol. The number is owned by `contract.py` and
+    # passed in, because this module imports nothing: 0 means the caller did
+    # not name one, which is what a client reads as "older than mine".
+    contract_version: int = 0
     # Panels only. A client that owns no runtime settings — the ESP32 — gets
     # neither key at all.
     settings: Mapping[str, Any] | None = None
@@ -278,6 +284,11 @@ class ClientConfigPayload:
         # its interface when it changes, and settings and commands must never
         # cause that: they are applied while the panel keeps running.
         payload["revision"] = self.revision(payload)
+        # Deliberately after the revision, and so not part of it. The contract
+        # version is not layout: it changes only when the integration itself is
+        # upgraded, and folding it into the checksum would restart every panel
+        # in the house to redraw a room page that did not move.
+        payload["contract_version"] = self.contract_version
         if self.settings is not None:
             payload["settings"] = dict(self.settings)
         if self.commands is not None:

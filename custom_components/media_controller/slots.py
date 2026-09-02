@@ -14,6 +14,7 @@ from typing import Any
 from homeassistant.core import HomeAssistant, callback
 
 from .const import slot_entity_key, slot_label_key
+from .contract import CONTRACT_VERSION
 from .profiles import (
     CAP_CONTROLS,
     CAP_MAX_KELVIN,
@@ -282,6 +283,10 @@ class ClientConfiguration:
         return ClientConfigPayload(
             settings=panel.get("settings"),
             commands=panel.get("commands"),
+            # Every client is told which protocol this integration speaks,
+            # panel or not. A client that has no use for it ignores it, which
+            # is what the classic ESP32 firmware does.
+            contract_version=CONTRACT_VERSION,
             profile=self.profile.slug,
             slot_count=self.profile.slot_count,
             player_entity=self.controller.player_entity,

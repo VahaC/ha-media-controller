@@ -8,7 +8,7 @@ Treat this file as the change-control surface: a change to anything below
 affects released devices in the field. A change to code that is not described
 here affects one component only.
 
-Contract version: **4** (matches integration `0.9.x`).
+Contract version: **5** (matches integration `1.2.x`).
 
 Every version so far has been purely additive. Version 2 added the config
 sensor and let proxy lights forward colour temperature. Version 3 added two
@@ -24,8 +24,21 @@ substitutions now say "the classic ESP32 firmware", because the paired one does
 all three the way the tablet does. A client may also apply only part of
 `settings` and ignore the rest, which is new only as a written rule.
 
+Version 5 makes the number at the top of this file something code compares
+rather than prose nobody reads. Both halves now carry it: the integration
+publishes `contract_version` in the config sensor, and a panel reports its own
+in its status report. A panel and an integration that no longer speak the same
+protocol therefore say so — Home Assistant raises a repair issue naming a
+panel that is behind, and a panel that finds Home Assistant behind reports it
+where its own user looks — instead of silently dropping half of what the other
+sends. See **Version compatibility** below. The classic ESP32 firmware neither
+sends nor reads the field and is untouched by it.
+
 Nothing is removed and no entity any earlier client reads is renamed, so an
 older client keeps working: it simply ignores what it does not understand.
+Both new fields are optional in exactly that sense — every build from before
+version 5 omits them, and an absent value means "older" rather than an
+error.
 
 ## Producer
 
@@ -149,6 +162,7 @@ list is capped at `DEFAULT_PLAYLIST_LIMIT` (500), fetched in pages of 100.
     }
   ],
   "revision": 2098342174,
+  "contract_version": 4,
   "settings": {
     "poll_interval_ms": 1000,
     "playlist_poll_interval_ms": 60000,
@@ -181,6 +195,14 @@ Real attributes, not an encoded string. Rules a client must follow:
 - `revision` is a checksum of the rest of the payload, not a counter. Equal
   values mean an unchanged configuration; any change produces a different
   value. A client uses it to skip a re-layout, never to order versions.
+  `contract_version` is deliberately outside it: the protocol number is not
+  layout, and folding it in would restart every panel in a house to redraw a
+  room page that did not move.
+- `contract_version` is the version of this document the integration
+  implements. It is sent to every client, panel or not, so that a client can
+  see whether the other half of the contract is behind it. An absent value
+  means an integration older than the version that introduced the field —
+  see **Version compatibility** below.
 - A client must cache the last payload it read and start from that cache when
   Home Assistant is unreachable at boot. The paired ESP32 firmware keeps the
   entity IDs it learned in flash for exactly this reason. A client that cannot
@@ -317,6 +339,7 @@ another's battery level.
 {
   "panel_id": "t560_1a2b3c4d",
   "version": "0.3.1",
+  "contract_version": 4,
   "page": "player",
   "uptime_seconds": 4210,
   "wifi_dbm": -53,
@@ -333,6 +356,13 @@ another's battery level.
   for a backlight that exists but cannot be written by this session.
 - Booleans must be real JSON booleans; `1` is not `true`.
 - `version` sets the software version on the panel's Home Assistant device.
+  It is a release number and answers a different question from
+  `contract_version`: it says when the build shipped, not what it
+  understands.
+- `contract_version` is the version of this document the panel implements.
+  It is optional in the sense that an older panel does not send one, and an
+  absent value is read as "older than the integration" rather than as an
+  error — see **Version compatibility** below.
 - `page` is the page the client is showing, from the same closed list the
   `page` command takes. A name Home Assistant does not offer is dropped, so
   the select entity never holds an option it does not have.
@@ -347,6 +377,67 @@ another's battery level.
 
 Answers: `200` with `{"status": "ok"}`; `400` for an unusable body; `403` when
 the token belongs to another account; `404` when no loaded panel has that ID.
+
+## Version compatibility
+
+The number above is not decoration: both halves of the contract carry it in
+code and compare it, because a panel and the integration are released
+separately and either can be the older one.
+
+- the integration publishes its own as `contract_version` in the config
+  sensor, to every client;
+- a panel reports its own as `contract_version` in its status report.
+
+The number to compare is this document's version, never a release number.
+`integration-v1.2.0` and `panel-v0.5.0` say when a build shipped, not what it
+understands: two builds a month apart may implement the same protocol, and two
+builds an hour apart may not.
+
+**An absent value means older.** Every build on either side from before this
+rule existed sends nothing, so a missing `contract_version` is read as 0 and
+compared like any smaller number. It is never an error, and neither side may
+refuse a payload or a report over it.
+
+### The integration's side
+
+Home Assistant raises a repair issue naming the panel when that panel's
+contract version is lower than its own, and clears it once the panel reports
+the current one.
+
+**Every panel is checked the same way**, because every panel behaves the same
+way: the tablet and the paired ESP32 firmware both pair, both poll the config
+sensor and both report. Only the remedy differs, so the client profile picks
+the wording of the issue and nothing else — a tablet is rebuilt and copied to
+the device, an ESP32 is installed again from ESPHome Device Builder.
+
+A panel that has **never reported at all** is the case that matters in
+practice, because it is otherwise invisible: its battery, screen, page and
+settings entities simply sit unavailable forever with nothing to explain them.
+Silence alone cannot prove a stale build — a device is also silent when it is
+switched off — so what is asked is whether the panel has *ever* reported in
+the life of the installation, which the integration already records outside
+its own memory as the device's software version. A device that is merely off
+carries one; a device that cannot report never has. A grace period after the
+entry loads covers a panel that was paired moments ago or is still booting,
+and the issue clears itself the moment the panel reports.
+
+### A client's side
+
+A client that finds the integration older than itself reports it where its own
+user looks, and treats it as a configuration warning rather than a lost
+connection: Home Assistant answered, it simply speaks an older protocol. The
+T560 panel puts it on its status line; the paired ESP32 firmware writes it to
+its ESPHome log, once per version seen, because it has no line to spare on
+screen and a warning every poll cycle would bury everything else.
+
+### Clients that do not participate
+
+Reporting a contract version is optional in both directions, and the classic
+ESP32 firmware does neither. It is a controller rather than a panel: it never
+reports, so the integration has no version of its own to compare and raises
+nothing about it, and it ignores `contract_version` in the config sensor
+exactly as it ignores `settings` and `commands`. Nothing about that firmware
+changes, and no change to it is required.
 
 ## Services
 
@@ -388,10 +479,15 @@ can consume.
 
 ## Changing the contract
 
-1. Update this file first.
-2. Bump `version` in `custom_components/media_controller/manifest.json`.
-3. Update every consumer in the same pull request: `firmware/`, `clients/`.
-4. If a released client cannot read the new shape, raise the contract version
+1. Update this file first, including the contract version at the top of it.
+2. Raise the same number in the two places that hold it in code:
+   `CONTRACT_VERSION` in `custom_components/media_controller/contract.py` and
+   `T560_PANEL_CONTRACT_VERSION` in `clients/t560/src/app_config.h`. A
+   constant that has drifted from this document is worse than no constant,
+   because both sides compare against it.
+3. Bump `version` in `custom_components/media_controller/manifest.json`.
+4. Update every consumer in the same pull request: `firmware/`, `clients/`.
+5. If a released client cannot read the new shape, raise the contract version
    above and keep the old shape until every client is updated.
 
 Tests that protect the contract:
@@ -404,5 +500,7 @@ Tests that protect the contract:
 - `tests/test_pairing.py` — the rules that guard the provisioning endpoint;
 - `tests/test_panel_state.py` — the settings, the command channel, and the
   validation of a status report;
+- `tests/test_contract.py` — the rule that decides a panel is running a build
+  older than the contract, including the never-reported case;
 - `clients/t560/tests/test_power_button.py` — the tablet side of the settings
   and of the display request.

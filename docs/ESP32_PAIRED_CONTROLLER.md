@@ -191,6 +191,23 @@ switch, a brightness number, a restart button, and the sensors that say whether
 it is being heard from. It reports its uptime, display state, Wi-Fi signal and
 internal temperature once a minute.
 
+It also reports which version of the [contract](CONTRACT.md) it implements,
+and reads the integration's own out of the config sensor, so that neither half
+can be silently behind the other. If this device is the older one, Home
+Assistant raises a repair issue naming it and telling you to install it again
+from ESPHome Device Builder — its `packages:` block re-downloads the
+maintained firmware, so nothing in your own configuration changes. If Home
+Assistant is the older one, the device says so in its ESPHome log instead:
+
+```text
+[W][config]: Home Assistant speaks contract 4 and this firmware needs 5:
+update Media Controller
+```
+
+The number is `contract_version` in the substitutions block. It is not a knob
+to turn per device: it says what this firmware understands, and changing it
+only makes the device lie about itself.
+
 Two contract features are deliberately not wired up:
 
 - **`screen_off_seconds`.** The device already owns a *Screen Timeout* number on

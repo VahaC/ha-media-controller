@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
+import string
 import sys
 import unittest
 
@@ -240,3 +242,51 @@ class SkinTests(unittest.TestCase):
             with self.subTest(profile=profile.slug):
                 self.assertTrue(profile.skins)
                 self.assertTrue(profile.knows_skin(profile.skins[0]))
+
+
+class UpdateKindTests(unittest.TestCase):
+    """Verify that every panel can be told how to bring itself up to date."""
+
+    ISSUES = ("panel_contract_outdated", "panel_never_reported")
+
+    def _strings(self) -> dict:
+        path = (
+            Path(__file__).parents[1]
+            / "custom_components"
+            / "media_controller"
+            / "strings.json"
+        )
+        return json.loads(path.read_text(encoding="utf-8"))["issues"]
+
+    def test_the_two_panels_are_updated_differently(self) -> None:
+        # A tablet is rebuilt and copied over SSH; an ESP32 is reflashed.
+        self.assertEqual(
+            profiles.T560.update_kind, profiles.UPDATE_KIND_TABLET
+        )
+        self.assertEqual(
+            profiles.ESP32_S3_PANEL.update_kind,
+            profiles.UPDATE_KIND_FIRMWARE,
+        )
+
+    def test_every_panel_has_both_repair_texts(self) -> None:
+        """A new profile must not leave a raw translation key on screen."""
+        issues = self._strings()
+        for profile in profiles.PANEL_PROFILES:
+            for issue in self.ISSUES:
+                key = f"{issue}_{profile.update_kind}"
+                with self.subTest(key=key):
+                    self.assertIn(key, issues)
+                    self.assertTrue(issues[key]["title"])
+                    self.assertTrue(issues[key]["description"])
+
+    def test_the_repair_texts_use_only_offered_placeholders(self) -> None:
+        offered = {"name", "panel_contract", "integration_contract"}
+        for key, issue in self._strings().items():
+            with self.subTest(key=key):
+                used = set(
+                    field
+                    for text in (issue["title"], issue["description"])
+                    for _, field, _, _ in string.Formatter().parse(text)
+                    if field
+                )
+                self.assertTrue(used <= offered, used - offered)

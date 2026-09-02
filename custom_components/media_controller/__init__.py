@@ -7,6 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
 import logging
+import time
 from typing import Any
 
 import voluptuous as vol
@@ -44,6 +45,10 @@ from .const import (
     SERVICE_REFRESH,
     panel_entity_unique_id,
     slot_unique_id,
+)
+from .compatibility import (
+    async_clear_panel_issue,
+    async_update_panel_issue,
 )
 from .coordinator import PlaylistCoordinator, QueueCoordinator
 from .entries import is_panel_entry
@@ -93,6 +98,10 @@ class PanelRuntime:
     device_info: DeviceInfo
     state: PanelState
     panel_id: str
+    # Monotonic, and only ever read as a duration. It is what lets a panel
+    # that has never reported be told apart from one that was set up a moment
+    # ago and has not had time to; see compatibility.py.
+    loaded_at: float = 0.0
     cancel_presence: Callable[[], None] | None = None
 
     async def async_shutdown(self) -> None:
@@ -470,6 +479,7 @@ async def _async_setup_panel(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         panel_device_info(entry, controller_entry, profile),
         state,
         panel_id,
+        time.monotonic(),
     )
     _async_remove_orphaned_entities(
         hass, entry, client, _panel_own_entities(entry)
@@ -490,6 +500,12 @@ async def _async_setup_panel(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     def _async_presence_tick(_now: Any) -> None:
         """Re-evaluate availability, so a silent panel stops looking present."""
         state.notify()
+        # The same tick answers the other question silence raises: whether
+        # this panel has ever reported at all. A report cannot be waited for,
+        # so it is re-read here rather than pushed from the endpoint.
+        async_update_panel_issue(
+            hass, entry, state, loaded_at=runtime.loaded_at
+        )
 
     runtime.cancel_presence = async_track_time_interval(
         hass, _async_presence_tick, PANEL_PRESENCE_INTERVAL
@@ -534,6 +550,9 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Revoke a deleted panel's token so it cannot be used again."""
     if not is_panel_entry(entry):
         return
+    # A repair issue outlives an unload on purpose, so a restart does not make
+    # it flicker. Removing the panel is the one event that really ends it.
+    async_clear_panel_issue(hass, entry)
     pairings: PairingStore | None = hass.data.get(DOMAIN, {}).get(
         DATA_PROVISIONING
     )

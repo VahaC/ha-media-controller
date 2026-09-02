@@ -232,6 +232,7 @@ class StatusReportTests(unittest.TestCase):
                 },
                 "display": {"available": True, "on": True, "brightness": 55},
                 "version": "0.3.0",
+                "contract_version": 4,
                 "page": "room",
                 "uptime_seconds": 4210,
                 "wifi_dbm": -53,
@@ -244,6 +245,7 @@ class StatusReportTests(unittest.TestCase):
         self.assertTrue(status.display_known)
         self.assertEqual(status.brightness, 55)
         self.assertEqual(status.app_version, "0.3.0")
+        self.assertEqual(status.contract_version, 4)
         self.assertEqual(status.page, "room")
         self.assertEqual(status.uptime_seconds, 4210)
         self.assertEqual(status.wifi_dbm, -53)
@@ -255,9 +257,31 @@ class StatusReportTests(unittest.TestCase):
         self.assertFalse(status.display_known)
         self.assertEqual(status.brightness, -1)
         self.assertEqual(status.page, "")
+        self.assertEqual(status.contract_version, 0)
         self.assertIsNone(status.uptime_seconds)
         self.assertIsNone(status.wifi_dbm)
         self.assertIsNone(status.temperature_c)
+
+    def test_a_report_without_a_contract_version_reads_as_none(self) -> None:
+        """Every panel build from before the field existed sends nothing."""
+        status = panel_state.PanelStatus.from_report({"version": "0.3.1"})
+        self.assertEqual(status.contract_version, 0)
+
+    def test_an_unusable_contract_version_reads_as_none(self) -> None:
+        for value in ("four", 0, -3, True, None):
+            with self.subTest(value=value):
+                status = panel_state.PanelStatus.from_report(
+                    {"contract_version": value}
+                )
+                self.assertEqual(status.contract_version, 0)
+
+    def test_the_release_number_is_not_the_contract_version(self) -> None:
+        """They answer different questions and are read separately."""
+        status = panel_state.PanelStatus.from_report(
+            {"version": "0.4.0", "contract_version": 5}
+        )
+        self.assertEqual(status.app_version, "0.4.0")
+        self.assertEqual(status.contract_version, 5)
 
     def test_a_page_this_installation_does_not_have_is_dropped(self) -> None:
         # A newer client reporting a page Home Assistant has no option for

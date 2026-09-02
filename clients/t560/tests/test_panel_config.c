@@ -373,6 +373,57 @@ static void test_wrongly_typed_blocks_are_ignored(void)
     panel_layout_clear(&layout);
 }
 
+/* The number the two halves of the contract actually compare. An integration
+ * built before the field existed sends nothing at all, so an absent value has
+ * to read as 0 rather than as the current version: the application treats 0
+ * as older than itself and says so on the status line. */
+static void test_contract_version_is_read(void)
+{
+    PanelLayout layout = {0};
+    gchar *failure = NULL;
+
+    g_assert_true(parse(
+        "\"player\":\"media_player.a\",\"queue\":\"sensor.q\","
+        "\"playlists\":\"sensor.p\",\"contract_version\":4",
+        &layout, &failure));
+    g_assert_null(failure);
+    g_assert_cmpint(layout.contract_version, ==, 4);
+
+    panel_layout_clear(&layout);
+}
+
+static void test_missing_contract_version_is_zero(void)
+{
+    PanelLayout layout = {0};
+    gchar *failure = NULL;
+
+    g_assert_true(parse(FULL_ATTRIBUTES, &layout, &failure));
+    g_assert_cmpint(layout.contract_version, ==, 0);
+
+    panel_layout_clear(&layout);
+}
+
+/* A value that is not a positive number says nothing about the other side, so
+ * it is read as "named none" rather than believed. */
+static void test_unusable_contract_version_is_zero(void)
+{
+    const gchar *values[] = {"\"four\"", "0", "-3", "null"};
+
+    for (guint i = 0; i < G_N_ELEMENTS(values); i++) {
+        PanelLayout layout = {0};
+        gchar *failure = NULL;
+        gchar *attributes = g_strdup_printf(
+            "\"player\":\"media_player.a\",\"queue\":\"sensor.q\","
+            "\"playlists\":\"sensor.p\",\"contract_version\":%s",
+            values[i]);
+
+        g_assert_true(parse(attributes, &layout, &failure));
+        g_assert_cmpint(layout.contract_version, ==, 0);
+        g_free(attributes);
+        panel_layout_clear(&layout);
+    }
+}
+
 void panel_config_tests_register(void)
 {
     g_test_add_func("/config/full-payload", test_full_payload);
@@ -402,4 +453,9 @@ void panel_config_tests_register(void)
                     test_malformed_commands_are_ignored);
     g_test_add_func("/config/blocks-wrong-type",
                     test_wrongly_typed_blocks_are_ignored);
+    g_test_add_func("/config/contract-version", test_contract_version_is_read);
+    g_test_add_func("/config/contract-version-missing",
+                    test_missing_contract_version_is_zero);
+    g_test_add_func("/config/contract-version-unusable",
+                    test_unusable_contract_version_is_zero);
 }

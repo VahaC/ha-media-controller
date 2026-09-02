@@ -183,6 +183,14 @@ gboolean panel_config_parse_state(JsonObject *state, PanelLayout *layout,
     gdouble revision = 0.0;
     if (json_object_number(attributes, "revision", &revision))
         parsed.revision = (gint64)revision;
+    /* Absent is not an error: an integration built before this field existed
+     * simply says nothing, and the caller reads 0 as "older than this
+     * panel". */
+    gdouble contract = 0.0;
+    if (json_object_number(attributes, "contract_version", &contract) &&
+        contract > 0.0) {
+        parsed.contract_version = (gint)contract;
+    }
     read_settings(attributes, &parsed.settings);
     read_commands(attributes, &parsed.commands);
 

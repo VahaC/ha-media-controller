@@ -793,6 +793,23 @@ static void update_config(PanelApplication *application, JsonObject *state,
         return;
     }
 
+    /* The panel's half of the version check; the integration performs the
+     * other half on the report this panel sends it. Home Assistant answered,
+     * so this is a configuration warning and never a lost connection: the
+     * server is there, but it speaks an older contract, and part of what this
+     * build expects from the payload will simply never arrive. Reported every
+     * cycle, because the poll cycle owns the icon and starts each one clean.
+     * A payload that names no version at all reads as 0, which is what every
+     * integration built before the field existed sends. */
+    if (candidate.contract_version < T560_PANEL_CONTRACT_VERSION) {
+        note_poll_status(
+            application, PANEL_UI_STATUS_WARNING,
+            g_strdup_printf("Home Assistant speaks contract %d and this panel "
+                            "needs %d: update Media Controller",
+                            candidate.contract_version,
+                            T560_PANEL_CONTRACT_VERSION));
+    }
+
     /* Only a payload the panel accepted is cached; an unusable one must not
      * become the layout of the next boot. */
     if (application->config_cache == NULL ||
@@ -1104,6 +1121,11 @@ static void report_status(PanelApplication *application)
     json_builder_add_string_value(builder, application->config->panel_id);
     json_builder_set_member_name(builder, "version");
     json_builder_add_string_value(builder, T560_PANEL_VERSION);
+    /* The release number above says when this build shipped; this says what
+     * it understands. It is what lets Home Assistant notice that a tablet is
+     * running a build older than the contract the integration speaks. */
+    json_builder_set_member_name(builder, "contract_version");
+    json_builder_add_int_value(builder, T560_PANEL_CONTRACT_VERSION);
     json_builder_set_member_name(builder, "page");
     json_builder_add_string_value(builder, application->current_page);
     json_builder_set_member_name(builder, "uptime_seconds");

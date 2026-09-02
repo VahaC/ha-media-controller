@@ -131,6 +131,20 @@ def _flag(value: Any) -> bool:
     return value is True
 
 
+def _contract_version(value: Any) -> int:
+    """Read the contract version a client claims, using 0 for none.
+
+    What the number means — which version is current, and what an older one
+    should lead to — belongs to `contract.py`. All that happens here is
+    reading it out of a report that cannot be trusted to carry one: a panel
+    built before the field existed sends nothing at all.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    number = int(value)
+    return number if number > 0 else 0
+
+
 def _bounded(value: Any, minimum: float, maximum: float) -> float | None:
     """Read a reported measurement, using None for one that is not usable."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -287,6 +301,10 @@ class PanelStatus:
     display_known: bool = False
     brightness: int = -1
     app_version: str = ""
+    # The protocol the client says it speaks, and 0 for one that says
+    # nothing. `app_version` is a release number and answers a different
+    # question: it says when this build shipped, not what it understands.
+    contract_version: int = 0
     page: str = ""
     uptime_seconds: float | None = None
     wifi_dbm: float | None = None
@@ -323,6 +341,7 @@ class PanelStatus:
             display_known=_flag(display.get("available")),
             brightness=_percent(display.get("brightness")),
             app_version=str(report.get("version") or "")[:32],
+            contract_version=_contract_version(report.get("contract_version")),
             page=page if page in PAGES else "",
             uptime_seconds=None if uptime is None else float(uptime),
             wifi_dbm=_bounded(report.get("wifi_dbm"), WIFI_MIN_DBM,

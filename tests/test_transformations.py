@@ -216,6 +216,28 @@ class ClientConfigTests(unittest.TestCase):
         )
         self.assertNotEqual(before, moved.as_attributes()["revision"])
 
+    def test_contract_version_is_published(self) -> None:
+        """Every client is told which protocol the integration speaks."""
+        payload = transformations.ClientConfigPayload(
+            contract_version=4,
+            player_entity="media_player.kitchen",
+        )
+        self.assertEqual(payload.as_attributes()["contract_version"], 4)
+
+    def test_contract_version_is_not_part_of_the_revision(self) -> None:
+        """It is not layout, and must not restart a panel to redraw one."""
+        before = self._payload().as_attributes()["revision"]
+        after = transformations.ClientConfigPayload(
+            profile="t560",
+            slot_count=6,
+            player_entity="media_player.kitchen",
+            queue_entity="sensor.controller_queue",
+            playlists_entity="sensor.controller_playlists",
+            contract_version=9,
+            slots=self._payload().slots,
+        ).as_attributes()["revision"]
+        self.assertEqual(before, after)
+
     def test_kelvin_bounds_only_where_they_apply(self) -> None:
         slots = self._payload().as_attributes()["slots"]
         self.assertEqual(slots[0]["min_kelvin"], 2000)

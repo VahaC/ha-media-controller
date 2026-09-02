@@ -58,6 +58,14 @@ class SlotSpec:
     controls: tuple[str, ...]
 
 
+# How a stale build of one client is replaced. "Rebuild it and copy it to the
+# tablet" and "flash it with ESPHome" are not the same instruction, so the
+# repair issue Home Assistant shows is chosen from this rather than written
+# once and made vague enough to cover both.
+UPDATE_KIND_TABLET = "tablet"
+UPDATE_KIND_FIRMWARE = "firmware"
+
+
 @dataclass(frozen=True, slots=True)
 class ClientProfile:
     """What one kind of client device can drive."""
@@ -73,6 +81,13 @@ class ClientProfile:
     # neither would know what to do with the other's names. Empty for a client
     # that draws one interface.
     skins: tuple[str, ...] = ()
+    # What kind of update a stale build of this client needs; see the
+    # constants above. Every panel is checked the same way — they pair, poll
+    # and report alike — so this picks the wording of the repair issue and
+    # nothing else. A new panel profile needs the matching
+    # `panel_contract_outdated_<update_kind>` and
+    # `panel_never_reported_<update_kind>` translations.
+    update_kind: str = UPDATE_KIND_FIRMWARE
 
     @property
     def slot_count(self) -> int:
@@ -118,6 +133,7 @@ T560 = ClientProfile(
     slug="t560",
     name="T560 panel",
     skins=(SKIN_MODERN, SKIN_CASSETTE),
+    update_kind=UPDATE_KIND_TABLET,
     slots=tuple(
         SlotSpec(
             index,
@@ -140,6 +156,7 @@ ESP32_S3_PANEL = ClientProfile(
     slug="esp32_s3_panel",
     name="ESP32-S3 panel",
     skins=(SKIN_CLASSIC, SKIN_MINIMAL_RING, SKIN_COVER_CARD),
+    update_kind=UPDATE_KIND_FIRMWARE,
     slots=tuple(
         SlotSpec(
             index,

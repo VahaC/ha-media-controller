@@ -7,7 +7,16 @@
  * Assistant in the status report, which is what shows the software version on
  * the panel's device, and it is the user agent of every request. Keep it in
  * step with pkgver in packaging/APKBUILD. */
-#define T560_PANEL_VERSION "0.4.0"
+#define T560_PANEL_VERSION "0.5.0"
+
+/* The version of docs/CONTRACT.md this build implements.
+ *
+ * T560_PANEL_VERSION says when this build shipped; this says what it
+ * understands, and it is the only number worth comparing with the other side.
+ * The panel sends it in every status report and reads the integration's own
+ * out of the config sensor, so each half can tell that the other is behind.
+ * Raise it in the same change that raises the number in that document. */
+#define T560_PANEL_CONTRACT_VERSION 5
 
 /* Six is the number of tiles this panel draws. It is the T560 profile of the
  * Media Controller integration, which never sends more; a larger payload is
@@ -97,6 +106,11 @@ typedef struct {
      * commands deliberately do not change it: they are applied while the
      * panel keeps running, and only a layout change rebuilds the interface. */
     gint64 revision;
+    /* Which version of the contract the integration on the other end
+     * implements, and 0 when the payload names none. Every integration built
+     * before this field existed sends nothing, so 0 and "older than this
+     * panel" are the same fact. */
+    gint contract_version;
     PanelSettings settings;
     PanelCommands commands;
 } PanelLayout;

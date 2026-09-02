@@ -265,5 +265,23 @@
         }
       }
     }
+  },
+  "issues": {
+    "panel_contract_outdated_tablet": {
+      "title": "{name} is running an old build",
+      "description": "This panel reports client contract {panel_contract}, and this version of Media Controller speaks contract {integration_contract}. The two no longer agree on what the config sensor carries, so the device ignores part of what Home Assistant sends it: the settings and the buttons on its device change nothing.\n\nBuild and deploy a new panel build on the tablet: run `clients/t560/build-tablet.cmd` and then `clients/t560/deploy-tablet.cmd` from a checkout of the repository. The full procedure is in `clients/t560/docs/BUILD_AND_INSTALL.md`, under \"Update an existing installation\".\n\nThis message clears itself once the panel reports the current contract."
+    },
+    "panel_contract_outdated_firmware": {
+      "title": "{name} is running an old build",
+      "description": "This panel reports client contract {panel_contract}, and this version of Media Controller speaks contract {integration_contract}. The two no longer agree on what the config sensor carries, so the device ignores part of what Home Assistant sends it: the settings and the buttons on its device change nothing.\n\nInstall the device again from ESPHome Device Builder. Its `packages:` block re-downloads the maintained firmware from this repository, so no configuration of yours has to change.\n\nThis message clears itself once the panel reports the current contract."
+    },
+    "panel_never_reported_tablet": {
+      "title": "{name} has never reported to Home Assistant",
+      "description": "This panel has not sent a single status report since it was set up, so its Battery, Screen, Page and settings entities stay unavailable and nothing Home Assistant sends it is applied. That is what a build from before the status endpoint existed does: it cannot report, and it does not read the settings and commands sent to it. This version of Media Controller speaks contract {integration_contract}.\n\nBuild and deploy a new panel build on the tablet: run `clients/t560/build-tablet.cmd` and then `clients/t560/deploy-tablet.cmd` from a checkout of the repository. The full procedure is in `clients/t560/docs/BUILD_AND_INSTALL.md`, under \"Update an existing installation\".\n\nIf the device is simply switched off, ignore this: it clears itself the next time the panel reports."
+    },
+    "panel_never_reported_firmware": {
+      "title": "{name} has never reported to Home Assistant",
+      "description": "This panel has not sent a single status report since it was set up, so its Battery, Screen, Page and settings entities stay unavailable and nothing Home Assistant sends it is applied. That is what a build from before the status endpoint existed does: it cannot report, and it does not read the settings and commands sent to it. This version of Media Controller speaks contract {integration_contract}.\n\nInstall the device again from ESPHome Device Builder. Its `packages:` block re-downloads the maintained firmware from this repository, so no configuration of yours has to change.\n\nIf the device is simply switched off, ignore this: it clears itself the next time the panel reports."
+    }
   }
 }
