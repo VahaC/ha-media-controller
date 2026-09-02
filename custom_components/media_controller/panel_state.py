@@ -53,6 +53,16 @@ REPORT_TIMEOUT_SECONDS = 180.0
 SETTING_POLL_INTERVAL = "poll_interval_ms"
 SETTING_PLAYLIST_POLL_INTERVAL = "playlist_poll_interval_ms"
 SETTING_SCREEN_OFF = "screen_off_seconds"
+SETTING_PLAYER_SKIN = "player_skin"
+
+# How a client draws itself. The names are the client's own — the tablet has
+# two and the ESP32 three, and neither would know what to do with the other's
+# — so the vocabulary lives on the client profile and this module only checks
+# the shape. An empty value means Home Assistant has not chosen: the key is
+# then left out of the payload and the client keeps whatever it falls back to
+# on its own, `config.ini` on the tablet and a restoring select on the ESP32.
+PLAYER_SKIN_UNSET = ""
+PLAYER_SKIN_MAX_LENGTH = 32
 
 DISPLAY_ON = "on"
 DISPLAY_OFF = "off"
@@ -98,6 +108,24 @@ def _percent(value: Any) -> int:
     return number if 0 <= number <= 100 else -1
 
 
+def _player_skin(value: Any) -> str:
+    """Read the requested skin, checking its shape and not its meaning.
+
+    Which names are real is the client profile's business; the select entity
+    offers only what its own client draws. Anything that could not be a layout
+    name at all is dropped here so that a hand-edited config entry cannot put
+    nonsense into the payload every client then has to defend against.
+    """
+    if not isinstance(value, str):
+        return PLAYER_SKIN_UNSET
+    skin = value.strip().lower()
+    if not skin or len(skin) > PLAYER_SKIN_MAX_LENGTH:
+        return PLAYER_SKIN_UNSET
+    if not all(character.isalnum() or character in "_-" for character in skin):
+        return PLAYER_SKIN_UNSET
+    return skin
+
+
 def _flag(value: Any) -> bool:
     """Read a reported boolean without trusting its type."""
     return value is True
@@ -141,6 +169,7 @@ class PanelSettings:
     poll_interval_ms: int = DEFAULT_POLL_INTERVAL_MS
     playlist_poll_interval_ms: int = DEFAULT_PLAYLIST_POLL_INTERVAL_MS
     screen_off_seconds: int = DEFAULT_SCREEN_OFF_SECONDS
+    player_skin: str = PLAYER_SKIN_UNSET
 
     @classmethod
     def from_stored(cls, stored: Mapping[str, Any] | None) -> PanelSettings:
@@ -160,6 +189,7 @@ class PanelSettings:
                 DEFAULT_PLAYLIST_POLL_INTERVAL_MS,
             ),
             screen_off_seconds=_screen_off(source.get(SETTING_SCREEN_OFF)),
+            player_skin=_player_skin(source.get(SETTING_PLAYER_SKIN)),
         )
 
     def with_value(self, key: str, value: Any) -> PanelSettings:
@@ -174,11 +204,20 @@ class PanelSettings:
             SETTING_POLL_INTERVAL: self.poll_interval_ms,
             SETTING_PLAYLIST_POLL_INTERVAL: self.playlist_poll_interval_ms,
             SETTING_SCREEN_OFF: self.screen_off_seconds,
+            SETTING_PLAYER_SKIN: self.player_skin,
         }
 
     def as_payload(self) -> dict[str, Any]:
-        """Return what a panel reads from its config sensor."""
-        return self.as_stored()
+        """Return what a panel reads from its config sensor.
+
+        A skin nobody has chosen is left out rather than sent as an empty
+        string, so a client that has never been configured keeps its own
+        fallback instead of being handed a name it would have to reject.
+        """
+        payload = self.as_stored()
+        if not self.player_skin:
+            payload.pop(SETTING_PLAYER_SKIN, None)
+        return payload
 
 
 def _screen_off(value: Any) -> int:

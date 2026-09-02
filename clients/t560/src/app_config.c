@@ -4,6 +4,21 @@
 
 #include <string.h>
 
+/* The names the contract uses. They are matched here and nowhere else, so a
+ * skin added to the integration reaches this build as an unknown name and is
+ * answered with the default rather than with a broken interface. */
+PanelPlayerSkin panel_player_skin_from_string(const gchar *name)
+{
+    if (name != NULL && g_str_equal(name, "cassette"))
+        return PANEL_PLAYER_SKIN_CASSETTE;
+    return PANEL_PLAYER_SKIN_MODERN;
+}
+
+const gchar *panel_player_skin_to_string(PanelPlayerSkin skin)
+{
+    return skin == PANEL_PLAYER_SKIN_CASSETTE ? "cassette" : "modern";
+}
+
 static gchar *config_path(const gchar *name)
 {
     gchar *directory = app_config_directory_path();
@@ -134,6 +149,11 @@ static gboolean load_key_file(AppConfig *config, gchar **error_message)
             read_integer(file, "panel", "playlist_poll_interval_ms",
                          PANEL_DEFAULT_PLAYLIST_POLL_MS),
             10000, 3600000);
+        gchar *skin = read_string(file, "panel", "player_skin", NULL);
+        if (skin != NULL) {
+            config->player_skin = panel_player_skin_from_string(skin);
+            g_free(skin);
+        }
     }
     g_key_file_unref(file);
     g_free(path);
@@ -188,6 +208,7 @@ AppConfig *app_config_load(gchar **error_message)
     AppConfig *config = g_new0(AppConfig, 1);
     config->poll_interval_ms = PANEL_DEFAULT_POLL_MS;
     config->playlist_poll_interval_ms = PANEL_DEFAULT_PLAYLIST_POLL_MS;
+    config->player_skin = PANEL_PLAYER_SKIN_MODERN;
 
     if (!load_key_file(config, error_message)) {
         app_config_free(config);

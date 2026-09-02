@@ -7,7 +7,7 @@
  * Assistant in the status report, which is what shows the software version on
  * the panel's device, and it is the user agent of every request. Keep it in
  * step with pkgver in packaging/APKBUILD. */
-#define T560_PANEL_VERSION "0.3.1"
+#define T560_PANEL_VERSION "0.4.0"
 
 /* Six is the number of tiles this panel draws. It is the T560 profile of the
  * Media Controller integration, which never sends more; a larger payload is
@@ -17,6 +17,22 @@ enum {
     PANEL_DEFAULT_POLL_MS = 1000,
     PANEL_DEFAULT_PLAYLIST_POLL_MS = 60000
 };
+
+/* How the panel draws itself. The name arrives from Home Assistant in the
+ * config sensor and decides the whole interface, not only the player page:
+ * the cassette skin restyles the navigation bar and the room page with it.
+ * A name this build does not know falls back to MODERN rather than failing,
+ * so a skin added later cannot break a panel already in the field. */
+typedef enum {
+    PANEL_PLAYER_SKIN_MODERN,
+    PANEL_PLAYER_SKIN_CASSETTE,
+    /* Not a skin: the number of them, so that the interface can hold one
+     * record per skin and keep every one of them up to date. */
+    PANEL_PLAYER_SKIN_COUNT
+} PanelPlayerSkin;
+
+PanelPlayerSkin panel_player_skin_from_string(const gchar *name);
+const gchar *panel_player_skin_to_string(PanelPlayerSkin skin);
 
 /* One room control, exactly as the config sensor describes it. The panel
  * never inspects Home Assistant capabilities itself: the integration resolves
@@ -43,6 +59,11 @@ typedef struct {
      * -1 means Home Assistant did not send one. Applied by
      * t560-power-button.py, which re-reads the cached payload. */
     gint screen_off_seconds;
+    /* FALSE when Home Assistant named no skin. Nobody has chosen one there,
+     * so config.ini keeps deciding; overwriting it with the default would
+     * make an unconfigured Home Assistant louder than the tablet's own file. */
+    gboolean player_skin_present;
+    PanelPlayerSkin player_skin;
 } PanelSettings;
 
 /* The moments Home Assistant asked this panel to act.
@@ -88,6 +109,7 @@ typedef struct {
     gchar *config_entity;
     guint poll_interval_ms;
     guint playlist_poll_interval_ms;
+    PanelPlayerSkin player_skin;
     /* From Home Assistant, or from the on-disk cache. */
     PanelLayout layout;
 } AppConfig;

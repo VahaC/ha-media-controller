@@ -27,6 +27,7 @@ they share every pixel of their interface. Pick on setup and latency.
 | State latency | immediate | up to one poll interval |
 | In Home Assistant | an ESPHome device and a controller entry | an ESPHome device and a panel entry |
 | Theme, opacities, diagnostics | on the ESPHome device | on the ESPHome device, unchanged |
+| Home layout | *Screen Style* on the ESPHome device | also *Player skin* on the panel entry, which writes to it |
 | Screen and page control from Home Assistant | no | yes |
 | Interface | [`media-controller-ui.yaml`](../firmware/media-controller-ui.yaml) | the same file |
 

@@ -137,6 +137,7 @@ They exist so that nothing on a wall-mounted panel has to be reached over SSH.
 | **Screen brightness** | Backlight level. | yes |
 | **Screen** | Backlight on or off, and what it currently is. | yes |
 | **Page** | Which page the panel shows, and sending it to another. | yes |
+| **Player skin** | Which of its layouts the panel draws. | yes, its three home layouts |
 | **Restart panel app** | Restarts the application on the panel. | yes, reboots the device |
 | **Battery**, **Charging** | What the device reports about its power. | no — mains powered |
 | **Connected** | Whether the device is reporting at all. | yes |
@@ -149,7 +150,7 @@ An ESP32 has no battery to report, and its screen timeout is owned by a *Screen
 Timeout* number on its own ESPHome device instead — its range is narrower than
 the contract's, and two owners for one setting is a bug waiting to happen.
 
-The three settings and the two intervals are stored in Home Assistant and are
+The settings and the two intervals are stored in Home Assistant and are
 applied by the tablet within one poll cycle, without restarting it. They keep
 their value while the tablet is off, and the same keys in `config.ini` on the
 tablet are only the fallback used before it has ever reached Home Assistant.
@@ -172,6 +173,27 @@ display on and off works regardless: that goes through DPMS.
 to on the tablet, and setting it sends the panel there. That is what makes a
 panel addressable from an automation — a doorbell can put the room page in
 front of whoever walks past.
+
+**Player skin** chooses which of its layouts a panel draws, and its options are
+that panel's own:
+
+- On a **T560** — *Modern*, the default dark interface, or *Cassette*, the
+  faceplate of a cassette deck with the album art as the tape label and the
+  playback position as the tape moving from one reel to the other. A skin there
+  is the whole interface: the navigation bar and the room controls follow it.
+- On a **paired ESP32** — *Classic*, *Minimal Ring* or *Cover Card*, the three
+  home layouts the firmware already draws.
+
+It is a setting rather than a request, so it is applied on the next poll,
+within a second, and restarts nothing.
+
+The paired ESP32 keeps its *Screen Style* select on its own ESPHome device.
+That select is still where the value lives and what it restores from after a
+reboot, exactly as `config.ini` is the tablet's fallback; this entity writes to
+it. So the two agree rather than compete, and the layout is reachable from the
+panel device without having to go and find the ESPHome one. Until someone
+chooses here, the device keeps whatever it restored — Home Assistant sends no
+skin at all rather than sending its own idea of a default.
 
 **Uptime** is the moment the application started rather than a duration, so it
 sits still while the application does and moves when the watchdog restarts it.

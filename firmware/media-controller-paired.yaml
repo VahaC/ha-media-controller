@@ -29,7 +29,7 @@ substitutions:
   # if .local names are unreliable on your network.
   ha_url: "http://homeassistant.local:8123"
 
-  firmware_version: "0.1.1"
+  firmware_version: "0.2.0"
   asset_base_url: "https://raw.githubusercontent.com/VahaC/ha-media-controller/main/firmware/assets"
 
 # The interface — display, touchscreen, LVGL pages, theme — is shared with
@@ -381,6 +381,11 @@ globals:
     restore_value: false
     initial_value: "0"
 
+  # -- The skin the last payload named, handed to the interface after the
+  # -- payload has been parsed rather than in the middle of parsing it. --
+  - id: pending_skin
+    type: std::string
+    restore_value: false
   - id: last_playlist_poll_ms
     type: uint32_t
     restore_value: false
@@ -1134,6 +1139,13 @@ script:
                             if (ms > 3600000) ms = 3600000;
                             id(playlist_poll_interval_ms) = ms;
                           }
+                          // -- Which home layout to draw. The interface owns
+                          //    the mapping and ignores a name it does not
+                          //    know, so this half only has to hand it over.
+                          //    An absent key leaves the layout restored from
+                          //    flash alone: Home Assistant has not chosen. --
+                          id(pending_skin) = id(json_field)(settings,
+                                                            "player_skin");
                         }
 
                         // -- The four slot entities. They are what makes a
@@ -1157,6 +1169,13 @@ script:
                         id(pending_commands) = id(json_object)(attrs,
                                                                "commands");
                         id(pending_attributes) = attrs;
+                    - if:
+                        condition:
+                          lambda: return !id(pending_skin).empty();
+                        then:
+                          - script.execute:
+                              id: ui_apply_skin
+                              skin: !lambda return id(pending_skin);
                     - script.execute: read_commands
                     - script.execute: apply_commands
                     - if:

@@ -69,5 +69,9 @@ void panel_ui_set_room(PanelUi *ui, guint index, gboolean active,
                        gint min_color_temp_kelvin,
                        gint max_color_temp_kelvin);
 void panel_ui_show_page(PanelUi *ui, const gchar *page, const gchar *title);
+/* Chooses how the whole interface is drawn, not only the player page: the
+ * navigation bar and the room page follow the skin too. Safe to call before
+ * the widget tree exists, and safe to call with the skin already in use. */
+void panel_ui_set_skin(PanelUi *ui, PanelPlayerSkin skin);
 
 #endif

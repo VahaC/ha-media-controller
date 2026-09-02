@@ -20,12 +20,12 @@
 # Set this only when that sensor was renamed in Home Assistant.
 #config_entity=sensor.t560_config
 
-# Every key in this section is owned by Home Assistant, which offers all
-# three as number entities on the panel's device. What is set here is only the
-# fallback: it decides until the panel has read a configuration from Home
-# Assistant, and again if the cached one is lost. Editing Home Assistant
-# changes them within a second and without restarting anything, so there is
-# normally no reason to set them here at all.
+# Every key in this section is owned by Home Assistant, which offers them on
+# the panel's device. What is set here is only the fallback: it decides until
+# the panel has read a configuration from Home Assistant, and again if the
+# cached one is lost. Editing Home Assistant changes them within a second and
+# without restarting anything, so there is normally no reason to set them here
+# at all.
 [panel]
 # 1000 ms is responsive while keeping CPU/network use low. 500-30000 ms.
 poll_interval_ms=1000
@@ -37,6 +37,12 @@ playlist_poll_interval_ms=60000
 # button handler applies it, and re-reads it whenever Home Assistant changes
 # it.
 screen_off_seconds=30
+# How the panel draws itself: modern, or cassette for the cassette-deck
+# faceplate. It is the whole interface, not only the player page. An
+# unrecognised name is read as modern. This one is a real fallback rather than
+# a dead letter: Home Assistant sends no skin until somebody picks one there,
+# so what is set here decides until then.
+player_skin=modern
 
 # Front camera motion detection. While the display is off, detected motion
 # turns it on; while motion continues, the automatic screen off above is

@@ -24,7 +24,7 @@ esphome:
   friendly_name: ${friendly_name}
   project:
     name: media_controller.esp32s3
-    version: "0.8.1"
+    version: "0.9.0"
 
 api:
   on_client_connected:

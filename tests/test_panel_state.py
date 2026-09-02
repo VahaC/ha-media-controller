@@ -43,6 +43,56 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.playlist_poll_interval_ms, 3600000)
         self.assertEqual(settings.screen_off_seconds, 5)
 
+    def test_no_skin_is_chosen_by_default(self) -> None:
+        settings = panel_state.PanelSettings.from_stored(None)
+        self.assertEqual(settings.player_skin, "")
+
+    def test_an_unchosen_skin_is_left_out_of_the_payload(self) -> None:
+        """A client that was never configured keeps its own fallback."""
+        settings = panel_state.PanelSettings.from_stored(None)
+        self.assertNotIn("player_skin", settings.as_payload())
+        self.assertIn("player_skin", settings.as_stored())
+
+    def test_a_chosen_skin_is_sent(self) -> None:
+        for skin in ("cassette", "cover_card"):
+            with self.subTest(skin=skin):
+                settings = panel_state.PanelSettings.from_stored(
+                    {"player_skin": skin}
+                )
+                self.assertEqual(settings.player_skin, skin)
+                self.assertEqual(settings.as_payload()["player_skin"], skin)
+
+    def test_a_value_that_could_not_be_a_layout_name_is_dropped(self) -> None:
+        """The vocabulary is the client profile's; only the shape is checked."""
+        for value in ("", "   ", None, 7, True, "x" * 33, "drop table;",
+                      "with space"):
+            with self.subTest(value=value):
+                settings = panel_state.PanelSettings.from_stored(
+                    {"player_skin": value}
+                )
+                self.assertEqual(settings.player_skin, "")
+
+    def test_a_skin_name_is_normalised(self) -> None:
+        settings = panel_state.PanelSettings.from_stored(
+            {"player_skin": "  Cover_Card  "}
+        )
+        self.assertEqual(settings.player_skin, "cover_card")
+
+    def test_a_skin_survives_a_round_trip(self) -> None:
+        for skin in ("modern", "cassette", "classic", "minimal_ring",
+                     "cover_card"):
+            with self.subTest(skin=skin):
+                settings = panel_state.PanelSettings().with_value(
+                    panel_state.SETTING_PLAYER_SKIN, skin
+                )
+                self.assertEqual(settings.player_skin, skin)
+                self.assertEqual(
+                    panel_state.PanelSettings.from_stored(
+                        settings.as_stored()
+                    ),
+                    settings,
+                )
+
     def test_zero_screen_off_means_never(self) -> None:
         settings = panel_state.PanelSettings.from_stored(
             {"screen_off_seconds": 0}

@@ -58,11 +58,23 @@ class ClientProfile:
     slug: str
     name: str
     slots: tuple[SlotSpec, ...]
+    # The layouts this client draws, in the client's own vocabulary and in the
+    # order it offers them; the first is what it falls back to. The names
+    # travel in `player_skin` and mean nothing outside this client, which is
+    # why they live on the profile rather than in the settings record: the
+    # tablet has two skins of its own and the ESP32 three of its own, and
+    # neither would know what to do with the other's names. Empty for a client
+    # that draws one interface.
+    skins: tuple[str, ...] = ()
 
     @property
     def slot_count(self) -> int:
         """Return how many room controls this client drives."""
         return len(self.slots)
+
+    def knows_skin(self, skin: str) -> bool:
+        """Return whether this client draws the named layout."""
+        return skin in self.skins
 
     def spec(self, index: int) -> SlotSpec | None:
         """Return the specification of one slot, or None when out of range."""
@@ -83,9 +95,22 @@ ESP32_S3 = ClientProfile(
     ),
 )
 
+# The tablet's two skins. "cassette" restyles the whole interface, not the
+# player page alone.
+SKIN_MODERN = "modern"
+SKIN_CASSETTE = "cassette"
+
+# The ESP32's three home layouts. The firmware holds the value in a select of
+# its own that restores across reboots, the way `config.ini` holds the
+# tablet's; these names are what the payload calls them.
+SKIN_CLASSIC = "classic"
+SKIN_MINIMAL_RING = "minimal_ring"
+SKIN_COVER_CARD = "cover_card"
+
 T560 = ClientProfile(
     slug="t560",
     name="T560 panel",
+    skins=(SKIN_MODERN, SKIN_CASSETTE),
     slots=tuple(
         SlotSpec(
             index,
@@ -107,6 +132,7 @@ T560 = ClientProfile(
 ESP32_S3_PANEL = ClientProfile(
     slug="esp32_s3_panel",
     name="ESP32-S3 panel",
+    skins=(SKIN_CLASSIC, SKIN_MINIMAL_RING, SKIN_COVER_CARD),
     slots=tuple(
         SlotSpec(
             index,

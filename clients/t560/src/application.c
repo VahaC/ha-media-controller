@@ -474,6 +474,9 @@ static void handle_ui_event(PanelUiEvent event, const gchar *value, gint index,
     }
 }
 
+/* The larger of the two sizes the skins want, so one decode serves both. */
+#define PANEL_ALBUM_ART_DECODE 530
+
 static void album_art_finished(guint status_code, GBytes *body,
                                const GError *error, gpointer user_data)
 {
@@ -484,8 +487,12 @@ static void album_art_finished(guint status_code, GBytes *body,
         g_strcmp0(request->url, application->album_art_url) == 0) {
         GError *decode_error = NULL;
         GInputStream *stream = g_memory_input_stream_new_from_bytes(body);
+        /* One decode serves both skins: the modern artwork card scales down
+         * to 510 and the cassette label crops out of this, so neither ever
+         * enlarges the picture. The interface resizes it once, on arrival. */
         GdkPixbuf *pixbuf = gdk_pixbuf_new_from_stream_at_scale(
-            stream, 510, 510, TRUE, NULL, &decode_error);
+            stream, PANEL_ALBUM_ART_DECODE, PANEL_ALBUM_ART_DECODE, TRUE,
+            NULL, &decode_error);
         if (pixbuf != NULL) {
             panel_ui_set_album_art(application->ui, pixbuf);
             g_object_unref(pixbuf);
@@ -687,6 +694,17 @@ static void apply_settings(PanelApplication *application,
 
     application->config->playlist_poll_interval_ms =
         settings->playlist_poll_interval_ms;
+
+    /* The skin is applied while the panel runs. Both layouts already exist
+     * and both are kept up to date, so this is a stack switch and a repaint,
+     * not a rebuild; before the interface exists it is only recorded, and
+     * panel_ui_new reads it back. An absent skin leaves the config.ini
+     * fallback alone. */
+    if (settings->player_skin_present) {
+        application->config->player_skin = settings->player_skin;
+        if (application->ui != NULL)
+            panel_ui_set_skin(application->ui, settings->player_skin);
+    }
 
     if (settings->poll_interval_ms == application->config->poll_interval_ms)
         return;

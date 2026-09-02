@@ -1,8 +1,100 @@
 #include "panel_ui.h"
 
+#include <math.h>
+
 /* The ADJUST button sits in the top-right corner of a room card and the
  * header row reserves its height, so both must use the same value. */
 #define PANEL_ROOM_ADJUST_HEIGHT 44
+
+/* The side of the artwork the modern skin draws. Album art is scaled to it
+ * once, when it arrives. */
+#define PANEL_MODERN_ART_SIZE 510
+
+/* The cassette bay, in the coordinates of its own drawing area. The tablet
+ * screen is a fixed 800x1219, so the deck is laid out in pixels the way the
+ * rest of this interface already is.
+ *
+ * The bay is one drawing area rather than a tree of widgets: it is a single
+ * machined object, the tape inside it moves, and on an ARMv7 with a software
+ * renderer one draw handler that repaints a rectangle is cheaper than a dozen
+ * widgets that each invalidate their own. */
+#define PANEL_DECK_BAY_WIDTH 752
+#define PANEL_DECK_BAY_HEIGHT 420
+#define PANEL_DECK_WELL_X 96
+#define PANEL_DECK_WELL_Y 18
+#define PANEL_DECK_WELL_WIDTH 560
+#define PANEL_DECK_WELL_HEIGHT 350
+/* The shell, centred in the well, at the proportions of a real cassette. */
+#define PANEL_DECK_SHELL_X 111
+#define PANEL_DECK_SHELL_Y 28
+#define PANEL_DECK_SHELL_WIDTH 530
+#define PANEL_DECK_SHELL_HEIGHT 330
+#define PANEL_DECK_BAND_HEIGHT 46
+/* The window in the shell, and the hubs behind it. Shell-relative. */
+#define PANEL_DECK_WINDOW_X 75
+#define PANEL_DECK_WINDOW_Y 112
+#define PANEL_DECK_WINDOW_WIDTH 380
+#define PANEL_DECK_WINDOW_HEIGHT 158
+#define PANEL_DECK_HUB_LEFT_X 170
+#define PANEL_DECK_HUB_RIGHT_X 360
+#define PANEL_DECK_HUB_Y 191
+#define PANEL_DECK_HUB_RADIUS 21
+#define PANEL_DECK_PACK_RADIUS 62
+/* The linear tape-position indicator engraved into the bezel below the well. */
+#define PANEL_DECK_TAPE_X 250
+#define PANEL_DECK_TAPE_Y 386
+#define PANEL_DECK_TAPE_WIDTH 406
+#define PANEL_DECK_TAPE_HEIGHT 10
+#define PANEL_DECK_METER_SEGMENTS 14
+/* One turn of the hubs, and how often the reels are advanced. Eight frames a
+ * second is enough for a reel to read as turning and leaves the main loop
+ * free; each frame repaints two 48-pixel squares and nothing else. */
+#define PANEL_DECK_REEL_PERIOD_MS 3400
+#define PANEL_DECK_REEL_INTERVAL_MS 125
+
+/* The stack child the cassette player page lives under. It is never a page
+ * name: "player" is what navigation, Home Assistant and the status report all
+ * use, and which layout answers to it is decided by the skin. */
+#define PANEL_DECK_CHILD "player-deck"
+
+#define PANEL_DECK_AMBER 0xffae3dU
+#define PANEL_DECK_AMBER_HI 0xffd79bU
+#define PANEL_DECK_TAPE_COLOR 0x38240fU
+
+/* Everything one player layout owns. Both layouts are built at start-up and
+ * both are written by every setter, including the one that is hidden, so a
+ * skin change shows a page that is already correct instead of a page that
+ * catches up on the next poll. A pointer that a layout has no use for stays
+ * NULL and every setter checks it: the cassette has no progress bar and the
+ * modern skin has no tape. */
+typedef struct {
+    GtkWidget *page;
+    GtkWidget *track_title;
+    GtkWidget *artist;
+    GtkWidget *play;
+    GtkWidget *play_icon;
+    gint play_icon_size;
+    GtkWidget *shuffle;
+    GtkWidget *repeat;
+    GtkWidget *repeat_label;
+    GtkWidget *volume;
+    /* Modern only. */
+    GtkWidget *album_art;
+    GtkWidget *progress;
+    GtkWidget *position;
+    /* Cassette only. */
+    GtkWidget *bay;
+    GtkWidget *meter;
+    GtkWidget *elapsed;
+    GtkWidget *total;
+    GtkWidget *index;
+    GtkWidget *flag_play;
+    GtkWidget *flag_shuffle;
+    GtkWidget *flag_repeat;
+    /* A deck engraves its legends, so this layout wants REPEAT ALL where the
+     * other wants Repeat all. */
+    gboolean uppercase_labels;
+} PanelPlayerLayout;
 
 struct _PanelUi {
     const AppConfig *config;
@@ -19,17 +111,21 @@ struct _PanelUi {
     gint battery_percent;
     gboolean battery_charging;
     GtkWidget *page_title;
-    GtkWidget *album_art;
-    GtkWidget *track_title;
-    GtkWidget *artist;
-    GtkWidget *progress;
-    GtkWidget *position;
-    GtkWidget *play;
-    GtkWidget *play_icon;
-    GtkWidget *shuffle;
-    GtkWidget *repeat;
-    GtkWidget *repeat_label;
-    GtkWidget *volume;
+    GtkWidget *root;
+    PanelPlayerSkin skin;
+    PanelPlayerLayout players[PANEL_PLAYER_SKIN_COUNT];
+    gboolean on_player;
+    gboolean playing;
+    /* The cassette bay is one drawing area, so what it draws lives here and
+     * nothing in it is repainted unless one of these actually moved. */
+    GdkPixbuf *deck_art;
+    gdouble deck_progress;
+    gdouble deck_volume;
+    gdouble deck_angle;
+    gint deck_pack_radius;
+    gint deck_tape_filled;
+    guint deck_lit_segments;
+    guint deck_animation_source;
     GtkWidget *queue_list;
     GtkWidget *playlist_list;
     gboolean changing_list_selection;
@@ -44,6 +140,7 @@ struct _PanelUi {
     gdouble room_animation_to[PANEL_ROOM_MAX];
     gint64 room_animation_start_us[PANEL_ROOM_MAX];
     guint room_animation_tick[PANEL_ROOM_MAX];
+    GdkPixbuf *room_icon_source[PANEL_ROOM_MAX];
     GdkPixbuf *room_icon_off[PANEL_ROOM_MAX];
     GdkPixbuf *room_icon_on[PANEL_ROOM_MAX];
     GtkWidget *room_sheet;
@@ -71,6 +168,95 @@ struct _PanelUi {
 static void rounded_rectangle(cairo_t *cr, gdouble x, gdouble y, gdouble width,
                               gdouble height, gdouble radius);
 static void set_source_color(cairo_t *cr, guint color, gdouble alpha);
+static void refresh_room_icons(PanelUi *ui);
+static void deck_update_animation(PanelUi *ui);
+static cairo_pattern_t *skin_texture_pattern(PanelPlayerSkin skin);
+static void paint_dithered_gradient(cairo_t *cr, gdouble x, gdouble y,
+                                    gdouble width, gdouble height,
+                                    gdouble radius, guint start, guint end,
+                                    PanelPlayerSkin skin);
+
+/* Every colour the room page and the header draw with Cairo rather than CSS.
+ * They are a table rather than constants because the skin owns the whole
+ * interface: the room page is repainted in the deck's metal and amber when
+ * the cassette skin is chosen, and nothing about it is rebuilt to do it. */
+typedef struct {
+    guint header;
+    guint page_start;
+    guint page_end;
+    guint sheet_start;
+    guint sheet_end;
+    guint card_start;
+    guint card_end;
+    guint card_active_start;
+    guint card_active_end;
+    guint card_down_start;
+    guint card_down_end;
+    guint card_down_active_start;
+    guint card_down_active_end;
+    guint card_hover_start;
+    guint card_hover_end;
+    guint card_hover_active_start;
+    guint card_hover_active_end;
+    guint card_off;
+    guint border;
+    guint border_active;
+    guint border_off;
+    guint bottom;
+    guint bottom_active;
+    guint bottom_off;
+    guint icon_off;
+    guint icon_on;
+    /* The two tints the RGB565 texture is built from. */
+    guint texture_light;
+    guint texture_dark;
+} PanelSkinPalette;
+
+static const PanelSkinPalette PANEL_PALETTES[PANEL_PLAYER_SKIN_COUNT] = {
+    [PANEL_PLAYER_SKIN_MODERN] = {
+        .header = 0x0c1420U,
+        .page_start = 0x102039U, .page_end = 0x050a12U,
+        .sheet_start = 0x1d3550U, .sheet_end = 0x091521U,
+        .card_start = 0x213856U, .card_end = 0x0b1828U,
+        .card_active_start = 0x1a595bU, .card_active_end = 0x0a252bU,
+        .card_down_start = 0x0c1828U, .card_down_end = 0x1b3550U,
+        .card_down_active_start = 0x0d3034U, .card_down_active_end = 0x176066U,
+        .card_hover_start = 0x29466aU, .card_hover_end = 0x102138U,
+        .card_hover_active_start = 0x247174U,
+        .card_hover_active_end = 0x0d3037U,
+        .card_off = 0x0c1420U,
+        .border = 0x3b5678U, .border_active = 0x42d8cfU,
+        .border_off = 0x1c293bU,
+        .bottom = 0x050910U, .bottom_active = 0x071617U,
+        .bottom_off = 0x060a10U,
+        .icon_off = 0x9ab2cfU, .icon_on = 0x062125U,
+        .texture_light = 0x8fa9c7U, .texture_dark = 0x000814U
+    },
+    [PANEL_PLAYER_SKIN_CASSETTE] = {
+        .header = 0x15171aU,
+        .page_start = 0x2b2e33U, .page_end = 0x141619U,
+        .sheet_start = 0x3a3f46U, .sheet_end = 0x1b1e22U,
+        .card_start = 0x3a3f46U, .card_end = 0x1f2228U,
+        .card_active_start = 0x7d5722U, .card_active_end = 0x33220cU,
+        .card_down_start = 0x1f2228U, .card_down_end = 0x3a3f46U,
+        .card_down_active_start = 0x33220cU, .card_down_active_end = 0x7d5722U,
+        .card_hover_start = 0x474d56U, .card_hover_end = 0x24272dU,
+        .card_hover_active_start = 0x8f6528U,
+        .card_hover_active_end = 0x3c2810U,
+        .card_off = 0x1a1c20U,
+        .border = 0x555c66U, .border_active = 0xffae3dU,
+        .border_off = 0x2a2e34U,
+        .bottom = 0x08090bU, .bottom_active = 0x120c04U,
+        .bottom_off = 0x0d0f11U,
+        .icon_off = 0xa9b1bbU, .icon_on = 0x241a0dU,
+        .texture_light = 0xd8c0a0U, .texture_dark = 0x0a0806U
+    }
+};
+
+static const PanelSkinPalette *palette(PanelUi *ui)
+{
+    return &PANEL_PALETTES[ui->skin];
+}
 
 enum {
     LIST_COLUMN_INDEX,
@@ -120,8 +306,7 @@ static GtkWidget *new_icon(const gchar *name, gint pixel_size)
     return icon;
 }
 
-static GdkPixbuf *tint_icon(GdkPixbuf *source, guchar red, guchar green,
-                            guchar blue)
+static GdkPixbuf *tint_icon(GdkPixbuf *source, guint color)
 {
     GdkPixbuf *result = gdk_pixbuf_copy(source);
     guchar *pixels = gdk_pixbuf_get_pixels(result);
@@ -134,18 +319,45 @@ static GdkPixbuf *tint_icon(GdkPixbuf *source, guchar red, guchar green,
         guchar *row = pixels + y * rowstride;
         for (gint x = 0; x < width; x++) {
             guchar *pixel = row + x * channels;
-            pixel[0] = red;
-            pixel[1] = green;
-            pixel[2] = blue;
+            pixel[0] = (guchar)((color >> 16) & 0xffU);
+            pixel[1] = (guchar)((color >> 8) & 0xffU);
+            pixel[2] = (guchar)(color & 0xffU);
         }
     }
     return result;
+}
+
+/* A tile icon is the same artwork in two colours, and the skin decides which
+ * two. Re-tinting is a pass over six 62x62 images, so it is done when the skin
+ * changes rather than kept as four pixbufs per tile for the life of the
+ * process. */
+static void refresh_room_icons(PanelUi *ui)
+{
+    const PanelSkinPalette *colors = palette(ui);
+
+    for (guint i = 0; i < PANEL_ROOM_MAX; i++) {
+        if (ui->room_icon_source[i] == NULL)
+            continue;
+        g_clear_object(&ui->room_icon_off[i]);
+        g_clear_object(&ui->room_icon_on[i]);
+        ui->room_icon_off[i] = tint_icon(ui->room_icon_source[i],
+                                         colors->icon_off);
+        ui->room_icon_on[i] = tint_icon(ui->room_icon_source[i],
+                                        colors->icon_on);
+        if (ui->room_icons[i] != NULL) {
+            gtk_image_set_from_pixbuf(
+                GTK_IMAGE(ui->room_icons[i]),
+                ui->room_active[i] ? ui->room_icon_on[i]
+                                   : ui->room_icon_off[i]);
+        }
+    }
 }
 
 static GtkWidget *new_room_icon(PanelUi *ui, guint index,
                                 const gchar *resource_path)
 {
     GError *error = NULL;
+    const PanelSkinPalette *colors = palette(ui);
     GdkPixbuf *source = gdk_pixbuf_new_from_resource_at_scale(
         resource_path, 62, 62, TRUE, &error);
 
@@ -156,9 +368,9 @@ static GtkWidget *new_room_icon(PanelUi *ui, guint index,
         return new_icon("image-missing-symbolic", 48);
     }
 
-    ui->room_icon_off[index] = tint_icon(source, 0x9a, 0xb2, 0xcf);
-    ui->room_icon_on[index] = tint_icon(source, 0x06, 0x21, 0x25);
-    g_object_unref(source);
+    ui->room_icon_source[index] = source;
+    ui->room_icon_off[index] = tint_icon(source, colors->icon_off);
+    ui->room_icon_on[index] = tint_icon(source, colors->icon_on);
     return gtk_image_new_from_pixbuf(ui->room_icon_off[index]);
 }
 
@@ -477,6 +689,7 @@ static GtkWidget *navigation(PanelUi *ui)
 
 static GtkWidget *player_page(PanelUi *ui)
 {
+    PanelPlayerLayout *layout = &ui->players[PANEL_PLAYER_SKIN_MODERN];
     GtkWidget *page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 11);
     gtk_widget_set_margin_start(page, 24);
     gtk_widget_set_margin_end(page, 24);
@@ -484,32 +697,33 @@ static GtkWidget *player_page(PanelUi *ui)
     gtk_widget_set_margin_bottom(page, 10);
     add_css_class(page, "player-page");
 
-    ui->album_art = gtk_image_new_from_icon_name(
+    layout->album_art = gtk_image_new_from_icon_name(
         "audio-x-generic-symbolic", GTK_ICON_SIZE_DIALOG);
-    gtk_widget_set_size_request(ui->album_art, 510, 510);
+    gtk_widget_set_size_request(layout->album_art, PANEL_MODERN_ART_SIZE,
+                                PANEL_MODERN_ART_SIZE);
     GtkWidget *artwork = gtk_frame_new(NULL);
     gtk_frame_set_shadow_type(GTK_FRAME(artwork), GTK_SHADOW_NONE);
     gtk_widget_set_halign(artwork, GTK_ALIGN_CENTER);
     add_css_class(artwork, "artwork-card");
-    gtk_container_add(GTK_CONTAINER(artwork), ui->album_art);
+    gtk_container_add(GTK_CONTAINER(artwork), layout->album_art);
 
     GtkWidget *track_details = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
     add_css_class(track_details, "track-details");
-    ui->track_title = new_label("Nothing playing", "track-title");
-    ui->artist = new_label("", "artist");
-    gtk_box_pack_start(GTK_BOX(track_details), ui->track_title,
+    layout->track_title = new_label("Nothing playing", "track-title");
+    layout->artist = new_label("", "artist");
+    gtk_box_pack_start(GTK_BOX(track_details), layout->track_title,
                        FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(track_details), ui->artist,
+    gtk_box_pack_start(GTK_BOX(track_details), layout->artist,
                        FALSE, FALSE, 0);
 
     GtkWidget *timeline = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
     gtk_widget_set_margin_start(timeline, 34);
     gtk_widget_set_margin_end(timeline, 34);
-    ui->progress = gtk_progress_bar_new();
-    gtk_widget_set_size_request(ui->progress, -1, 12);
-    ui->position = new_label("0:00  /  0:00", "position");
-    gtk_box_pack_start(GTK_BOX(timeline), ui->progress, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(timeline), ui->position, FALSE, FALSE, 0);
+    layout->progress = gtk_progress_bar_new();
+    gtk_widget_set_size_request(layout->progress, -1, 12);
+    layout->position = new_label("0:00  /  0:00", "position");
+    gtk_box_pack_start(GTK_BOX(timeline), layout->progress, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(timeline), layout->position, FALSE, FALSE, 0);
 
     gtk_box_pack_start(GTK_BOX(page), artwork, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(page), track_details, FALSE, FALSE, 0);
@@ -517,16 +731,19 @@ static GtkWidget *player_page(PanelUi *ui)
 
     GtkWidget *modes = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
     gtk_widget_set_halign(modes, GTK_ALIGN_CENTER);
-    ui->shuffle = new_icon_button(
+    layout->shuffle = new_icon_button(
         "media-playlist-shuffle-symbolic", "Shuffle", "mode-button",
         190, 58, 23, GTK_ORIENTATION_HORIZONTAL, NULL, NULL);
-    ui->repeat = new_icon_button(
+    layout->repeat = new_icon_button(
         "media-playlist-repeat-symbolic", "Repeat off", "mode-button",
-        190, 58, 23, GTK_ORIENTATION_HORIZONTAL, NULL, &ui->repeat_label);
-    g_signal_connect(ui->shuffle, "clicked", G_CALLBACK(shuffle_clicked), ui);
-    g_signal_connect(ui->repeat, "clicked", G_CALLBACK(repeat_clicked), ui);
-    gtk_box_pack_start(GTK_BOX(modes), ui->shuffle, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(modes), ui->repeat, FALSE, FALSE, 0);
+        190, 58, 23, GTK_ORIENTATION_HORIZONTAL, NULL,
+        &layout->repeat_label);
+    g_signal_connect(layout->shuffle, "clicked",
+                     G_CALLBACK(shuffle_clicked), ui);
+    g_signal_connect(layout->repeat, "clicked",
+                     G_CALLBACK(repeat_clicked), ui);
+    gtk_box_pack_start(GTK_BOX(modes), layout->shuffle, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(modes), layout->repeat, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(page), modes, FALSE, FALSE, 0);
 
     GtkWidget *controls = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 18);
@@ -534,23 +751,24 @@ static GtkWidget *player_page(PanelUi *ui)
     GtkWidget *previous = new_icon_button(
         "media-skip-backward-symbolic", NULL, "transport-button",
         108, 86, 38, GTK_ORIENTATION_VERTICAL, NULL, NULL);
-    ui->play = new_icon_button(
+    layout->play = new_icon_button(
         "media-playback-start-symbolic", NULL, "play-button", 120, 104,
-        48, GTK_ORIENTATION_VERTICAL, &ui->play_icon, NULL);
+        48, GTK_ORIENTATION_VERTICAL, &layout->play_icon, NULL);
+    layout->play_icon_size = 48;
     GtkWidget *next = new_icon_button(
         "media-skip-forward-symbolic", NULL, "transport-button",
         108, 86, 38, GTK_ORIENTATION_VERTICAL, NULL, NULL);
     gtk_widget_set_tooltip_text(previous, "Previous track");
-    gtk_widget_set_tooltip_text(ui->play, "Play or pause");
+    gtk_widget_set_tooltip_text(layout->play, "Play or pause");
     gtk_widget_set_tooltip_text(next, "Next track");
     g_object_set_data(G_OBJECT(previous), "service", "media_previous_track");
-    g_object_set_data(G_OBJECT(ui->play), "service", "media_play_pause");
+    g_object_set_data(G_OBJECT(layout->play), "service", "media_play_pause");
     g_object_set_data(G_OBJECT(next), "service", "media_next_track");
     g_signal_connect(previous, "clicked", G_CALLBACK(player_clicked), ui);
-    g_signal_connect(ui->play, "clicked", G_CALLBACK(player_clicked), ui);
+    g_signal_connect(layout->play, "clicked", G_CALLBACK(player_clicked), ui);
     g_signal_connect(next, "clicked", G_CALLBACK(player_clicked), ui);
     gtk_box_pack_start(GTK_BOX(controls), previous, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(controls), ui->play, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(controls), layout->play, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(controls), next, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(page), controls, FALSE, FALSE, 0);
 
@@ -566,8 +784,8 @@ static GtkWidget *player_page(PanelUi *ui)
     gtk_box_pack_start(GTK_BOX(volume_readout),
                        new_label("VOLUME", "volume-caption"),
                        FALSE, FALSE, 0);
-    ui->volume = new_label("--", "volume");
-    gtk_box_pack_start(GTK_BOX(volume_readout), ui->volume,
+    layout->volume = new_label("--", "volume");
+    gtk_box_pack_start(GTK_BOX(volume_readout), layout->volume,
                        FALSE, FALSE, 0);
     GtkWidget *up = new_icon_button(
         "audio-volume-high-symbolic", NULL, "volume-button", 86, 62, 28,
@@ -593,6 +811,622 @@ static GtkWidget *player_page(PanelUi *ui)
                        FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(page), volume_row, FALSE, FALSE, 0);
     gtk_box_pack_end(GTK_BOX(page), navigation(ui), FALSE, FALSE, 4);
+    layout->page = page;
+    return page;
+}
+
+/* ------------------------------------------------------------ cassette skin
+ *
+ * The second skin is the faceplate of an early-1980s three-head cassette
+ * deck, and it owns the whole interface rather than the player page alone:
+ * the navigation bar and the room page are restyled with it, through the
+ * .skin-cassette class on the root widget and the palette above.
+ *
+ * Two properties of this tablet shape how it is drawn. The framebuffer is
+ * RGB565, so every large surface goes through paint_dithered_gradient and
+ * every small one is a flat fill with hard edges; there is not one CSS
+ * gradient in this skin, because a gradient across a key would band. And the
+ * CPU is an ARMv7 running a software renderer, so nothing in the bay is
+ * repainted unless the pixels it produces actually changed.
+ */
+
+/* A tape moves by area, not by radius: the wound length of a pack grows with
+ * the square of its radius. Reading the root back is what makes the reels
+ * behave like tape rather than like two circles being resized, and it is why
+ * the two packs are the same size halfway through a track. */
+static void deck_pack_radii(gdouble progress, gdouble *left, gdouble *right)
+{
+    gdouble hub = PANEL_DECK_HUB_RADIUS;
+    gdouble full = PANEL_DECK_PACK_RADIUS;
+    gdouble span = full * full - hub * hub;
+    gdouble played = CLAMP(progress, 0.0, 1.0);
+
+    *left = sqrt(hub * hub + span * (1.0 - played));
+    *right = sqrt(hub * hub + span * played);
+}
+
+static void deck_draw_pack(cairo_t *cr, gdouble x, gdouble y, gdouble radius)
+{
+    cairo_pattern_t *pack = cairo_pattern_create_radial(
+        x, y - radius * 0.25, radius * 0.1, x, y, radius);
+
+    cairo_pattern_add_color_stop_rgb(pack, 0.0, 0.482, 0.337, 0.212);
+    cairo_pattern_add_color_stop_rgb(pack, 1.0, 0.271, 0.173, 0.098);
+    cairo_set_source(cr, pack);
+    cairo_arc(cr, x, y, radius, 0.0, 2.0 * G_PI);
+    cairo_fill(cr);
+    cairo_pattern_destroy(pack);
+    set_source_color(cr, 0x8c6540U, 0.65);
+    cairo_set_line_width(cr, 1.4);
+    cairo_arc(cr, x, y, radius, 0.0, 2.0 * G_PI);
+    cairo_stroke(cr);
+}
+
+/* Six teeth, as a real shell has. They are the whole point of the animation:
+ * a plain disc turning is indistinguishable from a disc standing still. */
+static void deck_draw_hub(cairo_t *cr, gdouble x, gdouble y, gdouble angle)
+{
+    cairo_save(cr);
+    cairo_translate(cr, x, y);
+    cairo_rotate(cr, angle);
+    set_source_color(cr, 0xd6dbe2U, 1.0);
+    cairo_arc(cr, 0.0, 0.0, PANEL_DECK_HUB_RADIUS, 0.0, 2.0 * G_PI);
+    cairo_fill(cr);
+    set_source_color(cr, 0x141619U, 1.0);
+    for (guint i = 0; i < 6; i++) {
+        cairo_save(cr);
+        cairo_rotate(cr, i * G_PI / 3.0);
+        cairo_rectangle(cr, -3.0, -PANEL_DECK_HUB_RADIUS + 1.0, 6.0, 8.0);
+        cairo_fill(cr);
+        cairo_restore(cr);
+    }
+    cairo_arc(cr, 0.0, 0.0, 10.0, 0.0, 2.0 * G_PI);
+    cairo_fill(cr);
+    cairo_restore(cr);
+}
+
+static gboolean deck_page_draw(GtkWidget *widget, cairo_t *cr,
+                               gpointer user_data)
+{
+    PanelUi *ui = user_data;
+    const PanelSkinPalette *colors = palette(ui);
+
+    /* Brushed black aluminium. The grain lives in the texture pattern, so
+     * this is one gradient and one tiled fill however tall the page is. */
+    paint_dithered_gradient(
+        cr, 0.0, 0.0, gtk_widget_get_allocated_width(widget),
+        gtk_widget_get_allocated_height(widget), 0.0, colors->page_start,
+        colors->page_end, PANEL_PLAYER_SKIN_CASSETTE);
+    return FALSE;
+}
+
+static gboolean deck_bay_draw(GtkWidget *widget, cairo_t *cr,
+                              gpointer user_data)
+{
+    PanelUi *ui = user_data;
+    gdouble width = gtk_widget_get_allocated_width(widget);
+    gdouble height = gtk_widget_get_allocated_height(widget);
+    gdouble shell_x = PANEL_DECK_SHELL_X;
+    gdouble shell_y = PANEL_DECK_SHELL_Y;
+    gdouble window_x = shell_x + PANEL_DECK_WINDOW_X;
+    gdouble window_y = shell_y + PANEL_DECK_WINDOW_Y;
+    gdouble hub_y = shell_y + PANEL_DECK_HUB_Y;
+    gdouble hub_left = shell_x + PANEL_DECK_HUB_LEFT_X;
+    gdouble hub_right = shell_x + PANEL_DECK_HUB_RIGHT_X;
+    gdouble left_radius = 0.0;
+    gdouble right_radius = 0.0;
+    gdouble filled;
+    cairo_pattern_t *sheen;
+    const gdouble screws[4][2] = {
+        {14.0, 14.0},
+        {PANEL_DECK_SHELL_WIDTH - 14.0, 14.0},
+        {14.0, PANEL_DECK_SHELL_HEIGHT - 14.0},
+        {PANEL_DECK_SHELL_WIDTH - 14.0, PANEL_DECK_SHELL_HEIGHT - 14.0}
+    };
+
+    /* The machined bezel, and the chamfer that catches the light along its
+     * top edge. */
+    paint_dithered_gradient(cr, 0.0, 0.0, width, height, 5.0, 0x4a5058U,
+                            0x1e2127U, PANEL_PLAYER_SKIN_CASSETTE);
+    set_source_color(cr, 0xffffffU, 0.18);
+    cairo_set_line_width(cr, 1.0);
+    rounded_rectangle(cr, 0.5, 0.5, width - 1.0, height - 1.0, 5.0);
+    cairo_stroke(cr);
+
+    /* The well the cassette is loaded into. */
+    set_source_color(cr, 0x070808U, 1.0);
+    rounded_rectangle(cr, PANEL_DECK_WELL_X, PANEL_DECK_WELL_Y,
+                      PANEL_DECK_WELL_WIDTH, PANEL_DECK_WELL_HEIGHT, 3.0);
+    cairo_fill(cr);
+
+    cairo_save(cr);
+    rounded_rectangle(cr, shell_x, shell_y, PANEL_DECK_SHELL_WIDTH,
+                      PANEL_DECK_SHELL_HEIGHT, 4.0);
+    cairo_clip(cr);
+
+    /* The label is the album art, cropped to the shell face when it arrived. */
+    if (ui->deck_art != NULL) {
+        gdk_cairo_set_source_pixbuf(cr, ui->deck_art, shell_x, shell_y);
+        cairo_paint(cr);
+    } else {
+        paint_dithered_gradient(cr, shell_x, shell_y, PANEL_DECK_SHELL_WIDTH,
+                                PANEL_DECK_SHELL_HEIGHT, 0.0, 0x2a2d33U,
+                                0x121417U, PANEL_PLAYER_SKIN_CASSETTE);
+    }
+
+    /* The sheen of the shell's plastic face. */
+    sheen = cairo_pattern_create_linear(
+        shell_x, shell_y, shell_x, shell_y + PANEL_DECK_SHELL_HEIGHT);
+    cairo_pattern_add_color_stop_rgba(sheen, 0.0, 1.0, 1.0, 1.0, 0.13);
+    cairo_pattern_add_color_stop_rgba(sheen, 0.24, 1.0, 1.0, 1.0, 0.0);
+    cairo_pattern_add_color_stop_rgba(sheen, 1.0, 0.0, 0.0, 0.0, 0.42);
+    cairo_set_source(cr, sheen);
+    cairo_paint(cr);
+    cairo_pattern_destroy(sheen);
+    cairo_set_source(cr, skin_texture_pattern(PANEL_PLAYER_SKIN_CASSETTE));
+    cairo_paint(cr);
+
+    /* The paper band the side and the queue position are printed on. Their
+     * text is two labels in the overlay above, because Pango belongs in a
+     * label and not in a draw handler that runs eight times a second. */
+    set_source_color(cr, 0x0a0908U, 0.84);
+    cairo_rectangle(cr, shell_x, shell_y, PANEL_DECK_SHELL_WIDTH,
+                    PANEL_DECK_BAND_HEIGHT);
+    cairo_fill(cr);
+    set_source_color(cr, 0xf2e3cbU, 0.2);
+    cairo_rectangle(cr, shell_x, shell_y + PANEL_DECK_BAND_HEIGHT,
+                    PANEL_DECK_SHELL_WIDTH, 1.0);
+    cairo_fill(cr);
+
+    for (guint i = 0; i < G_N_ELEMENTS(screws); i++) {
+        set_source_color(cr, 0x4e545dU, 1.0);
+        cairo_arc(cr, shell_x + screws[i][0], shell_y + screws[i][1], 4.5,
+                  0.0, 2.0 * G_PI);
+        cairo_fill(cr);
+        set_source_color(cr, 0x14161aU, 1.0);
+        cairo_arc(cr, shell_x + screws[i][0], shell_y + screws[i][1], 2.0,
+                  0.0, 2.0 * G_PI);
+        cairo_fill(cr);
+    }
+    cairo_restore(cr);
+
+    /* The window, and the tape running behind it. */
+    cairo_save(cr);
+    rounded_rectangle(cr, window_x, window_y, PANEL_DECK_WINDOW_WIDTH,
+                      PANEL_DECK_WINDOW_HEIGHT, 10.0);
+    cairo_clip(cr);
+    set_source_color(cr, 0x0c0b0aU, 0.88);
+    cairo_paint(cr);
+
+    /* Down from each pack, over the guides, across the head block. */
+    set_source_color(cr, PANEL_DECK_TAPE_COLOR, 1.0);
+    cairo_set_line_width(cr, 8.0);
+    cairo_move_to(cr, hub_left - 30.0, hub_y + 12.0);
+    cairo_line_to(cr, hub_left - 22.0, hub_y + 61.0);
+    cairo_move_to(cr, hub_right + 30.0, hub_y + 12.0);
+    cairo_line_to(cr, hub_right + 22.0, hub_y + 61.0);
+    cairo_stroke(cr);
+    cairo_rectangle(cr, hub_left - 26.0, hub_y + 57.0,
+                    (hub_right + 26.0) - (hub_left - 26.0), 7.0);
+    cairo_fill(cr);
+    /* The two guide rollers the tape turns around. Without them the span
+     * across the head block reads as a bracket rather than as tape. */
+    for (guint i = 0; i < 2; i++) {
+        gdouble x = i == 0 ? hub_left - 24.0 : hub_right + 24.0;
+
+        set_source_color(cr, 0x9aa2adU, 1.0);
+        cairo_arc(cr, x, hub_y + 60.0, 8.0, 0.0, 2.0 * G_PI);
+        cairo_fill(cr);
+        set_source_color(cr, 0x141619U, 1.0);
+        cairo_arc(cr, x, hub_y + 60.0, 3.5, 0.0, 2.0 * G_PI);
+        cairo_fill(cr);
+    }
+
+    deck_pack_radii(ui->deck_progress, &left_radius, &right_radius);
+    deck_draw_pack(cr, hub_left, hub_y, left_radius);
+    deck_draw_pack(cr, hub_right, hub_y, right_radius);
+    deck_draw_hub(cr, hub_left, hub_y, ui->deck_angle);
+    deck_draw_hub(cr, hub_right, hub_y, ui->deck_angle);
+    cairo_restore(cr);
+
+    set_source_color(cr, 0xf2e3cbU, 0.26);
+    cairo_set_line_width(cr, 2.0);
+    rounded_rectangle(cr, window_x + 1.0, window_y + 1.0,
+                      PANEL_DECK_WINDOW_WIDTH - 2.0,
+                      PANEL_DECK_WINDOW_HEIGHT - 2.0, 10.0);
+    cairo_stroke(cr);
+
+    /* The linear tape-position indicator. The packs alone are honest but hard
+     * to read halfway through a track, where both are the same size. */
+    set_source_color(cr, 0x101112U, 1.0);
+    rounded_rectangle(cr, PANEL_DECK_TAPE_X, PANEL_DECK_TAPE_Y,
+                      PANEL_DECK_TAPE_WIDTH, PANEL_DECK_TAPE_HEIGHT, 5.0);
+    cairo_fill(cr);
+    filled = PANEL_DECK_TAPE_WIDTH * CLAMP(ui->deck_progress, 0.0, 1.0);
+    if (filled >= PANEL_DECK_TAPE_HEIGHT) {
+        set_source_color(cr, PANEL_DECK_AMBER, 1.0);
+        rounded_rectangle(cr, PANEL_DECK_TAPE_X, PANEL_DECK_TAPE_Y, filled,
+                          PANEL_DECK_TAPE_HEIGHT, 5.0);
+        cairo_fill(cr);
+    }
+    return FALSE;
+}
+
+static gboolean deck_meter_draw(GtkWidget *widget, cairo_t *cr,
+                                gpointer user_data)
+{
+    PanelUi *ui = user_data;
+    gdouble width = gtk_widget_get_allocated_width(widget);
+    gdouble height = gtk_widget_get_allocated_height(widget);
+    gdouble gap = 4.0;
+    gdouble step = (width + gap) / PANEL_DECK_METER_SEGMENTS;
+
+    for (guint i = 0; i < PANEL_DECK_METER_SEGMENTS; i++) {
+        guint color = 0x241a0dU;
+
+        if (i < ui->deck_lit_segments) {
+            color = i + 1 == ui->deck_lit_segments ? PANEL_DECK_AMBER_HI
+                                                   : PANEL_DECK_AMBER;
+        }
+        set_source_color(cr, color, 1.0);
+        cairo_rectangle(cr, i * step, 0.0, step - gap, height);
+        cairo_fill(cr);
+    }
+    return FALSE;
+}
+
+/* Only the two hubs move, so only the two hubs are invalidated. Repainting
+ * the window would mean repainting the packs and the label behind them
+ * eight times a second, which this tablet cannot afford. */
+static void deck_damage_reels(PanelUi *ui)
+{
+    GtkWidget *bay = ui->players[PANEL_PLAYER_SKIN_CASSETTE].bay;
+    gint size = 2 * PANEL_DECK_HUB_RADIUS + 4;
+    gint y = PANEL_DECK_SHELL_Y + PANEL_DECK_HUB_Y - PANEL_DECK_HUB_RADIUS - 2;
+
+    if (bay == NULL)
+        return;
+    gtk_widget_queue_draw_area(
+        bay, PANEL_DECK_SHELL_X + PANEL_DECK_HUB_LEFT_X -
+                 PANEL_DECK_HUB_RADIUS - 2, y, size, size);
+    gtk_widget_queue_draw_area(
+        bay, PANEL_DECK_SHELL_X + PANEL_DECK_HUB_RIGHT_X -
+                 PANEL_DECK_HUB_RADIUS - 2, y, size, size);
+}
+
+static gboolean deck_reel_tick(gpointer user_data)
+{
+    PanelUi *ui = user_data;
+
+    ui->deck_angle += 2.0 * G_PI * PANEL_DECK_REEL_INTERVAL_MS /
+                      PANEL_DECK_REEL_PERIOD_MS;
+    if (ui->deck_angle > 2.0 * G_PI)
+        ui->deck_angle -= 2.0 * G_PI;
+    deck_damage_reels(ui);
+    return G_SOURCE_CONTINUE;
+}
+
+/* The reels turn while the tape runs and while anyone can see them, and not
+ * otherwise. A panel sitting on the room page, or paused, costs nothing. */
+static void deck_update_animation(PanelUi *ui)
+{
+    gboolean wanted = ui->skin == PANEL_PLAYER_SKIN_CASSETTE &&
+                      ui->playing && ui->on_player &&
+                      ui->players[PANEL_PLAYER_SKIN_CASSETTE].bay != NULL;
+
+    if (wanted == (ui->deck_animation_source != 0))
+        return;
+    if (wanted) {
+        ui->deck_animation_source = g_timeout_add_full(
+            G_PRIORITY_DEFAULT_IDLE, PANEL_DECK_REEL_INTERVAL_MS,
+            deck_reel_tick, ui, NULL);
+    } else {
+        g_source_remove(ui->deck_animation_source);
+        ui->deck_animation_source = 0;
+    }
+}
+
+static void deck_set_progress(PanelUi *ui, gdouble progress)
+{
+    PanelPlayerLayout *layout = &ui->players[PANEL_PLAYER_SKIN_CASSETTE];
+    gdouble left = 0.0;
+    gdouble right = 0.0;
+    gint radius;
+    gint filled;
+
+    if (layout->bay == NULL)
+        return;
+
+    ui->deck_progress = CLAMP(progress, 0.0, 1.0);
+    deck_pack_radii(ui->deck_progress, &left, &right);
+    radius = (gint)(left + 0.5);
+    filled = (gint)(PANEL_DECK_TAPE_WIDTH * ui->deck_progress);
+
+    /* A pack radius moves by a fraction of a pixel a second, so redrawing the
+     * window every poll would repaint the label for nothing. */
+    if (radius != ui->deck_pack_radius) {
+        ui->deck_pack_radius = radius;
+        gtk_widget_queue_draw_area(
+            layout->bay, PANEL_DECK_SHELL_X + PANEL_DECK_WINDOW_X,
+            PANEL_DECK_SHELL_Y + PANEL_DECK_WINDOW_Y,
+            PANEL_DECK_WINDOW_WIDTH, PANEL_DECK_WINDOW_HEIGHT);
+    }
+    if (filled != ui->deck_tape_filled) {
+        ui->deck_tape_filled = filled;
+        gtk_widget_queue_draw_area(layout->bay, PANEL_DECK_TAPE_X,
+                                   PANEL_DECK_TAPE_Y, PANEL_DECK_TAPE_WIDTH,
+                                   PANEL_DECK_TAPE_HEIGHT);
+    }
+}
+
+static void deck_set_volume(PanelUi *ui, gdouble volume)
+{
+    PanelPlayerLayout *layout = &ui->players[PANEL_PLAYER_SKIN_CASSETTE];
+    guint lit;
+
+    if (layout->meter == NULL)
+        return;
+
+    ui->deck_volume = CLAMP(volume, 0.0, 1.0);
+    lit = (guint)(ui->deck_volume * PANEL_DECK_METER_SEGMENTS + 0.5);
+    if (lit == ui->deck_lit_segments)
+        return;
+    ui->deck_lit_segments = lit;
+    gtk_widget_queue_draw(layout->meter);
+}
+
+/* A deck key with a pilot lamp where a transport key has its symbol. The lamp
+ * is a widget of its own so that lighting it moves nothing. */
+static GtkWidget *new_deck_lamp_key(const gchar *text, gint width,
+                                    gint height, GtkWidget **label_out)
+{
+    GtkWidget *button = gtk_button_new();
+    GtkWidget *content = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+    GtkWidget *lamp = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    GtkWidget *label = new_label(text, "deck-key-label");
+
+    gtk_widget_set_size_request(lamp, 22, 4);
+    gtk_widget_set_halign(lamp, GTK_ALIGN_CENTER);
+    add_css_class(lamp, "deck-lamp");
+    gtk_widget_set_halign(content, GTK_ALIGN_CENTER);
+    gtk_widget_set_valign(content, GTK_ALIGN_CENTER);
+    gtk_box_pack_start(GTK_BOX(content), lamp, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(content), label, FALSE, FALSE, 0);
+    gtk_container_add(GTK_CONTAINER(button), content);
+    gtk_widget_set_size_request(button, width, height);
+    add_css_class(button, "deck-key");
+    if (label_out != NULL)
+        *label_out = label;
+    return button;
+}
+
+static GtkWidget *deck_transport_key(PanelUi *ui, const gchar *icon,
+                                     const gchar *text, const gchar *service,
+                                     const gchar *tooltip, gint width,
+                                     GtkWidget **icon_out)
+{
+    GtkWidget *button = new_icon_button(icon, text, "deck-key", width, 118,
+                                        30, GTK_ORIENTATION_VERTICAL,
+                                        icon_out, NULL);
+    gtk_widget_set_tooltip_text(button, tooltip);
+    g_object_set_data(G_OBJECT(button), "service", (gpointer)service);
+    g_signal_connect(button, "clicked", G_CALLBACK(player_clicked), ui);
+    return button;
+}
+
+static GtkWidget *deck_page_button(PanelUi *ui, const gchar *icon,
+                                   const gchar *text, const gchar *page,
+                                   const gchar *title)
+{
+    GtkWidget *button = new_icon_button(icon, text, "deck-key", -1, 74, 22,
+                                        GTK_ORIENTATION_HORIZONTAL, NULL,
+                                        NULL);
+    g_object_set_data(G_OBJECT(button), "page", (gpointer)page);
+    g_object_set_data(G_OBJECT(button), "title", (gpointer)title);
+    g_signal_connect(button, "clicked", G_CALLBACK(page_clicked), ui);
+    return button;
+}
+
+static GtkWidget *deck_scale_mark(const gchar *text, GtkAlign align)
+{
+    GtkWidget *label = new_label(text, "deck-scale");
+
+    gtk_widget_set_halign(label, align);
+    return label;
+}
+
+static GtkWidget *deck_page(PanelUi *ui)
+{
+    PanelPlayerLayout *layout = &ui->players[PANEL_PLAYER_SKIN_CASSETTE];
+    GtkWidget *page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 13);
+
+    layout->uppercase_labels = TRUE;
+    gtk_widget_set_margin_start(page, 24);
+    gtk_widget_set_margin_end(page, 24);
+    gtk_widget_set_margin_top(page, 16);
+    gtk_widget_set_margin_bottom(page, 10);
+    add_css_class(page, "deck-page");
+    g_signal_connect(page, "draw", G_CALLBACK(deck_page_draw), ui);
+
+    /* The name strip, engraved into the faceplate. */
+    GtkWidget *strip = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 16);
+    GtkWidget *maker = new_label("MUSIC ASSISTANT", "deck-brand");
+    GtkWidget *kind = new_label("STEREO CASSETTE DECK", "deck-engraved");
+    GtkWidget *model = new_label("MA-560", "deck-model");
+    gtk_widget_set_size_request(strip, -1, 40);
+    add_css_class(strip, "deck-strip");
+    gtk_label_set_ellipsize(GTK_LABEL(maker), PANGO_ELLIPSIZE_NONE);
+    gtk_label_set_ellipsize(GTK_LABEL(kind), PANGO_ELLIPSIZE_NONE);
+    gtk_widget_set_halign(maker, GTK_ALIGN_START);
+    gtk_widget_set_valign(kind, GTK_ALIGN_BASELINE);
+    gtk_widget_set_valign(model, GTK_ALIGN_BASELINE);
+    gtk_box_pack_start(GTK_BOX(strip), maker, TRUE, TRUE, 14);
+    gtk_box_pack_end(GTK_BOX(strip), model, FALSE, FALSE, 14);
+    gtk_box_pack_end(GTK_BOX(strip), kind, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(page), strip, FALSE, FALSE, 0);
+
+    /* The bay. One drawing area, with the three engraved legends over it. */
+    layout->bay = gtk_drawing_area_new();
+    gtk_widget_set_size_request(layout->bay, PANEL_DECK_BAY_WIDTH,
+                                PANEL_DECK_BAY_HEIGHT);
+    g_signal_connect(layout->bay, "draw", G_CALLBACK(deck_bay_draw), ui);
+
+    GtkWidget *bay = gtk_overlay_new();
+    GtkWidget *side = new_label("SIDE A", "deck-band-side");
+    GtkWidget *tape_caption = new_label("TAPE POSITION", "deck-engraved");
+    layout->index = new_label("", "deck-band-index");
+    gtk_container_add(GTK_CONTAINER(bay), layout->bay);
+
+    gtk_label_set_ellipsize(GTK_LABEL(side), PANGO_ELLIPSIZE_NONE);
+    gtk_label_set_ellipsize(GTK_LABEL(tape_caption), PANGO_ELLIPSIZE_NONE);
+    gtk_widget_set_halign(side, GTK_ALIGN_START);
+    gtk_widget_set_valign(side, GTK_ALIGN_START);
+    gtk_widget_set_size_request(side, -1, PANEL_DECK_BAND_HEIGHT);
+    gtk_widget_set_margin_start(side, PANEL_DECK_SHELL_X + 34);
+    gtk_widget_set_margin_top(side, PANEL_DECK_SHELL_Y);
+    gtk_widget_set_halign(layout->index, GTK_ALIGN_END);
+    gtk_widget_set_valign(layout->index, GTK_ALIGN_START);
+    gtk_widget_set_size_request(layout->index, -1, PANEL_DECK_BAND_HEIGHT);
+    gtk_widget_set_margin_end(layout->index, PANEL_DECK_SHELL_X + 34);
+    gtk_widget_set_margin_top(layout->index, PANEL_DECK_SHELL_Y);
+    gtk_widget_set_halign(tape_caption, GTK_ALIGN_START);
+    gtk_widget_set_valign(tape_caption, GTK_ALIGN_START);
+    gtk_widget_set_size_request(tape_caption, -1, 20);
+    gtk_widget_set_margin_start(tape_caption, PANEL_DECK_WELL_X);
+    gtk_widget_set_margin_top(tape_caption, PANEL_DECK_TAPE_Y - 5);
+    gtk_overlay_add_overlay(GTK_OVERLAY(bay), side);
+    gtk_overlay_add_overlay(GTK_OVERLAY(bay), layout->index);
+    gtk_overlay_add_overlay(GTK_OVERLAY(bay), tape_caption);
+    gtk_box_pack_start(GTK_BOX(page), bay, FALSE, FALSE, 0);
+
+    /* One fluorescent display, as a deck has: everything behind one pane. */
+    GtkWidget *display = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_widget_set_size_request(display, -1, 196);
+    add_css_class(display, "deck-display");
+    layout->track_title = new_label("Nothing playing", "deck-title");
+    layout->artist = new_label("", "deck-artist");
+    gtk_widget_set_halign(layout->track_title, GTK_ALIGN_START);
+    gtk_widget_set_halign(layout->artist, GTK_ALIGN_START);
+    gtk_box_pack_start(GTK_BOX(display), layout->track_title, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(display), layout->artist, FALSE, FALSE, 0);
+
+    GtkWidget *flags = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 22);
+    layout->flag_shuffle = new_label("SHUFFLE", "deck-flag");
+    layout->flag_repeat = new_label("REPEAT", "deck-flag");
+    layout->flag_play = new_label("PLAY", "deck-flag");
+    add_css_class(flags, "deck-flags");
+    gtk_widget_set_size_request(flags, -1, 30);
+    gtk_box_pack_start(GTK_BOX(flags), layout->flag_shuffle, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(flags), layout->flag_repeat, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(flags), layout->flag_play, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(display), flags, FALSE, FALSE, 0);
+
+    GtkWidget *bottom = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 26);
+    GtkWidget *counter = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 9);
+    layout->elapsed = new_label("0:00", "deck-counter");
+    layout->total = new_label("/ 0:00", "deck-counter-total");
+    gtk_widget_set_valign(counter, GTK_ALIGN_END);
+    gtk_widget_set_valign(layout->elapsed, GTK_ALIGN_BASELINE);
+    gtk_widget_set_valign(layout->total, GTK_ALIGN_BASELINE);
+    gtk_box_pack_start(GTK_BOX(counter), layout->elapsed, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(counter), layout->total, FALSE, FALSE, 0);
+
+    GtkWidget *meter_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
+    GtkWidget *meter_head = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    GtkWidget *meter_caption = new_label("VOLUME", "deck-meter-caption");
+    GtkWidget *scale = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    layout->volume = new_label("--", "deck-meter-value");
+    layout->meter = gtk_drawing_area_new();
+    gtk_widget_set_size_request(layout->meter, -1, 17);
+    g_signal_connect(layout->meter, "draw", G_CALLBACK(deck_meter_draw), ui);
+    gtk_label_set_ellipsize(GTK_LABEL(meter_caption), PANGO_ELLIPSIZE_NONE);
+    gtk_widget_set_halign(meter_caption, GTK_ALIGN_START);
+    gtk_widget_set_halign(layout->volume, GTK_ALIGN_END);
+    gtk_box_pack_start(GTK_BOX(meter_head), meter_caption, TRUE, TRUE, 0);
+    gtk_box_pack_end(GTK_BOX(meter_head), layout->volume, FALSE, FALSE, 0);
+    gtk_box_set_homogeneous(GTK_BOX(scale), TRUE);
+    gtk_box_pack_start(GTK_BOX(scale), deck_scale_mark("0", GTK_ALIGN_START),
+                       TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(scale), deck_scale_mark("25", GTK_ALIGN_CENTER),
+                       TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(scale), deck_scale_mark("50", GTK_ALIGN_CENTER),
+                       TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(scale), deck_scale_mark("75", GTK_ALIGN_CENTER),
+                       TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(scale), deck_scale_mark("100", GTK_ALIGN_END),
+                       TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(meter_box), meter_head, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(meter_box), layout->meter, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(meter_box), scale, FALSE, FALSE, 0);
+    gtk_widget_set_valign(meter_box, GTK_ALIGN_END);
+
+    gtk_box_pack_start(GTK_BOX(bottom), counter, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(bottom), meter_box, TRUE, TRUE, 0);
+    gtk_box_pack_end(GTK_BOX(display), bottom, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(page), display, FALSE, FALSE, 0);
+
+    /* Transport keys. Every one is at least as large as the button it
+     * replaces on the other skin, so no touch target moves with the skin. */
+    GtkWidget *transport = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 16);
+    GtkWidget *previous = deck_transport_key(
+        ui, "media-skip-backward-symbolic", "PREV", "media_previous_track",
+        "Previous track", 200, NULL);
+    layout->play = deck_transport_key(
+        ui, "media-playback-start-symbolic", "PLAY / PAUSE",
+        "media_play_pause", "Play or pause", -1, &layout->play_icon);
+    GtkWidget *next = deck_transport_key(
+        ui, "media-skip-forward-symbolic", "NEXT", "media_next_track",
+        "Next track", 200, NULL);
+    layout->play_icon_size = 34;
+    add_css_class(layout->play, "deck-key-main");
+    gtk_box_pack_start(GTK_BOX(transport), previous, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(transport), layout->play, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(transport), next, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(page), transport, FALSE, FALSE, 0);
+
+    /* Mode keys and output level. */
+    GtkWidget *functions = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 14);
+    GtkWidget *spacer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    GtkWidget *down = new_icon_button(
+        "audio-volume-low-symbolic", "VOL", "deck-key", 132, 78, 24,
+        GTK_ORIENTATION_HORIZONTAL, NULL, NULL);
+    GtkWidget *up = new_icon_button(
+        "audio-volume-high-symbolic", "VOL", "deck-key", 132, 78, 24,
+        GTK_ORIENTATION_HORIZONTAL, NULL, NULL);
+    layout->shuffle = new_deck_lamp_key("SHUFFLE", 186, 78, NULL);
+    layout->repeat = new_deck_lamp_key("REPEAT OFF", 186, 78,
+                                       &layout->repeat_label);
+    gtk_widget_set_tooltip_text(down, "Volume down");
+    gtk_widget_set_tooltip_text(up, "Volume up");
+    g_object_set_data(G_OBJECT(down), "service", "volume_down");
+    g_object_set_data(G_OBJECT(up), "service", "volume_up");
+    g_signal_connect(down, "clicked", G_CALLBACK(player_clicked), ui);
+    g_signal_connect(up, "clicked", G_CALLBACK(player_clicked), ui);
+    g_signal_connect(layout->shuffle, "clicked",
+                     G_CALLBACK(shuffle_clicked), ui);
+    g_signal_connect(layout->repeat, "clicked",
+                     G_CALLBACK(repeat_clicked), ui);
+    gtk_box_pack_start(GTK_BOX(functions), layout->shuffle, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(functions), layout->repeat, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(functions), spacer, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(functions), down, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(functions), up, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(page), functions, FALSE, FALSE, 0);
+
+    GtkWidget *library = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 16);
+    gtk_box_pack_start(GTK_BOX(library),
+                       deck_page_button(ui, "view-list-details-symbolic",
+                                        "QUEUE", "queue", "QUEUE"),
+                       TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(library),
+                       deck_page_button(ui, "view-list-icons-symbolic",
+                                        "PLAYLISTS", "playlists",
+                                        "PLAYLISTS"),
+                       TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(page), library, FALSE, FALSE, 0);
+
+    gtk_box_pack_end(GTK_BOX(page), navigation(ui), FALSE, FALSE, 4);
+    layout->page = page;
     return page;
 }
 
@@ -626,59 +1460,70 @@ static GtkWidget *list_page(PanelUi *ui, gboolean queue)
     return page;
 }
 
-/* The tablet framebuffer is RGB565. Subtle CSS gradients therefore collapse
- * into wide color bands even though they look smooth in a 24-bit screenshot.
- * Static irregular noise breaks up those bands without the diagonal artifacts
- * of an ordered Bayer matrix and without adding animation work. */
-static cairo_pattern_t *room_dither_pattern(void)
+/* The tablet framebuffer is RGB565: five bits of red and blue, six of green.
+ * A gradient that looks smooth in a 24-bit screenshot therefore collapses
+ * into wide colour bands on the actual display, because a hundred shades of a
+ * channel land on thirty-two values. Static irregular noise scatters each
+ * pixel across the two values it falls between, which reads as the shade that
+ * is missing and costs one extra fill. An ordered Bayer matrix would do the
+ * same and leave visible diagonals; an animated dither would cost a repaint
+ * per frame.
+ *
+ * The cassette skin folds its brushed grain into the same pattern instead of
+ * painting it separately: brushed aluminium is high-frequency by nature, so
+ * one surface carries the texture and the dither together, in one operation.
+ *
+ * One pattern per skin, built on first use and kept for the life of the
+ * process. Each is 16 KB. */
+static cairo_pattern_t *skin_texture_pattern(PanelPlayerSkin skin)
 {
-    static cairo_pattern_t *pattern;
+    static cairo_pattern_t *patterns[PANEL_PLAYER_SKIN_COUNT];
+    const PanelSkinPalette *colors = &PANEL_PALETTES[skin];
     const guint size = 64;
 
-    if (pattern == NULL) {
+    if (patterns[skin] == NULL) {
         cairo_surface_t *surface = cairo_image_surface_create(
             CAIRO_FORMAT_ARGB32, size, size);
         guint32 *pixels = (guint32 *)cairo_image_surface_get_data(surface);
         gint stride = cairo_image_surface_get_stride(surface) /
                       (gint)sizeof(*pixels);
+        gboolean brushed = skin == PANEL_PLAYER_SKIN_CASSETTE;
 
         for (guint y = 0; y < size; y++) {
             for (guint x = 0; x < size; x++) {
                 guint32 noise = (x + 1U) * 0x9e3779b1U ^
                                 (y + 1U) * 0x85ebca6bU;
-                guint8 alpha;
-                guint8 red;
-                guint8 green;
-                guint8 blue;
+                gboolean light;
+                guint tint;
+                guint alpha;
 
                 noise ^= noise >> 16;
                 noise *= 0x7feb352dU;
                 noise ^= noise >> 15;
                 noise *= 0x846ca68bU;
                 noise ^= noise >> 16;
-                if ((noise & 0xffU) < 128U) {
-                    alpha = (guint8)(2U + ((noise >> 8) & 0x07U));
-                    red = (guint8)(0x8fU * alpha / 255U);
-                    green = (guint8)(0xa9U * alpha / 255U);
-                    blue = (guint8)(0xc7U * alpha / 255U);
-                } else {
-                    alpha = (guint8)(1U + ((noise >> 11) % 6U));
-                    red = 0;
-                    green = (guint8)(0x08U * alpha / 255U);
-                    blue = (guint8)(0x14U * alpha / 255U);
-                }
-                pixels[y * stride + x] = ((guint32)alpha << 24) |
-                                         ((guint32)red << 16) |
-                                         ((guint32)green << 8) | blue;
+                /* Brushed metal is lit and shadowed by the row rather than by
+                 * the pixel, so the grain decides the sign and the noise only
+                 * decides how far. */
+                light = brushed ? (y & 1U) == 0U : (noise & 0xffU) < 128U;
+                tint = light ? colors->texture_light : colors->texture_dark;
+                alpha = light ? 2U + ((noise >> 8) & 0x07U)
+                              : 1U + ((noise >> 11) % 6U);
+                /* Cairo image surfaces hold premultiplied colour. */
+                pixels[y * stride + x] =
+                    (alpha << 24) |
+                    ((((tint >> 16) & 0xffU) * alpha / 255U) << 16) |
+                    ((((tint >> 8) & 0xffU) * alpha / 255U) << 8) |
+                    ((tint & 0xffU) * alpha / 255U);
             }
         }
         cairo_surface_mark_dirty(surface);
-        pattern = cairo_pattern_create_for_surface(surface);
-        cairo_pattern_set_extend(pattern, CAIRO_EXTEND_REPEAT);
-        cairo_pattern_set_filter(pattern, CAIRO_FILTER_NEAREST);
+        patterns[skin] = cairo_pattern_create_for_surface(surface);
+        cairo_pattern_set_extend(patterns[skin], CAIRO_EXTEND_REPEAT);
+        cairo_pattern_set_filter(patterns[skin], CAIRO_FILTER_NEAREST);
         cairo_surface_destroy(surface);
     }
-    return pattern;
+    return patterns[skin];
 }
 
 static guint mix_color(guint from, guint to, gdouble progress)
@@ -704,7 +1549,8 @@ static void add_gradient_stop(cairo_pattern_t *gradient, gdouble offset,
 
 static void paint_dithered_gradient(cairo_t *cr, gdouble x, gdouble y,
                                     gdouble width, gdouble height,
-                                    gdouble radius, guint start, guint end)
+                                    gdouble radius, guint start, guint end,
+                                    PanelPlayerSkin skin)
 {
     cairo_pattern_t *gradient = cairo_pattern_create_linear(
         x, y, x, y + height);
@@ -721,7 +1567,7 @@ static void paint_dithered_gradient(cairo_t *cr, gdouble x, gdouble y,
     cairo_clip(cr);
     cairo_set_source(cr, gradient);
     cairo_paint(cr);
-    cairo_set_source(cr, room_dither_pattern());
+    cairo_set_source(cr, skin_texture_pattern(skin));
     cairo_paint(cr);
     cairo_restore(cr);
     cairo_pattern_destroy(gradient);
@@ -730,22 +1576,26 @@ static void paint_dithered_gradient(cairo_t *cr, gdouble x, gdouble y,
 static gboolean room_page_draw(GtkWidget *widget, cairo_t *cr,
                                gpointer user_data)
 {
-    (void)user_data;
+    PanelUi *ui = user_data;
+    const PanelSkinPalette *colors = palette(ui);
+
     paint_dithered_gradient(
         cr, 0.0, 0.0, gtk_widget_get_allocated_width(widget),
-        gtk_widget_get_allocated_height(widget), 0.0, 0x102039U, 0x050a12U);
+        gtk_widget_get_allocated_height(widget), 0.0, colors->page_start,
+        colors->page_end, ui->skin);
     return FALSE;
 }
 
 static gboolean room_sheet_draw(GtkWidget *widget, cairo_t *cr,
                                 gpointer user_data)
 {
-    (void)user_data;
+    PanelUi *ui = user_data;
+    const PanelSkinPalette *colors = palette(ui);
     gdouble width = gtk_widget_get_allocated_width(widget);
     gdouble height = gtk_widget_get_allocated_height(widget);
 
     paint_dithered_gradient(cr, 1.0, 1.0, width - 2.0, height - 6.0, 27.0,
-                            0x1d3550U, 0x091521U);
+                            colors->sheet_start, colors->sheet_end, ui->skin);
     return FALSE;
 }
 
@@ -758,34 +1608,35 @@ static gboolean room_card_draw(GtkWidget *widget, cairo_t *cr,
     GtkStateFlags flags = gtk_widget_get_state_flags(widget);
     gdouble width = gtk_widget_get_allocated_width(widget);
     gdouble height = gtk_widget_get_allocated_height(widget);
+    const PanelSkinPalette *colors = palette(ui);
     gdouble mix = ui->room_active_mix[index];
-    guint start = 0x213856U;
-    guint end = 0x0b1828U;
-    guint active_start = 0x1a595bU;
-    guint active_end = 0x0a252bU;
-    guint border = mix_color(0x3b5678U, 0x42d8cfU, mix);
-    guint bottom = mix_color(0x050910U, 0x071617U, mix);
+    guint start = colors->card_start;
+    guint end = colors->card_end;
+    guint active_start = colors->card_active_start;
+    guint active_end = colors->card_active_end;
+    guint border = mix_color(colors->border, colors->border_active, mix);
+    guint bottom = mix_color(colors->bottom, colors->bottom_active, mix);
     gdouble shadow_alpha = 0.42;
 
     if ((flags & GTK_STATE_FLAG_INSENSITIVE) != 0) {
-        start = 0x0c1420U;
-        end = 0x0c1420U;
+        start = colors->card_off;
+        end = colors->card_off;
         active_start = start;
         active_end = end;
-        border = 0x1c293bU;
-        bottom = 0x060a10U;
+        border = colors->border_off;
+        bottom = colors->bottom_off;
         shadow_alpha = 0.0;
     } else if ((flags & GTK_STATE_FLAG_ACTIVE) != 0) {
-        start = 0x0c1828U;
-        end = 0x1b3550U;
-        active_start = 0x0d3034U;
-        active_end = 0x176066U;
+        start = colors->card_down_start;
+        end = colors->card_down_end;
+        active_start = colors->card_down_active_start;
+        active_end = colors->card_down_active_end;
         shadow_alpha = 0.3;
     } else if ((flags & GTK_STATE_FLAG_PRELIGHT) != 0) {
-        start = 0x29466aU;
-        end = 0x102138U;
-        active_start = 0x247174U;
-        active_end = 0x0d3037U;
+        start = colors->card_hover_start;
+        end = colors->card_hover_end;
+        active_start = colors->card_hover_active_start;
+        active_end = colors->card_hover_active_end;
     }
 
     start = mix_color(start, active_start, mix);
@@ -798,7 +1649,7 @@ static gboolean room_card_draw(GtkWidget *widget, cairo_t *cr,
     rounded_rectangle(cr, 1.0, 1.0, width - 2.0, height - 2.0, 27.0);
     cairo_fill(cr);
     paint_dithered_gradient(cr, 1.0, 1.0, width - 2.0, height - 6.0, 26.0,
-                            start, end);
+                            start, end, ui->skin);
     set_source_color(cr, border, 1.0);
     cairo_set_line_width(cr, 1.0);
     rounded_rectangle(cr, 1.5, 1.5, width - 3.0, height - 7.0, 26.0);
@@ -1072,6 +1923,11 @@ PanelUi *panel_ui_new(const AppConfig *config, PanelUiEventHandler handler,
     ui->event_user_data = user_data;
     ui->navigation_buttons = g_ptr_array_new();
     ui->room_adjust_index = -1;
+    /* config.ini decides only until Home Assistant has been read once, but it
+     * decides now, so the first frame is already in the right skin. */
+    ui->skin = config->player_skin;
+    ui->deck_pack_radius = -1;
+    ui->deck_tape_filled = -1;
     for (guint i = 0; i < PANEL_ROOM_MAX; i++) {
         ui->room_brightness[i] = -1;
         ui->room_temperature[i] = -1;
@@ -1095,9 +1951,13 @@ void panel_ui_free(PanelUi *ui)
         }
     }
     for (guint i = 0; i < PANEL_ROOM_MAX; i++) {
+        g_clear_object(&ui->room_icon_source[i]);
         g_clear_object(&ui->room_icon_off[i]);
         g_clear_object(&ui->room_icon_on[i]);
     }
+    if (ui->deck_animation_source != 0)
+        g_source_remove(ui->deck_animation_source);
+    g_clear_object(&ui->deck_art);
     g_ptr_array_unref(ui->navigation_buttons);
     g_free(ui);
 }
@@ -1111,7 +1971,6 @@ void panel_ui_free(PanelUi *ui)
 #define PANEL_COLOR_ALERT 0xff8a94U
 #define PANEL_COLOR_OUTLINE 0x6d86a5U
 #define PANEL_COLOR_BOLT 0xf7faffU
-#define PANEL_COLOR_HEADER 0x0c1420U
 
 static void set_source_color(cairo_t *cr, guint color, gdouble alpha)
 {
@@ -1220,7 +2079,7 @@ static gboolean battery_draw(GtkWidget *widget, cairo_t *cr, gpointer user_data)
         cairo_close_path(cr);
         set_source_color(cr, PANEL_COLOR_BOLT, 1.0);
         cairo_fill_preserve(cr);
-        set_source_color(cr, PANEL_COLOR_HEADER, 1.0);
+        set_source_color(cr, palette(ui)->header, 1.0);
         cairo_set_line_width(cr, 1.2);
         cairo_stroke(cr);
     }
@@ -1296,7 +2155,11 @@ GtkWidget *panel_ui_build(PanelUi *ui)
     gtk_stack_set_transition_type(GTK_STACK(ui->stack),
                                   GTK_STACK_TRANSITION_TYPE_CROSSFADE);
     gtk_stack_set_transition_duration(GTK_STACK(ui->stack), 180);
+    /* Both player layouts exist from here on, and both are written by every
+     * setter. Switching skins therefore shows a page that is already right
+     * rather than one that catches up on the next poll. */
     gtk_stack_add_named(GTK_STACK(ui->stack), player_page(ui), "player");
+    gtk_stack_add_named(GTK_STACK(ui->stack), deck_page(ui), PANEL_DECK_CHILD);
     gtk_stack_add_named(GTK_STACK(ui->stack), list_page(ui, TRUE), "queue");
     gtk_stack_add_named(GTK_STACK(ui->stack), list_page(ui, FALSE), "playlists");
     gtk_stack_add_named(GTK_STACK(ui->stack), room_page(ui), "room");
@@ -1305,6 +2168,10 @@ GtkWidget *panel_ui_build(PanelUi *ui)
     gtk_overlay_add_overlay(GTK_OVERLAY(content), room_adjust_sheet(ui));
     gtk_box_pack_start(GTK_BOX(outer), header, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(outer), content, TRUE, TRUE, 0);
+    ui->root = outer;
+    toggle_css_class(outer, "skin-cassette",
+                     ui->skin == PANEL_PLAYER_SKIN_CASSETTE);
+    panel_ui_show_page(ui, "player", "NOW PLAYING");
     return outer;
 }
 
@@ -1446,9 +2313,109 @@ void panel_ui_install_styles(void)
         ".room-control-scale highlight{min-height:14px;background-image:linear-gradient(to right,#2fc8d6,#5ce4d7);border-radius:8px}"
         ".room-control-scale slider{min-width:34px;min-height:34px;margin:-11px;background-image:linear-gradient(to bottom,#f3ffff,#8ceee8);border:2px solid #236e75;border-radius:18px;box-shadow:0 4px 10px rgba(0,0,0,.38)}";
 
+    /* The cassette skin. Not one gradient in it: the tablet framebuffer is
+     * RGB565, a gradient down a key would band into three or four visible
+     * steps, and a machined faceplate is flat metal with hard edges anyway.
+     * Every gradient this skin does draw goes through Cairo, where the
+     * texture pattern dithers it. */
+    static const gchar deck_css[] =
+        /* The page paints itself, so the default background must not cover
+         * the brushed metal underneath it. */
+        ".deck-page{background:transparent}"
+        ".deck-strip{border-bottom:1px solid #0a0b0d}"
+        ".deck-brand{font-size:20px;font-weight:700;color:#c6ccd4}"
+        ".deck-model{font-size:19px;font-weight:700;color:#d7dde4}"
+        ".deck-engraved{font-size:12px;font-weight:700;color:#a9b1bb}"
+        ".deck-band-side{font-size:17px;font-weight:700;color:#f2e3cb}"
+        ".deck-band-index{font-size:14px;font-weight:700;color:#cbb99e}"
+        /* The display glass: one flat warm black, lit only by its contents. */
+        ".deck-display{background:#0a0704;border:1px solid #0b0c0d;"
+        "border-radius:3px;padding:14px 22px}"
+        ".deck-title{font-size:30px;font-weight:600;color:#ffd79b}"
+        ".deck-artist{font-size:19px;color:#c08b47}"
+        ".deck-flags{border-top:1px solid #33230f;margin-top:4px}"
+        ".deck-flag{font-size:14px;font-weight:700;color:#6d4a1c}"
+        ".deck-flag.on{color:#ffae3d}"
+        ".deck-counter{font-size:44px;font-weight:700;color:#ffae3d}"
+        ".deck-counter-total{font-size:22px;font-weight:700;color:#9c6f34}"
+        ".deck-meter-caption{font-size:13px;font-weight:700;color:#9c6f34}"
+        ".deck-meter-value{font-size:20px;font-weight:700;color:#ffae3d}"
+        ".deck-scale{font-size:10px;font-weight:700;color:#7d5a2b}"
+        /* A machined key: flat cap, bright top chamfer, deep bottom lip. */
+        ".deck-key{background-image:none;background:#31353b;border-radius:3px;"
+        "border-top:1px solid #626973;border-left:1px solid #3f444c;"
+        "border-right:1px solid #23272c;border-bottom:5px solid #08090b;"
+        "color:#eaeef3;box-shadow:none}"
+        ".deck-key:hover{background:#3a3f46;border-top-color:#727a85}"
+        /* Pressed: the cap travels, so the lip loses three pixels and the
+         * content takes them, which moves the legend down by the same
+         * distance a real key would. */
+        ".deck-key:active{background:#24282e;border-bottom-width:2px;"
+        "padding-top:3px}"
+        ".deck-key .button-label,.deck-key-label{font-size:13px;"
+        "font-weight:700;color:#98a0aa}"
+        ".deck-key-main .button-label{font-size:14px}"
+        ".deck-key.active{background:#553a14;border-top-color:#a97c34;"
+        "border-left-color:#6d4a1c;border-right-color:#3a2810;color:#ffd79b}"
+        ".deck-key.active .button-label,.deck-key.active .deck-key-label"
+        "{color:#ffae3d}"
+        ".deck-lamp{background:#2a231a;border-radius:2px}"
+        ".deck-key.active .deck-lamp{background:#ffae3d}";
+
+    /* The skin owns the whole interface, not the player page alone. One class
+     * on the root widget carries it to the navigation bar, the two lists and
+     * the room page, so a skin change restyles them without rebuilding a
+     * single widget. Everything drawn with Cairo follows the palette instead;
+     * these are only the parts GTK draws from the stylesheet. */
+    static const gchar cassette_css[] =
+        ".skin-cassette .header{background:#15171a;border-bottom-color:#2a2e34}"
+        ".skin-cassette .navigation-bar{background:#191b1f;"
+        "border-color:#383d45}"
+        ".skin-cassette .nav-button{color:#8a919b}"
+        ".skin-cassette .nav-button.active{background:#3d2b10;color:#ffd79b}"
+        ".skin-cassette .list-view{background:#141619;color:#e6e9ee}"
+        ".skin-cassette .list-view:selected{background:#553a14;color:#ffd79b}"
+        ".skin-cassette .play-selected{background-image:none;background:#31353b;"
+        "border-color:#8a6427;color:#ffd79b}"
+        ".skin-cassette .room-kicker{color:#ffae3d}"
+        ".skin-cassette .room-help{color:#8f979f}"
+        ".skin-cassette .room-count{background:#1f2228;border-color:#3a3f46;"
+        "color:#b7bec7}"
+        ".skin-cassette .room-icon-shell{background-image:none;"
+        "background:#2c3036;border-color:#565d67;border-bottom-color:#0a0b0d}"
+        ".skin-cassette .room-card.active .room-icon-shell{"
+        "background-image:none;background:#ffae3d;border-color:#ffd79b;"
+        "border-bottom-color:#6d4a1c}"
+        ".skin-cassette .room-icon{color:#a9b1bb}"
+        ".skin-cassette .room-card.active .room-icon{color:#241a0d}"
+        ".skin-cassette .room-state{background:#15171a;border-color:#3a3f46;"
+        "color:#b7bec7}"
+        ".skin-cassette .room-card.active .room-state{background:#ffae3d;"
+        "border-color:#ffd79b;color:#241a0d}"
+        ".skin-cassette .room-type{color:#8f979f}"
+        ".skin-cassette .room-adjust-button{background:#3d2b10;"
+        "border-color:#8a6427;color:#ffc978}"
+        ".skin-cassette .room-adjust-button:hover{background:#553a14;"
+        "border-color:#ffae3d}"
+        ".skin-cassette .room-sheet{border-color:#4a5058;"
+        "border-bottom-color:#08090b}"
+        ".skin-cassette .room-sheet-close{background:#3d2b10;"
+        "border-color:#8a6427;color:#ffc978}"
+        ".skin-cassette .room-control-title{color:#a9b1bb}"
+        ".skin-cassette .room-control-value{color:#ffae3d}"
+        ".skin-cassette .room-temperature-end{color:#8a7150}"
+        ".skin-cassette .room-control-scale trough{background:#121417;"
+        "border-color:#3a3f46}"
+        ".skin-cassette .room-control-scale highlight{background-image:none;"
+        "background:#ffae3d}"
+        ".skin-cassette .room-control-scale slider{background-image:none;"
+        "background:#ffd79b;border-color:#6d4a1c}";
+
     install_css(css);
     install_css(room_css);
     install_css(room_sheet_css);
+    install_css(deck_css);
+    install_css(cassette_css);
 }
 
 void panel_ui_set_status(PanelUi *ui, const gchar *text,
@@ -1496,48 +2463,161 @@ void panel_ui_set_player(PanelUi *ui, gboolean playing, const gchar *title,
                          gdouble duration, gdouble volume, gboolean shuffle,
                          const gchar *repeat)
 {
-    gtk_image_set_from_icon_name(
-        GTK_IMAGE(ui->play_icon),
-        playing ? "media-playback-pause-symbolic"
-                : "media-playback-start-symbolic",
-        GTK_ICON_SIZE_BUTTON);
-    gtk_image_set_pixel_size(GTK_IMAGE(ui->play_icon), 48);
-    gtk_label_set_text(GTK_LABEL(ui->track_title), title);
-    gtk_label_set_text(GTK_LABEL(ui->artist), artist);
-    gtk_progress_bar_set_fraction(
-        GTK_PROGRESS_BAR(ui->progress),
-        duration > 0.0 ? CLAMP(position / duration, 0.0, 1.0) : 0.0);
-
+    gdouble fraction = duration > 0.0 ? CLAMP(position / duration, 0.0, 1.0)
+                                      : 0.0;
     gchar *position_text = format_time(position);
     gchar *duration_text = format_time(duration);
-    gchar *timeline = g_strdup_printf("%s  /  %s", position_text, duration_text);
-    gtk_label_set_text(GTK_LABEL(ui->position), timeline);
+    gchar *timeline = g_strdup_printf("%s  /  %s", position_text,
+                                      duration_text);
+    gchar *total_text = g_strdup_printf("/ %s", duration_text);
+    gchar *volume_text = g_strdup_printf("%.0f%%", volume * 100.0);
+
+    /* Every layout is written, the hidden one included. */
+    for (guint i = 0; i < PANEL_PLAYER_SKIN_COUNT; i++) {
+        PanelPlayerLayout *layout = &ui->players[i];
+
+        if (layout->page == NULL)
+            continue;
+        gtk_label_set_text(GTK_LABEL(layout->track_title), title);
+        gtk_label_set_text(GTK_LABEL(layout->artist), artist);
+        gtk_image_set_from_icon_name(
+            GTK_IMAGE(layout->play_icon),
+            playing ? "media-playback-pause-symbolic"
+                    : "media-playback-start-symbolic",
+            GTK_ICON_SIZE_BUTTON);
+        gtk_image_set_pixel_size(GTK_IMAGE(layout->play_icon),
+                                 layout->play_icon_size);
+        gtk_label_set_text(GTK_LABEL(layout->volume), volume_text);
+        if (layout->progress != NULL) {
+            gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(layout->progress),
+                                          fraction);
+        }
+        if (layout->position != NULL)
+            gtk_label_set_text(GTK_LABEL(layout->position), timeline);
+        if (layout->elapsed != NULL)
+            gtk_label_set_text(GTK_LABEL(layout->elapsed), position_text);
+        if (layout->total != NULL)
+            gtk_label_set_text(GTK_LABEL(layout->total), total_text);
+        if (layout->flag_play != NULL)
+            toggle_css_class(layout->flag_play, "on", playing);
+    }
     g_free(position_text);
     g_free(duration_text);
     g_free(timeline);
-
-    gchar *volume_text = g_strdup_printf("%.0f%%", volume * 100.0);
-    gtk_label_set_text(GTK_LABEL(ui->volume), volume_text);
+    g_free(total_text);
     g_free(volume_text);
 
+    deck_set_progress(ui, fraction);
+    deck_set_volume(ui, volume);
+    if (ui->playing != playing) {
+        ui->playing = playing;
+        deck_update_animation(ui);
+    }
     panel_ui_set_modes(ui, shuffle, repeat);
 }
 
 void panel_ui_set_modes(PanelUi *ui, gboolean shuffle, const gchar *repeat)
 {
-    toggle_css_class(ui->shuffle, "active", shuffle);
     const gchar *repeat_state = g_str_equal(repeat, "all") ? "all"
                                 : g_str_equal(repeat, "one") ? "one"
                                                                : "off";
-    gchar *repeat_text = g_strdup_printf("Repeat %s", repeat_state);
-    gtk_label_set_text(GTK_LABEL(ui->repeat_label), repeat_text);
-    toggle_css_class(ui->repeat, "active", !g_str_equal(repeat, "off"));
-    g_free(repeat_text);
+    gboolean repeating = !g_str_equal(repeat_state, "off");
+    /* A deck engraves its legends, so one layout wants REPEAT ALL where the
+     * other wants Repeat all. GTK CSS has no text-transform. */
+    gchar *sentence_case = g_strdup_printf("Repeat %s", repeat_state);
+    gchar *upper_case = g_ascii_strup(sentence_case, -1);
+
+    for (guint i = 0; i < PANEL_PLAYER_SKIN_COUNT; i++) {
+        PanelPlayerLayout *layout = &ui->players[i];
+
+        if (layout->page == NULL)
+            continue;
+        toggle_css_class(layout->shuffle, "active", shuffle);
+        toggle_css_class(layout->repeat, "active", repeating);
+        gtk_label_set_text(GTK_LABEL(layout->repeat_label),
+                           layout->uppercase_labels ? upper_case
+                                                    : sentence_case);
+        if (layout->flag_shuffle != NULL)
+            toggle_css_class(layout->flag_shuffle, "on", shuffle);
+        if (layout->flag_repeat != NULL)
+            toggle_css_class(layout->flag_repeat, "on", repeating);
+    }
+    g_free(sentence_case);
+    g_free(upper_case);
+}
+
+/* The album art is fitted to the modern artwork card and cropped to the
+ * cassette label, both exactly once, here, when it arrives. Nothing is scaled
+ * while drawing: the bay repaints eight times a second while the tape runs,
+ * and this tablet has a software renderer. */
+static GdkPixbuf *scale_to_fit(GdkPixbuf *source, gint width, gint height)
+{
+    gint source_width = gdk_pixbuf_get_width(source);
+    gint source_height = gdk_pixbuf_get_height(source);
+    gdouble ratio = MIN((gdouble)width / source_width,
+                        (gdouble)height / source_height);
+
+    if (ratio >= 1.0)
+        return g_object_ref(source);
+    return gdk_pixbuf_scale_simple(
+        source, MAX(1, (gint)(source_width * ratio + 0.5)),
+        MAX(1, (gint)(source_height * ratio + 0.5)), GDK_INTERP_BILINEAR);
+}
+
+static GdkPixbuf *scale_to_cover(GdkPixbuf *source, gint width, gint height)
+{
+    gint source_width = gdk_pixbuf_get_width(source);
+    gint source_height = gdk_pixbuf_get_height(source);
+    gdouble ratio = MAX((gdouble)width / source_width,
+                        (gdouble)height / source_height);
+    gint scaled_width = MAX(width, (gint)(source_width * ratio + 0.5));
+    gint scaled_height = MAX(height, (gint)(source_height * ratio + 0.5));
+    GdkPixbuf *scaled = gdk_pixbuf_scale_simple(source, scaled_width,
+                                                scaled_height,
+                                                GDK_INTERP_BILINEAR);
+    GdkPixbuf *cropped;
+
+    if (scaled == NULL)
+        return NULL;
+    cropped = gdk_pixbuf_new_subpixbuf(scaled, (scaled_width - width) / 2,
+                                       (scaled_height - height) / 2, width,
+                                       height);
+    g_object_unref(scaled);
+    return cropped;
 }
 
 void panel_ui_set_album_art(PanelUi *ui, GdkPixbuf *pixbuf)
 {
-    gtk_image_set_from_pixbuf(GTK_IMAGE(ui->album_art), pixbuf);
+    PanelPlayerLayout *modern = &ui->players[PANEL_PLAYER_SKIN_MODERN];
+    PanelPlayerLayout *deck = &ui->players[PANEL_PLAYER_SKIN_CASSETTE];
+
+    if (modern->album_art != NULL) {
+        GdkPixbuf *fitted = scale_to_fit(pixbuf, PANEL_MODERN_ART_SIZE,
+                                         PANEL_MODERN_ART_SIZE);
+        gtk_image_set_from_pixbuf(GTK_IMAGE(modern->album_art), fitted);
+        g_clear_object(&fitted);
+    }
+    g_clear_object(&ui->deck_art);
+    ui->deck_art = scale_to_cover(pixbuf, PANEL_DECK_SHELL_WIDTH,
+                                  PANEL_DECK_SHELL_HEIGHT);
+    if (deck->bay != NULL)
+        gtk_widget_queue_draw(deck->bay);
+}
+
+/* The band across the cassette label carries the position in the queue, which
+ * is the one number a deck would have printed on the paper. */
+static void deck_set_index(PanelUi *ui, guint count, gint selected)
+{
+    PanelPlayerLayout *layout = &ui->players[PANEL_PLAYER_SKIN_CASSETTE];
+    gchar *text;
+
+    if (layout->index == NULL)
+        return;
+    text = count > 0 && selected >= 0
+               ? g_strdup_printf("TRACK %02d / %02u", selected + 1, count)
+               : g_strdup("");
+    gtk_label_set_text(GTK_LABEL(layout->index), text);
+    g_free(text);
 }
 
 void panel_ui_set_queue(PanelUi *ui, GPtrArray *titles, GPtrArray *artists,
@@ -1561,6 +2641,7 @@ void panel_ui_set_queue(PanelUi *ui, GPtrArray *titles, GPtrArray *artists,
     }
     select_row(ui->queue_list, selected);
     ui->changing_list_selection = FALSE;
+    deck_set_index(ui, count, selected);
 }
 
 void panel_ui_set_playlists(PanelUi *ui, GPtrArray *names, guint count,
@@ -1655,9 +2736,20 @@ void panel_ui_set_room(PanelUi *ui, guint index, gboolean active,
     }
 }
 
+/* Two stack children answer to one page name. "player" is what navigation
+ * emits, what Home Assistant sends, and what the panel reports; which of the
+ * two is shown is the skin's business and nobody else's. */
+static const gchar *player_child_name(PanelUi *ui)
+{
+    return ui->skin == PANEL_PLAYER_SKIN_CASSETTE ? PANEL_DECK_CHILD
+                                                  : "player";
+}
+
 void panel_ui_show_page(PanelUi *ui, const gchar *page, const gchar *title)
 {
-    gtk_stack_set_visible_child_name(GTK_STACK(ui->stack), page);
+    ui->on_player = g_str_equal(page, "player");
+    gtk_stack_set_visible_child_name(
+        GTK_STACK(ui->stack), ui->on_player ? player_child_name(ui) : page);
     gtk_label_set_text(GTK_LABEL(ui->page_title), title);
     for (guint i = 0; i < ui->navigation_buttons->len; i++) {
         GtkWidget *button = g_ptr_array_index(ui->navigation_buttons, i);
@@ -1665,4 +2757,30 @@ void panel_ui_show_page(PanelUi *ui, const gchar *page, const gchar *title)
             G_OBJECT(button), "page");
         toggle_css_class(button, "active", g_str_equal(button_page, page));
     }
+    deck_update_animation(ui);
+}
+
+void panel_ui_set_skin(PanelUi *ui, PanelPlayerSkin skin)
+{
+    if (skin >= PANEL_PLAYER_SKIN_COUNT || ui->skin == skin)
+        return;
+
+    ui->skin = skin;
+    /* Before the widget tree exists this is all there is to do: panel_ui_build
+     * reads the skin back when it runs. */
+    if (ui->root == NULL)
+        return;
+
+    /* One class on the root restyles every shared widget through the
+     * stylesheet, and the palette repaints everything drawn with Cairo. No
+     * widget is rebuilt, so nothing loses its state. */
+    toggle_css_class(ui->root, "skin-cassette",
+                     skin == PANEL_PLAYER_SKIN_CASSETTE);
+    refresh_room_icons(ui);
+    if (ui->on_player) {
+        gtk_stack_set_visible_child_name(GTK_STACK(ui->stack),
+                                         player_child_name(ui));
+    }
+    gtk_widget_queue_draw(ui->root);
+    deck_update_animation(ui);
 }

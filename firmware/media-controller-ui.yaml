@@ -21,6 +21,8 @@
 #                                 cmd_slot_brightness(slot, pct)
 #   Fetches this file calls.      refresh_queue, ui_load_room_config,
 #                                 play_queue_item
+#   Scripts this file offers.     ui_apply_skin(skin) — the layout named in
+#                                 the config sensor, in contract spelling
 #   State this file reads.        media_title, media_artist, player_state,
 #                                 volume_level, media_position, media_duration,
 #                                 entity_picture, shuffle_state, repeat_state,
@@ -665,6 +667,33 @@ script:
                       id: page_player
                       animation: MOVE_RIGHT
                       time: 300ms
+
+  # -- The skin Home Assistant asks for, in the spelling docs/CONTRACT.md
+  # -- uses. Only the paired firmware calls this, from the config sensor;
+  # -- the classic firmware has no settings block and never does.
+  # --
+  # -- The select below stays the local fallback and the thing that actually
+  # -- holds the value, exactly as config.ini is for the tablet: it restores
+  # -- across reboots and decides until a payload names a layout. Writing to
+  # -- it rather than switching pages directly means one owner for the value,
+  # -- and Home Assistant sees what the device settled on.
+  # --
+  # -- A name this build does not know is ignored, not treated as an error,
+  # -- so a layout added to the integration cannot strand a flashed device. --
+  - id: ui_apply_skin
+    parameters:
+      skin: string
+    then:
+      - lambda: |-
+          const char *option = nullptr;
+          if (skin == "classic") option = "Classic";
+          else if (skin == "minimal_ring") option = "Minimal Ring";
+          else if (skin == "cover_card") option = "Cover Card";
+          if (option == nullptr) return;
+          if (id(screen_style).current_option() == option) return;
+          auto call = id(screen_style).make_call();
+          call.set_option(option);
+          call.perform();
 
   # -- Switch layouts only while a home layout is on screen. Changing the
   # -- select from Home Assistant must not yank the user off the queue,

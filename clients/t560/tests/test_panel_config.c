@@ -191,6 +191,7 @@ static void test_payload_without_settings_or_commands(void)
     g_assert_true(parse(FULL_ATTRIBUTES, &layout, &failure));
     g_assert_false(layout.settings.present);
     g_assert_cmpint(layout.settings.screen_off_seconds, ==, -1);
+    g_assert_false(layout.settings.player_skin_present);
     g_assert_null(layout.commands.display_state);
     g_assert_cmpint((gint)layout.commands.display_at, ==, 0);
     g_assert_cmpint((gint)layout.commands.restart_at, ==, 0);
@@ -215,6 +216,63 @@ static void test_settings_are_read(void)
     g_assert_cmpuint(layout.settings.poll_interval_ms, ==, 2500);
     g_assert_cmpuint(layout.settings.playlist_poll_interval_ms, ==, 120000);
     g_assert_cmpint(layout.settings.screen_off_seconds, ==, 90);
+    /* A settings block that names no skin leaves config.ini deciding. */
+    g_assert_false(layout.settings.player_skin_present);
+
+    panel_layout_clear(&layout);
+}
+
+static void test_player_skin_is_read(void)
+{
+    PanelLayout layout = {0};
+    gchar *failure = NULL;
+
+    g_assert_true(parse(
+        "\"player\":\"media_player.a\",\"queue\":\"sensor.q\","
+        "\"playlists\":\"sensor.p\","
+        "\"settings\":{\"player_skin\":\"cassette\"}",
+        &layout, &failure));
+    g_assert_true(layout.settings.present);
+    g_assert_true(layout.settings.player_skin_present);
+    g_assert_cmpint(layout.settings.player_skin, ==,
+                    PANEL_PLAYER_SKIN_CASSETTE);
+
+    panel_layout_clear(&layout);
+}
+
+/* A skin added to the integration after this build was flashed arrives as a
+ * name it has never heard of. Somebody did choose, so it is a choice this
+ * build cannot honour: draw the default rather than nothing. */
+static void test_unknown_player_skin_falls_back(void)
+{
+    PanelLayout layout = {0};
+    gchar *failure = NULL;
+
+    g_assert_true(parse(
+        "\"player\":\"media_player.a\",\"queue\":\"sensor.q\","
+        "\"playlists\":\"sensor.p\","
+        "\"settings\":{\"player_skin\":\"cover_card\"}",
+        &layout, &failure));
+    g_assert_true(layout.settings.player_skin_present);
+    g_assert_cmpint(layout.settings.player_skin, ==,
+                    PANEL_PLAYER_SKIN_MODERN);
+
+    panel_layout_clear(&layout);
+}
+
+/* An empty name is nobody choosing, not a choice of nothing. */
+static void test_empty_player_skin_is_not_a_choice(void)
+{
+    PanelLayout layout = {0};
+    gchar *failure = NULL;
+
+    g_assert_true(parse(
+        "\"player\":\"media_player.a\",\"queue\":\"sensor.q\","
+        "\"playlists\":\"sensor.p\","
+        "\"settings\":{\"player_skin\":\"\"}",
+        &layout, &failure));
+    g_assert_true(layout.settings.present);
+    g_assert_false(layout.settings.player_skin_present);
 
     panel_layout_clear(&layout);
 }
@@ -334,6 +392,11 @@ void panel_config_tests_register(void)
                     test_payload_without_settings_or_commands);
     g_test_add_func("/config/settings", test_settings_are_read);
     g_test_add_func("/config/settings-clamped", test_settings_are_clamped);
+    g_test_add_func("/config/player-skin", test_player_skin_is_read);
+    g_test_add_func("/config/player-skin-unknown",
+                    test_unknown_player_skin_falls_back);
+    g_test_add_func("/config/player-skin-empty",
+                    test_empty_player_skin_is_not_a_choice);
     g_test_add_func("/config/commands", test_commands_are_read);
     g_test_add_func("/config/commands-malformed",
                     test_malformed_commands_are_ignored);

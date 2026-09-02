@@ -19,8 +19,8 @@ For the build story, photos, and setup walkthrough, see the write-up:
 | --- | --- | --- |
 | Media Controller integration | [custom_components/media_controller/](custom_components/media_controller) | HACS custom integration. Queue and playlist sensors, room proxy entities, two services. Required by every client. |
 | ESP32-S3 controller | [firmware/media-controller.yaml](firmware/media-controller.yaml) | ESPHome package for the 480x480 ST7701S + GT911 board sold as `ESP32-S3-4848S040`. Three LVGL screen styles. Configured by flashing: entity IDs and a token live in the YAML. |
-| ESP32-S3 controller, paired | [firmware/media-controller-paired.yaml](firmware/media-controller-paired.yaml) | The same board and the same screens, paired from Home Assistant with a six-digit code. No entity IDs and no token in the build; room controls are chosen in the Home Assistant UI and changed without reflashing. |
-| T560 panel | [clients/t560/](clients/t560) | Native GTK3 application for a Samsung Galaxy Tab E SM-T560 (ARMv7) running postmarketOS and Openbox. No browser, no WebKit. |
+| ESP32-S3 controller, paired | [firmware/media-controller-paired.yaml](firmware/media-controller-paired.yaml) | The same board and the same screens, paired from Home Assistant with a six-digit code. No entity IDs and no token in the build; room controls and the home layout are chosen in the Home Assistant UI and changed without reflashing. |
+| T560 panel | [clients/t560/](clients/t560) | Native GTK3 application for a Samsung Galaxy Tab E SM-T560 (ARMv7) running postmarketOS and Openbox. No browser, no WebKit. Two interface skins, chosen from Home Assistant. |
 
 Choose any one client, or run all of them against one Home Assistant.
 

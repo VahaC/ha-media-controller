@@ -59,6 +59,7 @@ otherwise below:
 | `binary_sensor.<panel>_charging` | binary_sensor | Reported charger state |
 | `binary_sensor.<panel>_connected` | binary_sensor | Whether reports arrive |
 | `select.<panel>_page` | select | The page the panel is showing |
+| `select.<panel>_player_skin` | select | `player_skin`; options are the client's own |
 | `switch.<panel>_screen` | switch | Backlight on or off |
 | `number.<panel>_screen_brightness` | number | Backlight level, percent |
 | `number.<panel>_poll_interval` | number | `poll_interval_ms`, in seconds |
@@ -68,6 +69,10 @@ otherwise below:
 
 The three interval numbers are shown in seconds and stored on the config entry
 in the units the payload uses. `screen_off` accepts 0, meaning never.
+
+`player_skin` exists for every client that draws more than one layout, and its
+options are that client's own names — see **Panel settings** below. A client
+that draws one interface gets no such entity.
 
 `<client>` is the controller itself for the slots of an ESP32 running the
 classic firmware, and the panel device for every other client — the tablet and
@@ -147,7 +152,8 @@ list is capped at `DEFAULT_PLAYLIST_LIMIT` (500), fetched in pages of 100.
   "settings": {
     "poll_interval_ms": 1000,
     "playlist_poll_interval_ms": 60000,
-    "screen_off_seconds": 30
+    "screen_off_seconds": 30,
+    "player_skin": "cassette"
   },
   "commands": {
     "display": {"state": "off", "at": 1756800000000},
@@ -186,7 +192,10 @@ Real attributes, not an encoded string. Rules a client must follow:
   client that does not understand them ignores them, and a client that
   understands only some of them applies those and ignores the rest: the paired
   ESP32 firmware applies both poll intervals and every command, but not
-  `screen_off_seconds`, which its own ESPHome device already owns.
+  `screen_off_seconds`, which its own ESPHome device already owns as a *Screen
+  Timeout* number. It does apply `player_skin`: the *Screen Style* select on
+  its ESPHome device stays the value's owner and its local fallback, the way
+  `config.ini` is the tablet's, and a named skin writes to it.
 
 ### Panel settings
 
@@ -199,9 +208,38 @@ edited in `config.ini` over SSH.
 | `poll_interval_ms` | milliseconds | 500 – 30000 |
 | `playlist_poll_interval_ms` | milliseconds | 10000 – 3600000 |
 | `screen_off_seconds` | seconds | 0, or 5 – 3600 |
+| `player_skin` | name | the client's own, or absent |
 
 Home Assistant clamps every value before it sends one; a client clamps again
 rather than trusting the payload. `screen_off_seconds` is 0 for never.
+
+`player_skin` names which of its layouts a client draws. The vocabulary is
+**the client's own**, because the layouts are: the tablet has two and the
+ESP32 three, and neither would know what to do with the other's names. Home
+Assistant keeps the list on the client profile and offers only the names the
+client it is talking to actually draws.
+
+| Client | Names | What a name selects |
+| --- | --- | --- |
+| T560 panel | `modern`, `cassette` | The whole interface — player page, navigation bar and room controls alike |
+| ESP32-S3 panel | `classic`, `minimal_ring`, `cover_card` | Which of the three home layouts the firmware shows |
+| ESP32-S3 controller | — | Not a panel; it is sent no `settings` block at all |
+
+Three rules make that workable across versions:
+
+- **Absent is not a default.** A payload that does not carry `player_skin`
+  means nobody has chosen, and the client keeps whatever it falls back to on
+  its own — `config.ini` on the tablet, a restoring select in flash on the
+  ESP32. A client must not read an absent key as a request for its first
+  layout, or an unconfigured Home Assistant would silently overrule the
+  device's own file.
+- **An unknown name is a choice that cannot be honoured.** A client draws its
+  own default rather than nothing, so a layout added to the integration
+  reaches a device already in the field as a name it has never heard of and
+  changes nothing there.
+- **The list is open.** Adding a layout to a client means adding its name to
+  that client's profile and teaching that client to draw it. No other client
+  is affected, and neither is this table's shape.
 
 `config.ini` on the tablet keeps the same keys, and they are a **fallback, not
 an override**: they decide only until the panel has read a payload carrying

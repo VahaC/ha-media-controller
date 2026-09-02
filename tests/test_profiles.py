@@ -161,3 +161,31 @@ class ProfileTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SkinTests(unittest.TestCase):
+    """Every client offers its own layouts, and only its own."""
+
+    def test_a_client_that_draws_one_interface_offers_no_skins(self) -> None:
+        # The classic ESP32 is a controller, not a panel: it applies nothing
+        # at runtime and is never sent a settings block at all.
+        self.assertEqual(profiles.ESP32_S3.skins, ())
+
+    def test_each_panel_offers_its_own_layouts(self) -> None:
+        self.assertEqual(profiles.T560.skins, ("modern", "cassette"))
+        self.assertEqual(
+            profiles.ESP32_S3_PANEL.skins,
+            ("classic", "minimal_ring", "cover_card"),
+        )
+
+    def test_a_client_does_not_know_another_client_s_layouts(self) -> None:
+        self.assertTrue(profiles.T560.knows_skin("cassette"))
+        self.assertFalse(profiles.T560.knows_skin("cover_card"))
+        self.assertTrue(profiles.ESP32_S3_PANEL.knows_skin("cover_card"))
+        self.assertFalse(profiles.ESP32_S3_PANEL.knows_skin("cassette"))
+
+    def test_the_first_layout_is_the_one_a_client_starts_from(self) -> None:
+        for profile in profiles.PANEL_PROFILES:
+            with self.subTest(profile=profile.slug):
+                self.assertTrue(profile.skins)
+                self.assertTrue(profile.knows_skin(profile.skins[0]))

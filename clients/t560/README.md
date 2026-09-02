@@ -18,6 +18,7 @@ is ever written by hand is an optional set of fallbacks.
 ## Implemented features
 
 - Native dark UI designed for the 800x1219 usable screen area.
+- Two skins, chosen from Home Assistant without reflashing or restarting anything. **Modern** is the default; **Cassette** is the faceplate of an early-1980s cassette deck, with the album art as the tape label, the playback position as the tape moving from one reel to the other, and reels that turn while the track plays. A skin is the whole interface: the navigation bar and the room controls follow it.
 - The window runs fullscreen and covers the whole display, without
   decorations or window manager panels above it.
 - A header row with the page title, a centered clock showing the time and
@@ -61,6 +62,7 @@ is ever written by hand is an optional set of fallbacks.
   button on the tablet is visible there, and the other way round.
 - A button in Home Assistant restarts the panel application; the watchdog
   brings it back within about two seconds.
+- The skin is a select on the panel's Home Assistant device, applied within a poll cycle.
 - Which page the panel is on is visible in Home Assistant as a select, and
   setting it sends the panel to that page. Pressing a navigation button on
   the tablet updates it within a second.

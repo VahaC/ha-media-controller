@@ -253,6 +253,16 @@
           "playlists": "Playlists",
           "room": "Room"
         }
+      },
+      "player_skin": {
+        "name": "Player skin",
+        "state": {
+          "modern": "Modern",
+          "cassette": "Cassette",
+          "classic": "Classic",
+          "minimal_ring": "Minimal Ring",
+          "cover_card": "Cover Card"
+        }
       }
     }
   }
