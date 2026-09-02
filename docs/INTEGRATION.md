@@ -55,10 +55,12 @@ Until this repository is included in the default HACS catalog:
 Panels are added afterwards, and normally add themselves.
 
 An ESP32 running the **classic** firmware needs one more step, and only that
-device does: open *Configure* on the source and pick **Room controls for a
-classic-firmware ESP32**. The form states the limit — four slots, 1 and 2
-lights, 3 and 4 switches — and an empty slot hides that tile. Every other
-client carries its room controls on its own panel entry.
+device does: open *Configure* on the source and pick **Room controls
+(classic-firmware ESP32 only)**. The form states the limit — four slots, 1
+and 2 lights, 3 and 4 switches — and an empty slot hides that tile. Do this
+*before* flashing: the YAML is filled in with the entity IDs of the proxies
+this form creates. Every other client carries its room controls on its own
+panel entry, and this item in the menu can be ignored.
 
 The integration creates:
 
@@ -119,7 +121,7 @@ temperature. See [ROOM_SLOTS.md](ROOM_SLOTS.md).
 
 The room controls of an ESP32 running the **classic** firmware are the exception
 to all of this. They live on the source entry itself, behind *Configure* →
-*Room controls for a classic-firmware ESP32*, because that firmware resolves
+*Room controls (classic-firmware ESP32 only)*, because that firmware resolves
 their entity IDs at compile time and they already exist there.
 
 ### Panel settings, battery, and display

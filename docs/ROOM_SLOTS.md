@@ -184,13 +184,21 @@ A menu, because the two halves have different audiences:
 
 ```
 Music Assistant player                        → step `player`
-Room controls for a classic-firmware ESP32    → step `esp32_slots`
+Room controls (classic-firmware ESP32 only)   → step `esp32_slots`
 ```
 
 `esp32_slots` is the four-slot form above. Options are stored whole, so each
 step writes both halves — the one it asked about and the one it left alone —
 and an empty player is omitted rather than written, so editing slots can never
 unbind a source from its player.
+
+The second item is shown to everybody, including the majority who will never
+need it, and that is deliberate. It cannot be hidden until a slot exists,
+because the classic firmware is flashed with the entity IDs of the proxies
+that form creates — there is always zero of them when somebody needs it for
+the first time. Nor is it worth hiding behind Advanced Mode: flashing the
+classic firmware is a documented path, not an expert one. So the label names
+its audience instead.
 
 ### Panel discovery flow
 

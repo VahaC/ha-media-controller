@@ -98,7 +98,7 @@
         "description": "What would you like to change?",
         "menu_options": {
           "player": "Music Assistant player",
-          "esp32_slots": "Room controls for a classic-firmware ESP32"
+          "esp32_slots": "Room controls (classic-firmware ESP32 only)"
         }
       },
       "player": {
@@ -109,7 +109,7 @@
         }
       },
       "esp32_slots": {
-        "title": "Room controls for a classic-firmware ESP32",
+        "title": "Room controls (classic-firmware ESP32 only)",
         "description": "These four room controls are read only by an ESP32 running the classic media-controller.yaml firmware. A T560 or a paired ESP32 carries room controls of its own, set on the panel itself. The {profile} drives up to {slot_count} of them. Leave a slot empty to hide that tile. Labels are optional and fall back to the entity name.",
         "data": {
           "slot_1_entity": "Slot 1",
