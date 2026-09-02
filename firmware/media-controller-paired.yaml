@@ -41,8 +41,6 @@ packages:
 esphome:
   name: ${device_name}
   friendly_name: ${friendly_name}
-  includes:
-    - esp32_wifi_signal.h
   project:
     name: media_controller.esp32s3_paired
     version: "${firmware_version}"
@@ -75,6 +73,11 @@ mdns:
         name: ${friendly_name}
 
 sensor:
+  - platform: wifi_signal
+    id: wifi_signal_dbm
+    internal: true
+    update_interval: 60s
+
   - platform: internal_temperature
     id: esp32_temperature
     internal: true
@@ -1367,7 +1370,8 @@ script:
                     "\"page\":\"" + id(current_page) + "\","
                     "\"uptime_seconds\":" +
                     std::to_string((unsigned) (millis() / 1000));
-                  int rssi = media_controller_wifi_rssi();
+                  int rssi = isnan(id(wifi_signal_dbm).state)
+                               ? -127 : (int) id(wifi_signal_dbm).state;
                   if (rssi != -127) {
                     snprintf(buf, sizeof(buf), ",\"wifi_dbm\":%d", rssi);
                     json += buf;
