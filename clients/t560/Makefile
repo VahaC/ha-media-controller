@@ -42,6 +42,9 @@ CFLAGS ?= -Os
 CFLAGS += -std=c11 -Wall -Wextra -Wpedantic -Wformat=2 \
 	  -Wstrict-prototypes -Wmissing-prototypes
 LDLIBS += $(shell $(PKG_CONFIG) --libs $(PACKAGES))
+# The cassette skin computes tape pack radii with sqrt. musl folds libm into
+# libc, so the ARMv7 build links without this and the x86_64 one does not.
+LDLIBS += -lm
 
 .PHONY: all clean install test
 
