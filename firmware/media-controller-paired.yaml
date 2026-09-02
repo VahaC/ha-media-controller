@@ -41,6 +41,8 @@ packages:
 esphome:
   name: ${device_name}
   friendly_name: ${friendly_name}
+  includes:
+    - esp32_wifi_signal.h
   project:
     name: media_controller.esp32s3_paired
     version: "${firmware_version}"
@@ -73,6 +75,11 @@ mdns:
         name: ${friendly_name}
 
 sensor:
+  - platform: internal_temperature
+    id: esp32_temperature
+    internal: true
+    update_interval: 60s
+
   # -------------------- PLAYER STATE --------------------
   # The interface reads thirteen ids and does not care where they came from.
   # In the classic firmware they are `platform: homeassistant` and Home
@@ -1353,21 +1360,32 @@ script:
                 # -- contract, and the report is what keeps
                 # -- binary_sensor.<panel>_connected honest. --
                 body: !lambda |-
-                  char buf[224];
+                  char buf[96];
+                  std::string json =
+                    std::string("{\"panel_id\":\"") + get_mac_address() +
+                    "\",\"version\":\"${firmware_version}\","
+                    "\"page\":\"" + id(current_page) + "\","
+                    "\"uptime_seconds\":" +
+                    std::to_string((unsigned) (millis() / 1000));
+                  int rssi = media_controller_wifi_rssi();
+                  if (rssi != -127) {
+                    snprintf(buf, sizeof(buf), ",\"wifi_dbm\":%d", rssi);
+                    json += buf;
+                  }
+                  if (!isnan(id(esp32_temperature).state)) {
+                    snprintf(buf, sizeof(buf), ",\"temperature_c\":%.1f",
+                             id(esp32_temperature).state);
+                    json += buf;
+                  }
                   snprintf(buf, sizeof(buf),
-                           "{\"panel_id\":\"%s\",\"version\":\"%s\","
-                           "\"page\":\"%s\","
-                           "\"uptime_seconds\":%u,"
-                           "\"display\":{\"available\":true,\"on\":%s,"
+                           ",\"display\":{\"available\":true,\"on\":%s,"
                            "\"brightness\":%d}}",
-                           get_mac_address().c_str(), "${firmware_version}",
-                           id(current_page).c_str(),
-                           (unsigned) (millis() / 1000),
                            id(backlight).remote_values.is_on() ? "true"
                                                                : "false",
                            (int) (id(backlight).remote_values.get_brightness()
                                   * 100.0f));
-                  return std::string(buf);
+                  json += buf;
+                  return json;
                 capture_response: false
 
 # -------------------- THE POLL CYCLE --------------------

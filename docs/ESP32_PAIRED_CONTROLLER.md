@@ -187,8 +187,8 @@ the right entities the moment it comes back.
 Because it is a panel rather than a controller, the device gets the panel
 entities described in the [contract](CONTRACT.md): a page selector, a screen
 switch, a brightness number, a restart button, and the sensors that say whether
-it is being heard from. It reports its uptime and its display state once a
-minute.
+it is being heard from. It reports its uptime, display state, Wi-Fi signal and
+internal temperature once a minute.
 
 Two contract features are deliberately not wired up:
 
@@ -196,9 +196,8 @@ Two contract features are deliberately not wired up:
   its ESPHome device, and its range (5–120 s) is narrower than the contract's.
   Two owners for one setting is a bug waiting to happen, so `number.<panel>_screen_off`
   does nothing here — use *Screen Timeout*.
-- **Battery and Wi-Fi signal.** It is mains powered, and the configuration you
-  paste decides whether it is on Wi-Fi or Ethernet at all, so the package cannot
-  declare a signal sensor. Both are optional in the contract.
+- **Battery.** It is mains powered, so the package does not report a battery
+  value. This is optional in the contract.
 
 ## Room slots
 
