@@ -1424,7 +1424,7 @@ interval:
             id(poll_playlists)->execute();
           }
 
-          if (now - id(last_report_ms) >= 60000) {
+          if (id(last_report_ms) == 0 || now - id(last_report_ms) >= 60000) {
             id(last_report_ms) = now;
             id(report_status)->execute();
           }
