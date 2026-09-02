@@ -8,7 +8,7 @@ Treat this file as the change-control surface: a change to anything below
 affects released devices in the field. A change to code that is not described
 here affects one component only.
 
-Contract version: **3** (matches integration `0.10.x`).
+Contract version: **3** (matches integration `0.9.x`).
 
 Every version so far has been purely additive. Version 2 added the config
 sensor and let proxy lights forward colour temperature. Version 3 adds two

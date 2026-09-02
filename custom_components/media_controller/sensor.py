@@ -25,7 +25,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import MediaControllerRuntime
 from .coordinator import PlaylistCoordinator, QueueCoordinator
-from .panel_entity import PanelReadingEntity
+from .panel_entity import PanelEntity, PanelReadingEntity
 from .proxy import controller_device_info
 from .slots import ClientConfiguration, ControllerEntities
 from .transformations import PlaylistPayload, QueuePayload
