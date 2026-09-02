@@ -76,6 +76,8 @@ typedef struct {
     gint play_icon_size;
     GtkWidget *shuffle;
     GtkWidget *repeat;
+    GtkWidget *shuffle_lamp;
+    GtkWidget *repeat_lamp;
     GtkWidget *repeat_label;
     GtkWidget *volume;
     /* Modern only. */
@@ -1192,7 +1194,8 @@ static void deck_set_volume(PanelUi *ui, gdouble volume)
 /* A deck key with a pilot lamp where a transport key has its symbol. The lamp
  * is a widget of its own so that lighting it moves nothing. */
 static GtkWidget *new_deck_lamp_key(const gchar *text, gint width,
-                                    gint height, GtkWidget **label_out)
+                                    gint height, GtkWidget **label_out,
+                                    GtkWidget **lamp_out)
 {
     GtkWidget *button = gtk_button_new();
     GtkWidget *content = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
@@ -1211,6 +1214,8 @@ static GtkWidget *new_deck_lamp_key(const gchar *text, gint width,
     add_css_class(button, "deck-key");
     if (label_out != NULL)
         *label_out = label;
+    if (lamp_out != NULL)
+        *lamp_out = lamp;
     return button;
 }
 
@@ -1407,9 +1412,11 @@ static GtkWidget *deck_page(PanelUi *ui)
     GtkWidget *up = new_icon_button(
         "audio-volume-high-symbolic", "VOL", "deck-key", 132, 78, 24,
         GTK_ORIENTATION_HORIZONTAL, NULL, NULL);
-    layout->shuffle = new_deck_lamp_key("SHUFFLE", 186, 78, NULL);
+    layout->shuffle = new_deck_lamp_key("SHUFFLE", 186, 78, NULL,
+                                        &layout->shuffle_lamp);
     layout->repeat = new_deck_lamp_key("REPEAT OFF", 186, 78,
-                                       &layout->repeat_label);
+                                       &layout->repeat_label,
+                                       &layout->repeat_lamp);
     describe_button(down, "Volume down");
     describe_button(up, "Volume up");
     g_object_set_data(G_OBJECT(down), "service", "volume_down");
@@ -2369,12 +2376,8 @@ void panel_ui_install_styles(void)
         ".deck-key .button-label,.deck-key-label{font-size:13px;"
         "font-weight:700;color:#98a0aa}"
         ".deck-key-main .button-label{font-size:14px}"
-        ".deck-key.active{background:#553a14;border-top-color:#a97c34;"
-        "border-left-color:#6d4a1c;border-right-color:#3a2810;color:#ffd79b}"
-        ".deck-key.active .button-label,.deck-key.active .deck-key-label"
-        "{color:#ffae3d}"
         ".deck-lamp{background:#2a231a;border-radius:2px}"
-        ".deck-key.active .deck-lamp{background:#ffae3d}";
+        ".deck-lamp.active{background:#ffae3d}";
 
     /* The skin owns the whole interface, not the player page alone. One class
      * on the root widget carries it to the navigation bar, the two lists and
@@ -2546,8 +2549,12 @@ void panel_ui_set_modes(PanelUi *ui, gboolean shuffle, const gchar *repeat)
 
         if (layout->page == NULL)
             continue;
-        toggle_css_class(layout->shuffle, "active", shuffle);
-        toggle_css_class(layout->repeat, "active", repeating);
+        toggle_css_class(layout->shuffle_lamp != NULL ? layout->shuffle_lamp
+                                   : layout->shuffle,
+                 "active", shuffle);
+        toggle_css_class(layout->repeat_lamp != NULL ? layout->repeat_lamp
+                                  : layout->repeat,
+                 "active", repeating);
         gtk_label_set_text(GTK_LABEL(layout->repeat_label),
                            layout->uppercase_labels ? upper_case
                                                     : sentence_case);
