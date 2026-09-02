@@ -49,6 +49,13 @@
           "controller_entry_id": "Media controller"
         }
       },
+      "new_controller": {
+        "title": "Choose what it plays from",
+        "description": "{name} is paired. A panel plays from a media controller and there is none yet, so pick the Music Assistant player and Home Assistant will create one. A controller also drives four room controls of its own, for an ESP32 on the classic firmware; those are left empty here and can be filled in later from its own Configure.",
+        "data": {
+          "player_entity": "Music Assistant player"
+        }
+      },
       "slots": {
         "title": "Room controls",
         "description": "{name} is paired and is a {profile} driving up to {slot_count} room controls. Leave a slot empty to hide that tile. Labels are optional and fall back to the entity name.",
@@ -81,12 +88,11 @@
       "token_failed": "Home Assistant could not create an access token for this panel. Check the log.",
       "code_mismatch": "The panel is showing a different code. Read the six digits off the panel's screen again.",
       "pairing_timeout": "The panel did not answer. Check that it is on, on the same network, and still showing a pairing code.",
-      "no_controller": "Add a media controller first: this panel has to play from one. Add device → Media controller, then come back here — the panel keeps showing its code."
+      "controller_failed": "Home Assistant could not create the controller. Check the log, or add one from Add device → Media controller."
     },
     "abort": {
       "already_configured": "This device is already configured.",
       "reauth_successful": "The panel will pick up its new token within a few seconds.",
-      "no_controller": "Add a media controller first: this panel has to play from one.",
       "no_panel_id": "The panel did not announce an identifier and cannot be added automatically."
     },
     "progress": {

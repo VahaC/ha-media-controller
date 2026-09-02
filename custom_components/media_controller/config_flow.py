@@ -29,6 +29,7 @@ from homeassistant.config_entries import (
     OptionsFlowWithReload,
 )
 from homeassistant.core import callback
+from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import entity_registry as er, selector
 from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 
@@ -108,7 +109,7 @@ def _pairing_errors(error: str | None) -> dict[str, str]:
     """Place a pairing failure on the field the person can act on."""
     if error is None:
         return {}
-    if error in ("token_failed", "no_controller"):
+    if error == "token_failed":
         return {"base": error}
     return {CONF_PAIRING_CODE: error}
 
@@ -332,14 +333,11 @@ class MediaControllerConfigFlow(
     ) -> ConfigFlowResult:
         """Add a panel by hand, for a device that cannot announce itself.
 
-        The controller check is on submission here too, for the same reason as
-        in async_step_pair: a form the person can act on beats a dialog that
-        closes itself.
+        A controller is not required to get this far: if none exists, the flow
+        offers to build one after pairing, in async_step_new_controller.
         """
         errors: dict[str, str] = {}
-        if user_input is not None and not controller_entries(self.hass):
-            errors["base"] = "no_controller"
-        elif user_input is not None:
+        if user_input is not None:
             self._profile = panel_profile(user_input[CONF_PROFILE])
             self._panel_id = user_input[CONF_PANEL_ID].strip().lower()
             self._panel_name = (
@@ -388,22 +386,22 @@ class MediaControllerConfigFlow(
         The panel shows it; nothing is typed on the panel, and the token never
         travels over SSH.
 
-        A missing controller is reported here as a form error rather than an
-        abort, and only once the code has been submitted. Aborting instead
-        would be invisible: this step is what `async_step_zeroconf` returns, so
-        an abort becomes the *result of the discovery* and Home Assistant never
-        offers the device at all. A panel that is announcing itself correctly
-        must always produce a card.
+        Pairing needs no controller. Whether one exists is settled afterwards,
+        in async_step_controller_link, which offers to create one rather than
+        sending anybody off to another flow: adding a panel is one sitting —
+        the code, then what it plays from, then its room controls.
+
+        Nothing here may abort, either. This step is what `async_step_zeroconf`
+        returns, so an abort becomes the *result of the discovery* and Home
+        Assistant never offers the device at all. A panel that is announcing
+        itself correctly must always produce a card.
         """
         if user_input is not None:
-            if not controller_entries(self.hass):
-                self._pair_error = "no_controller"
-            else:
-                self._pair_error = self._arm_pairing(
-                    str(user_input[CONF_PAIRING_CODE]).strip()
-                )
-                if self._pair_error is None:
-                    return await self.async_step_pair_wait()
+            self._pair_error = self._arm_pairing(
+                str(user_input[CONF_PAIRING_CODE]).strip()
+            )
+            if self._pair_error is None:
+                return await self.async_step_pair_wait()
 
         return self.async_show_form(
             step_id="pair",
@@ -526,10 +524,15 @@ class MediaControllerConfigFlow(
         self,
         user_input: dict[str, Any] | None = None,
     ) -> ConfigFlowResult:
-        """Attach the paired panel to a controller."""
+        """Attach the paired panel to a controller.
+
+        With no controller yet there is nothing to choose between, so the flow
+        asks for the player instead and builds one. A panel is added in one
+        sitting either way.
+        """
         controllers = controller_entries(self.hass)
         if not controllers:
-            return self.async_abort(reason="no_controller")
+            return await self.async_step_new_controller()
 
         if user_input is not None:
             self._controller_entry_id = user_input[CONF_CONTROLLER_ENTRY_ID]
@@ -551,6 +554,104 @@ class MediaControllerConfigFlow(
                 "slot_count": str(self._profile.slot_count),
                 "host": self._panel_host or "unknown",
             },
+        )
+
+    async def async_step_new_controller(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> ConfigFlowResult:
+        """Build the controller this panel will play from, in this flow.
+
+        The first panel in an installation has nothing to attach to, and
+        telling somebody to go and add one somewhere else is not an answer:
+        they came here to add a device. So this asks the one question a
+        controller actually needs — which Music Assistant player — and creates
+        it before carrying on to the room controls.
+
+        Only the player is asked for. A controller also carries four room slots
+        of its own, but those belong to an ESP32 on the classic firmware; a
+        controller created from here has none, and they can be filled later
+        from its own Configure.
+        """
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            player_entity = user_input[CONF_PLAYER_ENTITY]
+            if _music_assistant_registry_entry(self.hass, player_entity) is None:
+                errors[CONF_PLAYER_ENTITY] = "not_music_assistant"
+            else:
+                entry_id = await self._async_create_controller(player_entity)
+                if entry_id is None:
+                    errors["base"] = "controller_failed"
+                else:
+                    self._controller_entry_id = entry_id
+                    return await self.async_step_slots()
+
+        return self.async_show_form(
+            step_id="new_controller",
+            data_schema=self.add_suggested_values_to_schema(
+                vol.Schema(
+                    {
+                        vol.Required(
+                            CONF_PLAYER_ENTITY
+                        ): selector.EntitySelector(
+                            selector.EntitySelectorConfig(
+                                domain="media_player",
+                                integration=MUSIC_ASSISTANT_DOMAIN,
+                            )
+                        ),
+                    }
+                ),
+                user_input or {},
+            ),
+            errors=errors,
+            description_placeholders={"name": self._panel_name},
+        )
+
+    async def _async_create_controller(self, player_entity: str) -> str | None:
+        """Create a controller entry and return its ID.
+
+        A config flow creates one entry, and this flow's entry is the panel, so
+        the controller is made by starting the import flow below and taking the
+        entry it produced.
+        """
+        result = await self.hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": config_entries.SOURCE_IMPORT},
+            data={CONF_PLAYER_ENTITY: player_entity},
+        )
+        entry = result.get("result")
+        if result.get("type") is not FlowResultType.CREATE_ENTRY or entry is None:
+            _LOGGER.error(
+                "Could not create a controller for %s: %s",
+                player_entity,
+                result.get("reason") or result.get("type"),
+            )
+            return None
+        return entry.entry_id
+
+    async def async_step_import(
+        self,
+        import_data: dict[str, Any],
+    ) -> ConfigFlowResult:
+        """Create a controller without asking anything.
+
+        Used only by _async_create_controller, so that adding the first panel
+        does not have to send anybody to a second flow.
+        """
+        player_entity = import_data[CONF_PLAYER_ENTITY]
+        registry_entry = _music_assistant_registry_entry(
+            self.hass, player_entity
+        )
+        if registry_entry is None:
+            return self.async_abort(reason="not_music_assistant")
+
+        await self.async_set_unique_id(_controller_unique_id(registry_entry))
+        self._abort_if_unique_id_configured()
+        state = self.hass.states.get(player_entity)
+        title = state.name if state is not None else player_entity
+        return self.async_create_entry(
+            title=f"Media Controller – {title}",
+            data=_stored_controller(player_entity, []),
         )
 
     async def async_step_slots(

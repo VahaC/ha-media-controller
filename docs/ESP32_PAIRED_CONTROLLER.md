@@ -119,9 +119,8 @@ A ready-made copy of the block above is in
    *ESP32-S3 controller (paired)* card; if it does not appear, add
    **Media Controller** by hand and choose that device type.
 
-   A panel plays from a controller, so one has to exist. If none does, the card
-   still appears and the form says so when you submit the code — it is not a
-   reason for the device to stay hidden.
+   If this is the first device in a fresh installation and no controller exists
+   yet, step 4 asks for the Music Assistant player and creates one for you.
 3. Type the six digits from the screen.
 4. Choose which controller it plays from, then fill the four room slots. Any of
    them may be a light or a switch. Leave one empty to hide its tile.

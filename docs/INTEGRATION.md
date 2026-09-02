@@ -67,11 +67,12 @@ Finishing the form is what releases the access token: the panel collects it on
 its next poll, a few seconds later, and switches into normal operation. Nothing
 is typed on the panel, and nothing but the token is configured there.
 
-A panel plays from a controller, so at least one controller entry has to exist
-before step 2 can be answered. If none does, the discovery card still appears
-and the code form says what is missing when you submit — a device that is
-announcing itself correctly is never hidden because of what Home Assistant is
-missing at the other end.
+Step 2 has nothing to offer in an installation with no controller yet, so it
+asks for the Music Assistant player instead and creates one. Adding the first
+panel is therefore still one sitting: the code, then what it plays from, then
+its room controls. The controller it builds has no room slots of its own —
+those belong to an ESP32 on the classic firmware — and they can be filled in
+later from its own *Configure*.
 
 A panel that cannot announce itself is added with *Add device* → *Panel*, where
 the panel ID has to match the one the device uses. A tablet derives that ID from
