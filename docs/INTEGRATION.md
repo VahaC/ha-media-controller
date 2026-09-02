@@ -1,7 +1,8 @@
 # Home Assistant integration
 
 `custom_components/media_controller` is the server side of this project. Both
-clients — the [ESP32-S3 controller](ESP32_CONTROLLER.md) and the
+clients — the [ESP32-S3 controller](ESP32_CONTROLLER.md), the same board on the
+[paired firmware](ESP32_PAIRED_CONTROLLER.md), and the
 [T560 panel](../clients/t560/README.md) — read the entities it publishes and
 call the services it registers. Nothing else in this repository works without
 it.
@@ -45,57 +46,72 @@ removes its proxy.
 
 ### Panels
 
-A panel — a tablet running the T560 application — **announces itself on the
-local network**. Home Assistant shows it as a discovered device: press
-*Configure* and the form asks, in this order:
+A panel is any client that is paired rather than configured by hand. Two kinds
+exist: a tablet running the T560 application, and an ESP32 running the
+[paired firmware](ESP32_PAIRED_CONTROLLER.md). They behave identically here —
+the device type is chosen from a list, and everything after that is the same
+form — so *the panel* below means either.
 
-1. **the six-digit code the tablet is showing.** Home Assistant then waits for
+A panel **announces itself on the local network**. Home Assistant shows it as a
+discovered device: press *Configure* and the form asks, in this order:
+
+1. **the six-digit code the panel is showing.** Home Assistant then waits for
    the panel to answer with the same code, which is the only part of the setup
-   that can fail on its own: the tablet may be off, on another network, or
+   that can fail on its own: the device may be off, on another network, or
    showing a code from an earlier attempt. Nothing is stored and nothing else
    is asked until it has answered, and a wrong code can simply be retyped.
 2. **which media controller it plays from**;
 3. **its room-control slots.**
 
-Finishing the form is what releases the access token: the tablet collects it on
-its next poll, a few seconds later, and restarts into normal operation. Nothing
-is typed on the tablet, and nothing but the token is configured there.
+Finishing the form is what releases the access token: the panel collects it on
+its next poll, a few seconds later, and switches into normal operation. Nothing
+is typed on the panel, and nothing but the token is configured there.
 
 A panel that cannot announce itself is added with *Add device* → *Panel*, where
-the panel ID has to match the one the device uses. A panel derives that ID
-from its own hardware on first run and writes it to
-`~/.config/t560-music-panel/panel-id`, so two tablets never claim the same
-device.
+the panel ID has to match the one the device uses. A tablet derives that ID from
+its own hardware on first run and writes it to
+`~/.config/t560-music-panel/panel-id`; a paired ESP32 uses its MAC address,
+without separators, which its log prints at boot. Either way two devices never
+claim the same Home Assistant device.
 
 Each panel is its own config entry and its own Home Assistant device, with its
 own slot proxies and its own config sensor, linked to the controller it reads.
 *Configure* on a panel device reopens the controller choice and the slots, so
 moving a panel to another Music Assistant player is a remapping like any other:
-the tablet keeps its token, its device, and its entity IDs.
+the device keeps its token, its device, and its entity IDs.
 
-The room controls of the ESP32 live on the controller entry itself, because the
-firmware resolves their entity IDs at compile time and they already exist there.
-See [ROOM_SLOTS.md](ROOM_SLOTS.md).
+How many slots a panel has, and what each may hold, comes from its type: six for
+a tablet, four for a paired ESP32, and only the tablet offers colour
+temperature. See [ROOM_SLOTS.md](ROOM_SLOTS.md).
+
+The room controls of an ESP32 running the **classic** firmware are the exception
+to all of this. They live on the controller entry itself, because that firmware
+resolves their entity IDs at compile time and they already exist there.
 
 ### Panel settings, battery, and display
 
-A panel device carries entities that describe the tablet rather than the room.
-They exist so that nothing on a wall-mounted tablet has to be reached over SSH.
+A panel device carries entities that describe the device rather than the room.
+They exist so that nothing on a wall-mounted panel has to be reached over SSH.
 
-| Entity | What it does |
-| --- | --- |
-| **Update interval** | How often the panel asks for player and room state. |
-| **Library refresh interval** | How often it refreshes playlists. |
-| **Screen timeout** | Inactivity before the display turns off; 0 never. |
-| **Screen brightness** | Backlight level. |
-| **Screen** | Backlight on or off, and what it currently is. |
-| **Page** | Which page the panel shows, and sending it to another. |
-| **Restart panel app** | Restarts the application on the tablet. |
-| **Battery**, **Charging** | What the tablet reports about its power. |
-| **Connected** | Whether the tablet is reporting at all. |
-| **Uptime** | When the panel application last started. |
-| **Last report** | When the tablet was last heard from. |
-| **Wi-Fi signal**, **Temperature** | Diagnostics from the tablet. |
+| Entity | What it does | Paired ESP32 |
+| --- | --- | --- |
+| **Update interval** | How often the panel asks for player and room state. | yes |
+| **Library refresh interval** | How often it refreshes playlists. | yes |
+| **Screen timeout** | Inactivity before the display turns off; 0 never. | no — use its own *Screen Timeout* |
+| **Screen brightness** | Backlight level. | yes |
+| **Screen** | Backlight on or off, and what it currently is. | yes |
+| **Page** | Which page the panel shows, and sending it to another. | yes |
+| **Restart panel app** | Restarts the application on the panel. | yes, reboots the device |
+| **Battery**, **Charging** | What the device reports about its power. | no — mains powered |
+| **Connected** | Whether the device is reporting at all. | yes |
+| **Uptime** | When the panel application last started. | yes |
+| **Last report** | When the device was last heard from. | yes |
+| **Wi-Fi signal**, **Temperature** | Diagnostics from the device. | no |
+
+A panel reports only what it has, and Home Assistant leaves the rest unknown.
+An ESP32 has no battery to report, and its screen timeout is owned by a *Screen
+Timeout* number on its own ESPHome device instead — its range is narrower than
+the contract's, and two owners for one setting is a bug waiting to happen.
 
 The three settings and the two intervals are stored in Home Assistant and are
 applied by the tablet within one poll cycle, without restarting it. They keep

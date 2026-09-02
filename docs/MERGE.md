@@ -19,6 +19,8 @@ them, and do not "tidy" them into `clients/`:**
 | --- | --- |
 | `custom_components/media_controller/` | HACS resolves the integration by this path. |
 | `firmware/media-controller.yaml` | Named in the `packages:` block of every flashed device. |
+| `firmware/media-controller-paired.yaml` | The same, for every device on the paired firmware. |
+| `firmware/media-controller-ui.yaml` | Reached by a **relative `!include`** from both files above. A device fetches only the file it names; the include is resolved inside the clone ESPHome makes of this repository, so renaming or moving this file breaks devices that never mention it. |
 | `firmware/assets/` | Fetched at compile time through `asset_base_url`, a raw GitHub URL. |
 | `hacs.json` | Must stay at the repository root. |
 

@@ -110,6 +110,33 @@ class ProfileTests(unittest.TestCase):
         )
         self.assertEqual(controls, ("toggle", "brightness"))
 
+    def test_paired_esp32_slot_takes_either_domain(self) -> None:
+        # The paired firmware learns a slot's domain at runtime, so nothing
+        # ties button 1 to a light or button 3 to a switch any more.
+        self.assertEqual(profiles.ESP32_S3_PANEL.slot_count, 4)
+        for index in range(1, 5):
+            self.assertEqual(
+                profiles.ESP32_S3_PANEL.spec(index).domains,
+                ("light", "switch"),
+            )
+
+    def test_paired_esp32_dims_every_slot_but_drops_colour_temp(self) -> None:
+        for index in range(1, 5):
+            controls = profiles.limit_controls(
+                ("toggle", "brightness", "color_temp"),
+                profiles.ESP32_S3_PANEL.spec(index),
+            )
+            self.assertEqual(controls, ("toggle", "brightness"))
+
+    def test_paired_esp32_is_a_panel_and_the_classic_one_is_not(self) -> None:
+        self.assertIn(profiles.ESP32_S3_PANEL, profiles.PANEL_PROFILES)
+        self.assertNotIn(profiles.ESP32_S3, profiles.PANEL_PROFILES)
+        self.assertIs(profiles.CONTROLLER_PROFILE, profiles.ESP32_S3)
+        self.assertIs(
+            profiles.panel_profile("esp32_s3_panel"),
+            profiles.ESP32_S3_PANEL,
+        )
+
     def test_t560_keeps_the_full_control_set(self) -> None:
         self.assertEqual(profiles.T560.slot_count, 6)
         controls = profiles.limit_controls(

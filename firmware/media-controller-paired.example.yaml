@@ -1,0 +1,35 @@
+substitutions:
+  # Keep the existing ESPHome device name when updating an already adopted
+  # device; changing it creates a different device identity in Home Assistant.
+  device_name: media-controller
+  friendly_name: Media Controller
+
+  # Where Home Assistant is. This is the only address the firmware needs, and
+  # the only value you copy from anywhere. Use an IP address if .local names
+  # are unreliable on your network.
+  ha_url: "http://homeassistant.local:8123"
+
+# No entity IDs and no token. The device shows a six-digit code on its own
+# screen, Home Assistant discovers it and asks you to type that code, and
+# everything else is chosen in the Home Assistant UI afterwards. Changing which
+# lamp a button drives never means flashing again.
+
+packages:
+  media_controller:
+    url: https://github.com/VahaC/ha-media-controller
+    ref: main
+    files:
+      - firmware/media-controller-paired.yaml
+    refresh: 1h
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+api:
+  encryption:
+    key: !secret media_controller_api_encryption_key
+
+ota:
+  - platform: esphome
+    password: !secret media_controller_ota_password

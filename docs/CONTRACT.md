@@ -8,15 +8,24 @@ Treat this file as the change-control surface: a change to anything below
 affects released devices in the field. A change to code that is not described
 here affects one component only.
 
-Contract version: **3** (matches integration `0.9.x`).
+Contract version: **4** (matches integration `0.9.x`).
 
 Every version so far has been purely additive. Version 2 added the config
-sensor and let proxy lights forward colour temperature. Version 3 adds two
+sensor and let proxy lights forward colour temperature. Version 3 added two
 optional blocks to the config sensor — `settings` and `commands` — the entities
 a panel device owns itself, and one endpoint a panel reports its own hardware
-state to. Nothing is removed and no entity a version 1 or 2 client reads is
-renamed, so an older client keeps working: it simply ignores the new blocks and
-never reports.
+state to.
+
+Version 4 adds a second ESP32 firmware that pairs like the tablet and reads
+everything below at runtime. It changes no payload and no entity: what it
+changes is who the sentences are about. Statements that named "the ESP32" as
+the client that cannot cache, cannot be a panel, or reads its entity IDs from
+substitutions now say "the classic ESP32 firmware", because the paired one does
+all three the way the tablet does. A client may also apply only part of
+`settings` and ignore the rest, which is new only as a written rule.
+
+Nothing is removed and no entity any earlier client reads is renamed, so an
+older client keeps working: it simply ignores what it does not understand.
 
 ## Producer
 
@@ -35,8 +44,10 @@ hardcode them.
 | `light.<client>_slot_<n>` | light | Room light proxy in slot n |
 | `switch.<client>_slot_<n>` | switch | Room switch proxy in slot n |
 
-A **panel** device carries these as well. They describe the tablet itself, so
-the ESP32 controller has none of them:
+A **panel** device carries these as well. The classic ESP32 controller has none
+of them, because it is a controller rather than a panel; the paired ESP32
+firmware and the tablet both have all of them, except where a client says
+otherwise below:
 
 | Entity | Platform | Purpose |
 | --- | --- | --- |
@@ -58,8 +69,9 @@ the ESP32 controller has none of them:
 The three interval numbers are shown in seconds and stored on the config entry
 in the units the payload uses. `screen_off` accepts 0, meaning never.
 
-`<client>` is the controller itself for the ESP32 slots, and the panel device
-for every other client.
+`<client>` is the controller itself for the slots of an ESP32 running the
+classic firmware, and the panel device for every other client — the tablet and
+the paired ESP32 firmware alike.
 
 **Two entity ID spellings are valid and both are permanent.** An installation
 created before integration `0.8.2` keeps `light.<controller>_light_1`,
@@ -67,8 +79,8 @@ created before integration `0.8.2` keeps `light.<controller>_light_1`,
 `switch.<controller>_ac` for slots 1 to 4, because the migration preserves the
 registry rows so that flashed devices need no reflash. An installation created
 after it uses `_slot_1` to `_slot_4`. No client may assume either spelling; the
-ESP32 reads them from substitutions and every other client from the config
-sensor.
+classic ESP32 firmware reads them from substitutions and every other client —
+the tablet and the paired ESP32 firmware — from the config sensor.
 
 The state of every sensor above is the constant string `ok`. All data is in
 the attributes, because a Home Assistant state is limited to 255 characters.
@@ -164,12 +176,17 @@ Real attributes, not an encoded string. Rules a client must follow:
   values mean an unchanged configuration; any change produces a different
   value. A client uses it to skip a re-layout, never to order versions.
 - A client must cache the last payload it read and start from that cache when
-  Home Assistant is unreachable at boot. A client that cannot store a cache —
-  the ESP32 — must keep working from its compile-time defaults instead, and
-  must not treat a missing config sensor as fatal.
+  Home Assistant is unreachable at boot. The paired ESP32 firmware keeps the
+  entity IDs it learned in flash for exactly this reason. A client that cannot
+  store a cache — the classic ESP32 firmware — must keep working from its
+  compile-time defaults instead, and must not treat a missing config sensor as
+  fatal.
 - `settings` and `commands` are **optional and only sent to panels**. Both are
-  absent for the ESP32 controller, which applies nothing at runtime. A client
-  that does not understand them ignores them.
+  absent for the classic ESP32 controller, which applies nothing at runtime. A
+  client that does not understand them ignores them, and a client that
+  understands only some of them applies those and ignores the rest: the paired
+  ESP32 firmware applies both poll intervals and every command, but not
+  `screen_off_seconds`, which its own ESPHome device already owns.
 
 ### Panel settings
 

@@ -1,0 +1,1424 @@
+# Media Controller — paired ESP32-S3 firmware
+#
+# The same device and the same interface as media-controller.yaml, configured
+# from Home Assistant instead of from this file. Nothing here names a Home
+# Assistant entity: the device advertises itself over mDNS, shows a six-digit
+# code, and Home Assistant answers with a token and one entity ID. Everything
+# else — which player, which queue sensor, which lamp is behind button 1 —
+# arrives at runtime in the config sensor and is kept in flash.
+#
+# Changing a room control is therefore a Home Assistant action, not a reflash.
+#
+# It talks to Home Assistant over the REST API, polling once a second, exactly
+# as the T560 panel does; see docs/CONTRACT.md. The ESPHome native API is still
+# here, but only for what it was always good for: adoption, logs, over-the-air
+# updates, and the theme and diagnostic entities. It carries no Home Assistant
+# state any more.
+#
+# The interface is shared with the classic firmware and lives in
+# media-controller-ui.yaml. This file supplies the other half of the seam its
+# header describes.
+
+substitutions:
+  device_name: media-controller
+  friendly_name: Media Controller
+
+  # The only address in this file. Home Assistant advertises itself over mDNS,
+  # but ESPHome can publish records and not browse for them, so unlike the
+  # tablet this device cannot discover the URL for itself. Use an IP address
+  # if .local names are unreliable on your network.
+  ha_url: "http://homeassistant.local:8123"
+
+  firmware_version: "0.1.0"
+  asset_base_url: "https://raw.githubusercontent.com/VahaC/ha-media-controller/main/firmware/assets"
+
+# The interface — display, touchscreen, LVGL pages, theme — is shared with
+# media-controller.yaml and lives next to this file. See its header for the
+# names the two halves agree on.
+packages:
+  ui: !include media-controller-ui.yaml
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${friendly_name}
+  project:
+    name: media_controller.esp32s3_paired
+    version: "${firmware_version}"
+  on_boot:
+    # -- Runs after the interface package's own on_boot, which builds the
+    # -- theme and shows a home layout. An unpaired device is sent to the
+    # -- pairing page from here instead. --
+    priority: -200
+    then:
+      - lambda: id(auth_header) = "Bearer " + id(ha_token);
+      - script.execute: show_start_page
+
+api:
+
+# -------------------- DISCOVERY --------------------
+# What makes Home Assistant offer to add this device. The integration reads
+# these three records in async_step_zeroconf. The service type is shared with
+# the T560 panel on purpose: the profile travels as a record rather than as a
+# service type of its own.
+#
+# Port 0: this device serves nothing. The record exists to be discovered.
+mdns:
+  services:
+    - service: _media-controller
+      protocol: _tcp
+      port: 0
+      txt:
+        panel_id: !lambda return get_mac_address();
+        profile: esp32_s3_panel
+        name: ${friendly_name}
+
+sensor:
+  # -------------------- PLAYER STATE --------------------
+  # The interface reads thirteen ids and does not care where they came from.
+  # In the classic firmware they are `platform: homeassistant` and Home
+  # Assistant pushes them; here the poll cycle publishes them.
+  #
+  # Every one is published only when it actually changed, because a template
+  # entity fires on_value on every publish and a once-a-second poll would
+  # otherwise redraw the whole screen once a second.
+  - platform: template
+    id: volume_level
+    internal: true
+    update_interval: never
+    on_value:
+      then:
+        - script.execute: ui_sync_volume
+
+  - platform: template
+    id: media_duration
+    internal: true
+    update_interval: never
+
+  - platform: template
+    id: media_position
+    internal: true
+    update_interval: never
+    on_value:
+      then:
+        - script.execute: ui_sync_progress
+
+text_sensor:
+  - platform: template
+    id: media_title
+    internal: true
+    update_interval: never
+    on_value:
+      then:
+        - script.execute: ui_sync_title
+        # The integration refreshes the queue three seconds after a title
+        # change. Fetch after that debounce so the device does not read stale
+        # data.
+        - delay: 4s
+        - script.execute: refresh_queue
+
+  - platform: template
+    id: media_artist
+    internal: true
+    update_interval: never
+    on_value:
+      then:
+        - script.execute: ui_sync_artist
+
+  # -- Album art path, relative to ha_url. "None" when there is none. --
+  - platform: template
+    id: entity_picture
+    internal: true
+    update_interval: never
+    on_value:
+      then:
+        - lambda: |-
+            if (x == "None" || x.empty()) {
+              ESP_LOGD("img", "No album art available, skipping");
+              return;
+            }
+            std::string full_url = "${ha_url}" + x;
+            ESP_LOGD("img", "Loading art: %s", full_url.c_str());
+            id(album_art).set_url(full_url.c_str());
+            id(album_art_small).set_url(full_url.c_str());
+        - script.execute: ui_load_album_art
+
+  - platform: template
+    id: player_state
+    internal: true
+    update_interval: never
+    on_value:
+      then:
+        - lambda: id(screen_last_active_ms) = millis();
+        - script.execute: ui_sync_play_state
+
+  - platform: template
+    id: shuffle_state
+    internal: true
+    update_interval: never
+    on_value:
+      then:
+        - script.execute: ui_sync_shuffle
+
+  - platform: template
+    id: repeat_state
+    internal: true
+    update_interval: never
+    on_value:
+      then:
+        - script.execute: ui_sync_repeat
+
+# -------------------- SWITCHES PAGE STATE --------------------
+# One per room slot, in slot order. Which entity feeds each is decided at
+# runtime, so a slot may hold a light or a switch without a reflash.
+binary_sensor:
+  - platform: template
+    id: light1_state
+    internal: true
+    on_state:
+      then:
+        - script.execute: apply_light1_style
+
+  - platform: template
+    id: light2_state
+    internal: true
+    on_state:
+      then:
+        - script.execute: apply_light2_style
+
+  - platform: template
+    id: fan_switch_state
+    internal: true
+    on_state:
+      then:
+        - script.execute: apply_fan_style
+
+  - platform: template
+    id: ac_switch_state
+    internal: true
+    on_state:
+      then:
+        - script.execute: apply_ac_style
+
+globals:
+  # ════════════════════════════════════════════════════════════
+  # WHAT HOME ASSISTANT TOLD THIS DEVICE
+  # ════════════════════════════════════════════════════════════
+  # All of it survives a reboot, so a device that starts while Home Assistant
+  # is down still knows what to ask for once it comes back, and a restart
+  # never sends anybody back to the pairing screen.
+
+  # -- The access token, minted by the integration and handed over once. A
+  # -- Home Assistant long-lived token is an HS256 JWT of about 180
+  # -- characters; 254 is the most a restoring string global can hold. --
+  - id: ha_token
+    type: std::string
+    restore_value: true
+    max_restore_data_length: 254
+
+  # -- "Bearer " + the token. A request header is rendered as const char *, so
+  # -- the value has to outlive the call: a temporary built inside the header
+  # -- lambda would dangle. --
+  - id: auth_header
+    type: std::string
+    restore_value: false
+
+  # -- The one entity Home Assistant names during pairing. Everything else is
+  # -- read out of it. --
+  - id: config_entity
+    type: std::string
+    restore_value: true
+    max_restore_data_length: 128
+
+  - id: player_entity
+    type: std::string
+    restore_value: true
+    max_restore_data_length: 128
+
+  - id: queue_entity
+    type: std::string
+    restore_value: true
+    max_restore_data_length: 128
+
+  - id: playlists_entity
+    type: std::string
+    restore_value: true
+    max_restore_data_length: 128
+
+  # -- Four separate globals rather than one container: only a plain
+  # -- std::string can be restored, and these have to survive a reboot for the
+  # -- room page to work before the first poll answers. --
+  - id: slot1_entity
+    type: std::string
+    restore_value: true
+    max_restore_data_length: 128
+
+  - id: slot2_entity
+    type: std::string
+    restore_value: true
+    max_restore_data_length: 128
+
+  - id: slot3_entity
+    type: std::string
+    restore_value: true
+    max_restore_data_length: 128
+
+  - id: slot4_entity
+    type: std::string
+    restore_value: true
+    max_restore_data_length: 128
+
+  # -- Checksum of the layout. Equal values mean there is nothing to lay out
+  # -- again, which is what keeps a once-a-second poll cheap. --
+  - id: config_revision
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+
+  # -- The parts of the last config payload the actions after the parse still
+  # -- need. Held rather than re-extracted: the payload is scanned once, and
+  # -- nothing downstream has to reach back into the response it came from. --
+  - id: pending_attributes
+    type: std::string
+    restore_value: false
+
+  - id: pending_commands
+    type: std::string
+    restore_value: false
+
+  - id: layout_changed
+    type: bool
+    restore_value: false
+    initial_value: "false"
+
+  # ════════════════════════════════════════════════════════════
+  # PAIRING
+  # ════════════════════════════════════════════════════════════
+  # The code is generated once and kept, so a watchdog reboot does not change
+  # the digits somebody is halfway through typing.
+  - id: pairing_code
+    type: std::string
+    restore_value: true
+    max_restore_data_length: 16
+
+  - id: pairing_hint
+    type: std::string
+    restore_value: false
+
+  # ════════════════════════════════════════════════════════════
+  # COMMAND WATERMARKS
+  # ════════════════════════════════════════════════════════════
+  # A command is applied only when its timestamp is newer than the last one
+  # acted on. They are restored for the reason the contract spells out: a
+  # restart command that was not remembered would run again on every boot.
+  - id: last_display_at
+    type: double
+    restore_value: true
+    initial_value: "0"
+
+  - id: last_brightness_at
+    type: double
+    restore_value: true
+    initial_value: "0"
+
+  - id: last_restart_at
+    type: double
+    restore_value: true
+    initial_value: "0"
+
+  - id: last_page_at
+    type: double
+    restore_value: true
+    initial_value: "0"
+
+  # -- What the parse decided, for the actions that follow it. A lambda cannot
+  # -- turn a backlight on; only an action can. --
+  - id: want_display
+    type: int
+    restore_value: false
+    initial_value: "0"
+
+  - id: want_brightness
+    type: int
+    restore_value: false
+    initial_value: "-1"
+
+  - id: want_restart
+    type: bool
+    restore_value: false
+    initial_value: "false"
+
+  - id: want_page
+    type: std::string
+    restore_value: false
+
+  # ════════════════════════════════════════════════════════════
+  # POLL BOOKKEEPING
+  # ════════════════════════════════════════════════════════════
+  # None of this is restored: it changes constantly, and a restoring global
+  # writes to flash whenever it does.
+  - id: poll_interval_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: "1000"
+
+  - id: playlist_poll_interval_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: "60000"
+
+  - id: last_poll_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+
+  - id: last_playlist_poll_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+
+  # -- Room state is polled at a fifth of the player's rate. An http_request on
+  # -- ESP-IDF blocks the main loop, so six requests a second would be six
+  # -- stalls a second in front of LVGL; a lamp somebody else switched can wait
+  # -- five seconds, and a lamp switched here refreshes immediately because the
+  # -- button asks for it. --
+  - id: last_slot_poll_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+
+  - id: last_pairing_poll_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+
+  - id: last_report_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+
+  # -- The position Home Assistant last reported, as opposed to the one the
+  # -- interface advances locally every second. Home Assistant's number does
+  # -- not move on its own, so publishing it back on every poll would undo
+  # -- that advance. Only a change on their side is a re-sync. --
+  - id: last_polled_position
+    type: float
+    restore_value: false
+    initial_value: "-1"
+
+  # ════════════════════════════════════════════════════════════
+  # PARSERS
+  # ════════════════════════════════════════════════════════════
+  # There is no JSON library on the device. These walk the payload by hand, in
+  # the same style as the playlist and slot-label parsers in the interface
+  # package, and they are deliberately forgiving: a field that is missing or
+  # malformed reads as empty rather than as an error.
+  #
+  # Each one is self-contained. A global's initial_value is emitted as a raw
+  # C++ expression and is not a lambda ESPHome rewrites, so `id(...)` does not
+  # work in here and one parser cannot call another.
+
+  # -- One field of an object, as text. A quoted value is unescaped; a bare
+  # -- value (number, true, false, null) comes back as it was written, which
+  # -- is what lets the same function read both "repeat":"all" and
+  # -- "shuffle":false. --
+  - id: json_field
+    type: std::string (*)(const std::string &, const char *)
+    restore_value: no
+    initial_value: |-
+      [](const std::string &body, const char *key) -> std::string {
+        std::string needle = std::string("\"") + key + "\"";
+        size_t p = body.find(needle);
+        if (p == std::string::npos) return std::string();
+        p = body.find(':', p + needle.size());
+        if (p == std::string::npos) return std::string();
+        p++;
+        while (p < body.size() && isspace((unsigned char) body[p])) p++;
+        if (p >= body.size()) return std::string();
+
+        if (body[p] != '"') {
+          size_t e = p;
+          while (e < body.size() && body[e] != ',' &&
+                 body[e] != '}' && body[e] != ']') e++;
+          std::string raw = body.substr(p, e - p);
+          while (!raw.empty() &&
+                 isspace((unsigned char) raw[raw.size() - 1])) {
+            raw.erase(raw.size() - 1);
+          }
+          return raw;
+        }
+
+        p++;
+        std::string out;
+        while (p < body.size()) {
+          char c = body[p];
+          if (c == '\\' && p + 1 < body.size()) {
+            char n = body[p + 1];
+            if (n == 'n') out += '\n';
+            else if (n == 't') out += '\t';
+            else if (n == 'u') { p += 6; continue; }
+            else out += n;
+            p += 2;
+            continue;
+          }
+          if (c == '"') break;
+          out += c;
+          p++;
+        }
+        return out;
+      }
+
+  # -- One nested object, so a field can be looked up inside it rather than
+  # -- anywhere in the payload. Reading "state" out of a whole media player
+  # -- response would be a coin toss; reading it out of the top level and
+  # -- "media_title" out of "attributes" is not. --
+  - id: json_object
+    type: std::string (*)(const std::string &, const char *)
+    restore_value: no
+    initial_value: |-
+      [](const std::string &body, const char *key) -> std::string {
+        std::string needle = std::string("\"") + key + "\"";
+        size_t p = body.find(needle);
+        if (p == std::string::npos) return std::string();
+        p = body.find('{', p + needle.size());
+        if (p == std::string::npos) return std::string();
+
+        int depth = 0;
+        for (size_t i = p; i < body.size(); i++) {
+          char c = body[i];
+          if (c == '"') {
+            i++;
+            while (i < body.size()) {
+              if (body[i] == '\\') i++;
+              else if (body[i] == '"') break;
+              i++;
+            }
+            continue;
+          }
+          if (c == '{') depth++;
+          else if (c == '}') {
+            depth--;
+            if (depth == 0) return body.substr(p, i - p + 1);
+          }
+        }
+        return std::string();
+      }
+
+  # -- The entity of one slot. The interface package carries a parser that
+  # -- reads a slot's label; this one reads the entity behind the button,
+  # -- which is the field that makes a reflash unnecessary. --
+  - id: slot_entity_parser
+    type: std::string (*)(const std::string &, int)
+    restore_value: no
+    initial_value: |-
+      [](const std::string &body, int slot) -> std::string {
+        size_t slots_pos = body.find("\"slots\":");
+        if (slots_pos == std::string::npos) return std::string();
+        size_t i = body.find('[', slots_pos);
+        if (i == std::string::npos) return std::string();
+
+        int depth = 0;
+        size_t object_start = std::string::npos;
+        for (; i < body.size(); i++) {
+          char c = body[i];
+          if (c == '"') {
+            i++;
+            while (i < body.size()) {
+              if (body[i] == '\\') i++;
+              else if (body[i] == '"') break;
+              i++;
+            }
+            continue;
+          }
+          if (c == '{') {
+            if (depth == 0) object_start = i;
+            depth++;
+            continue;
+          }
+          if (c == '}') {
+            depth--;
+            if (depth != 0 || object_start == std::string::npos) continue;
+            std::string object = body.substr(object_start,
+                                             i - object_start + 1);
+            object_start = std::string::npos;
+            size_t slot_pos = object.find("\"slot\":");
+            if (slot_pos == std::string::npos) continue;
+            if (atoi(object.c_str() + slot_pos + 7) != slot) continue;
+            size_t e = object.find("\"entity\":\"");
+            if (e == std::string::npos) return std::string();
+            e += 10;
+            std::string entity;
+            for (size_t k = e; k < object.size(); k++) {
+              if (object[k] == '"') break;
+              entity += object[k];
+            }
+            return entity;
+          }
+          if (c == ']' && depth == 0) break;
+        }
+        return std::string();
+      }
+
+script:
+  # ════════════════════════════════════════════════════════════
+  # COMMANDS
+  # ════════════════════════════════════════════════════════════
+  # The other half of the seam described in media-controller-ui.yaml. Same
+  # names and same parameters as the classic firmware; a POST to the REST API
+  # rather than a native API call, and the entity comes from flash rather than
+  # from a substitution.
+
+  - id: ha_action
+    mode: parallel
+    max_runs: 6
+    parameters:
+      domain: string
+      service: string
+      payload: string
+    then:
+      - if:
+          condition:
+            lambda: return id(ha_token).empty();
+          then:
+            - logger.log: "Not paired; the action was dropped"
+          else:
+            - http_request.post:
+                url: !lambda |-
+                  return "${ha_url}/api/services/" + domain + "/" + service;
+                request_headers:
+                  Authorization: !lambda return id(auth_header).c_str();
+                  Content-Type: "application/json"
+                body: !lambda return payload;
+                capture_response: false
+
+  - id: cmd_prev
+    mode: parallel
+    max_runs: 4
+    then:
+      - script.execute:
+          id: ha_action
+          domain: "media_player"
+          service: "media_previous_track"
+          payload: !lambda |-
+            return "{\"entity_id\":\"" + id(player_entity) + "\"}";
+
+  - id: cmd_play_pause
+    mode: parallel
+    max_runs: 4
+    then:
+      - script.execute:
+          id: ha_action
+          domain: "media_player"
+          service: "media_play_pause"
+          payload: !lambda |-
+            return "{\"entity_id\":\"" + id(player_entity) + "\"}";
+
+  - id: cmd_next
+    mode: parallel
+    max_runs: 4
+    then:
+      - script.execute:
+          id: ha_action
+          domain: "media_player"
+          service: "media_next_track"
+          payload: !lambda |-
+            return "{\"entity_id\":\"" + id(player_entity) + "\"}";
+
+  - id: cmd_volume_down
+    mode: parallel
+    max_runs: 4
+    then:
+      - script.execute:
+          id: ha_action
+          domain: "media_player"
+          service: "volume_down"
+          payload: !lambda |-
+            return "{\"entity_id\":\"" + id(player_entity) + "\"}";
+
+  - id: cmd_volume_up
+    mode: parallel
+    max_runs: 4
+    then:
+      - script.execute:
+          id: ha_action
+          domain: "media_player"
+          service: "volume_up"
+          payload: !lambda |-
+            return "{\"entity_id\":\"" + id(player_entity) + "\"}";
+
+  # -- The slider reports 0-100; Home Assistant wants 0.00-1.00. --
+  - id: cmd_volume_set
+    mode: parallel
+    max_runs: 4
+    parameters:
+      level: int
+    then:
+      - script.execute:
+          id: ha_action
+          domain: "media_player"
+          service: "volume_set"
+          payload: !lambda |-
+            char buf[16];
+            snprintf(buf, sizeof(buf), "%.2f", level / 100.0f);
+            return "{\"entity_id\":\"" + id(player_entity) +
+                   "\",\"volume_level\":" + buf + "}";
+
+  - id: cmd_shuffle_set
+    mode: parallel
+    max_runs: 4
+    parameters:
+      state: string
+    then:
+      - script.execute:
+          id: ha_action
+          domain: "media_player"
+          service: "shuffle_set"
+          payload: !lambda |-
+            std::string on = (state == "on") ? "true" : "false";
+            return "{\"entity_id\":\"" + id(player_entity) +
+                   "\",\"shuffle\":" + on + "}";
+
+  - id: cmd_repeat_set
+    mode: parallel
+    max_runs: 4
+    parameters:
+      mode: string
+    then:
+      - script.execute:
+          id: ha_action
+          domain: "media_player"
+          service: "repeat_set"
+          payload: !lambda |-
+            return "{\"entity_id\":\"" + id(player_entity) +
+                   "\",\"repeat\":\"" + mode + "\"}";
+
+  # -- The playlist roller holds the selection; only the index travels. --
+  - id: cmd_play_playlist
+    mode: parallel
+    max_runs: 4
+    then:
+      - script.execute:
+          id: ha_action
+          domain: "music_assistant"
+          service: "play_media"
+          payload: !lambda |-
+            int idx = id(selected_playlist_idx);
+            std::string uri;
+            if (idx >= 0 && idx < (int) id(playlist_uris).size()) {
+              uri = id(playlist_uris)[idx];
+            }
+            return "{\"entity_id\":\"" + id(player_entity) +
+                   "\",\"media_id\":\"" + uri +
+                   "\",\"media_type\":\"playlist\"}";
+
+  # -- Slots are addressed by number. Which entity that is, and therefore
+  # -- which domain the call belongs to, is read from flash. This is the whole
+  # -- point of the paired firmware: nothing here is decided at compile time. --
+  - id: cmd_slot_toggle
+    mode: parallel
+    max_runs: 4
+    parameters:
+      slot: int
+    then:
+      - lambda: |-
+          std::string entity;
+          switch (slot) {
+            case 1: entity = id(slot1_entity); break;
+            case 2: entity = id(slot2_entity); break;
+            case 3: entity = id(slot3_entity); break;
+            case 4: entity = id(slot4_entity); break;
+          }
+          size_t dot = entity.find('.');
+          if (dot == std::string::npos) return;
+          id(ha_action)->execute(
+              entity.substr(0, dot), std::string("toggle"),
+              "{\"entity_id\":\"" + entity + "\"}");
+      # -- Room state is otherwise polled slowly. A tile the person just
+      # -- pressed must not wait for that, so ask again once Home Assistant
+      # -- has had time to act. --
+      - delay: 400ms
+      - lambda: id(last_slot_poll_ms) = millis();
+      - script.execute: poll_slots
+
+  # -- Only a light can be dimmed. A switch in this slot simply ignores the
+  # -- long press. --
+  - id: cmd_slot_brightness
+    mode: parallel
+    max_runs: 4
+    parameters:
+      slot: int
+      pct: int
+    then:
+      - lambda: |-
+          std::string entity;
+          switch (slot) {
+            case 1: entity = id(slot1_entity); break;
+            case 2: entity = id(slot2_entity); break;
+            case 3: entity = id(slot3_entity); break;
+            case 4: entity = id(slot4_entity); break;
+          }
+          if (entity.rfind("light.", 0) != 0) return;
+          char buf[8];
+          snprintf(buf, sizeof(buf), "%d", pct);
+          id(ha_action)->execute(
+              std::string("light"), std::string("turn_on"),
+              "{\"entity_id\":\"" + entity +
+              "\",\"brightness_pct\":" + buf + "}");
+
+  - id: play_queue_item
+    then:
+      - lambda: |-
+          int idx = id(selected_queue_idx);
+          std::string item;
+          if (idx >= 0 && idx < (int) id(queue_id_list).size()) {
+            item = id(queue_id_list)[idx];
+            ESP_LOGD("queue", "Playing queue item: %s", item.c_str());
+          }
+          id(ha_action)->execute(
+              std::string("media_controller"),
+              std::string("play_queue_item"),
+              "{\"entity_id\":\"" + id(player_entity) +
+              "\",\"queue_item_id\":\"" + item + "\"}");
+      - script.execute: show_home_page
+
+  # ════════════════════════════════════════════════════════════
+  # PAIRING
+  # ════════════════════════════════════════════════════════════
+
+  # -- An unpaired device shows its code; a paired one goes straight to the
+  # -- interface, which the shared package has already put on screen. --
+  - id: show_start_page
+    then:
+      - if:
+          condition:
+            lambda: return id(ha_token).empty();
+          then:
+            - lambda: |-
+                if (id(pairing_code).empty()) {
+                  char buf[8];
+                  snprintf(buf, sizeof(buf), "%06u",
+                           (unsigned) (random_uint32() % 1000000));
+                  id(pairing_code) = buf;
+                  ESP_LOGI("pair", "Pairing code %s", buf);
+                }
+                if (id(pairing_hint).empty()) {
+                  id(pairing_hint) = "Add this device in Home Assistant";
+                }
+            - script.execute: ui_sync_pairing
+            - lvgl.page.show: page_pairing
+
+  - id: ui_sync_pairing
+    then:
+      - lambda: |-
+          if (!id(ui_ready)) return;
+          lv_label_set_text(id(lbl_pairing_code), id(pairing_code).c_str());
+          lv_label_set_text(id(lbl_pairing_hint), id(pairing_hint).c_str());
+
+  # -- Home Assistant answers this only while somebody has approved a pairing
+  # -- for this device, only for a few minutes, only for the code on this
+  # -- screen, and only once. Everything that protects the exchange is on that
+  # -- side, in the integration's pairing.py. Here it is a poll and four
+  # -- outcomes. --
+  - id: poll_pairing
+    mode: restart
+    then:
+      - http_request.post:
+          url: "${ha_url}/api/media_controller/provision"
+          request_headers:
+            Content-Type: "application/json"
+          body: !lambda |-
+            return "{\"panel_id\":\"" + get_mac_address() +
+                   "\",\"code\":\"" + id(pairing_code) + "\"}";
+          capture_response: true
+          max_response_buffer_size: 1024
+          on_response:
+            then:
+              - lambda: |-
+                  int code = response->status_code;
+                  if (code == 404) {
+                    id(pairing_hint) = "Add this device in Home Assistant";
+                  } else if (code == 202) {
+                    id(pairing_hint) = "Accepted - finish the setup form";
+                  } else if (code == 403) {
+                    id(pairing_hint) = "Enter this code in Home Assistant";
+                  } else if (code != 200) {
+                    id(pairing_hint) = "Home Assistant returned an error";
+                  }
+                  if (code != 200) {
+                    ESP_LOGD("pair", "Provisioning HTTP %d", code);
+                    id(ui_sync_pairing)->execute();
+                    return;
+                  }
+
+                  std::string token = id(json_field)(body, "token");
+                  std::string entity = id(json_field)(body, "config_entity");
+                  if (token.empty() || entity.empty()) {
+                    ESP_LOGW("pair", "The provisioning answer was incomplete");
+                    return;
+                  }
+                  id(ha_token) = token;
+                  id(config_entity) = entity;
+                  id(auth_header) = "Bearer " + token;
+                  id(pairing_code) = "";
+                  ESP_LOGI("pair", "Paired; reading %s", entity.c_str());
+              - if:
+                  condition:
+                    lambda: return !id(ha_token).empty();
+                  then:
+                    - script.execute: ui_load_room_config
+                    - script.execute: show_home_page
+
+  # -- A token Home Assistant no longer accepts is worse than no token: every
+  # -- request would fail and the screen would quietly stop moving. Drop it
+  # -- and ask again. --
+  - id: forget_token
+    then:
+      - lambda: |-
+          ESP_LOGW("pair", "The token was rejected; pairing again");
+          id(ha_token) = "";
+          id(auth_header) = "";
+          id(pairing_code) = "";
+          id(pairing_hint) = "Add this device in Home Assistant";
+      - script.execute: show_start_page
+
+  # ════════════════════════════════════════════════════════════
+  # POLLING
+  # ════════════════════════════════════════════════════════════
+
+  # -- The player, in one request. It replaces the nine separate state
+  # -- subscriptions the classic firmware gets over the native API. --
+  - id: poll_player
+    mode: restart
+    then:
+      - if:
+          condition:
+            lambda: |-
+              return !id(ha_token).empty() && !id(player_entity).empty();
+          then:
+            - http_request.get:
+                url: !lambda |-
+                  return "${ha_url}/api/states/" + id(player_entity);
+                request_headers:
+                  Authorization: !lambda return id(auth_header).c_str();
+                capture_response: true
+                max_response_buffer_size: 8192
+                on_response:
+                  then:
+                    - lambda: |-
+                        if (response->status_code == 401 ||
+                            response->status_code == 403) {
+                          id(forget_token)->execute();
+                          return;
+                        }
+                        if (response->status_code != 200) {
+                          ESP_LOGW("player", "HTTP %d",
+                                   response->status_code);
+                          return;
+                        }
+
+                        std::string state = id(json_field)(body, "state");
+                        if (!state.empty() &&
+                            state != id(player_state).state) {
+                          id(player_state).publish_state(state);
+                        }
+
+                        std::string attrs = id(json_object)(body,
+                                                            "attributes");
+                        if (attrs.empty()) return;
+
+                        std::string title = id(json_field)(attrs,
+                                                           "media_title");
+                        if (title.empty()) title = "No track";
+                        if (title != id(media_title).state) {
+                          id(media_title).publish_state(title);
+                        }
+
+                        std::string artist = id(json_field)(attrs,
+                                                            "media_artist");
+                        if (artist != id(media_artist).state) {
+                          id(media_artist).publish_state(artist);
+                        }
+
+                        std::string art = id(json_field)(
+                            attrs, "entity_picture_local");
+                        if (art.empty()) art = "None";
+                        if (art != id(entity_picture).state) {
+                          id(entity_picture).publish_state(art);
+                        }
+
+                        std::string shuffle = id(json_field)(attrs,
+                                                             "shuffle");
+                        if (shuffle != id(shuffle_state).state) {
+                          id(shuffle_state).publish_state(shuffle);
+                        }
+
+                        std::string repeat = id(json_field)(attrs, "repeat");
+                        if (repeat.empty()) repeat = "off";
+                        if (repeat != id(repeat_state).state) {
+                          id(repeat_state).publish_state(repeat);
+                        }
+
+                        std::string vol = id(json_field)(attrs,
+                                                         "volume_level");
+                        if (!vol.empty()) {
+                          float v = atof(vol.c_str());
+                          if (isnan(id(volume_level).state) ||
+                              fabsf(v - id(volume_level).state) > 0.001f) {
+                            id(volume_level).publish_state(v);
+                          }
+                        }
+
+                        std::string dur = id(json_field)(attrs,
+                                                         "media_duration");
+                        float d = dur.empty() ? 0.0f : atof(dur.c_str());
+                        if (isnan(id(media_duration).state) ||
+                            fabsf(d - id(media_duration).state) > 0.5f) {
+                          id(media_duration).publish_state(d);
+                        }
+
+                        std::string pos = id(json_field)(attrs,
+                                                         "media_position");
+                        float p = pos.empty() ? 0.0f : atof(pos.c_str());
+                        if (fabsf(p - id(last_polled_position)) > 0.5f) {
+                          id(last_polled_position) = p;
+                          id(media_position).publish_state(p);
+                        }
+
+  # -- One request per configured slot. An empty slot costs nothing. --
+  - id: poll_slots
+    mode: restart
+    then:
+      - lambda: |-
+          if (id(ha_token).empty()) return;
+          if (!id(slot1_entity).empty()) id(poll_slot)->execute(1);
+          if (!id(slot2_entity).empty()) id(poll_slot)->execute(2);
+          if (!id(slot3_entity).empty()) id(poll_slot)->execute(3);
+          if (!id(slot4_entity).empty()) id(poll_slot)->execute(4);
+
+  - id: poll_slot
+    mode: parallel
+    max_runs: 4
+    parameters:
+      slot: int
+    then:
+      - http_request.get:
+          url: !lambda |-
+            std::string entity;
+            switch (slot) {
+              case 1: entity = id(slot1_entity); break;
+              case 2: entity = id(slot2_entity); break;
+              case 3: entity = id(slot3_entity); break;
+              case 4: entity = id(slot4_entity); break;
+            }
+            return "${ha_url}/api/states/" + entity;
+          request_headers:
+            Authorization: !lambda return id(auth_header).c_str();
+          capture_response: true
+          max_response_buffer_size: 2048
+          on_response:
+            then:
+              - lambda: |-
+                  if (response->status_code != 200) return;
+                  bool on = id(json_field)(body, "state") == "on";
+                  switch (slot) {
+                    case 1: id(light1_state).publish_state(on); break;
+                    case 2: id(light2_state).publish_state(on); break;
+                    case 3: id(fan_switch_state).publish_state(on); break;
+                    case 4: id(ac_switch_state).publish_state(on); break;
+                  }
+
+  # -- The config sensor names every other entity, so it is requested every
+  # -- cycle rather than as rarely as a layout alone would need: it is also
+  # -- the channel Home Assistant turns the screen off through, and a button
+  # -- there that took a minute to do anything would read as broken. --
+  - id: ui_load_room_config
+    mode: restart
+    then:
+      - if:
+          condition:
+            lambda: |-
+              return !id(ha_token).empty() && !id(config_entity).empty();
+          then:
+            - http_request.get:
+                url: !lambda |-
+                  return "${ha_url}/api/states/" + id(config_entity);
+                request_headers:
+                  Authorization: !lambda return id(auth_header).c_str();
+                capture_response: true
+                max_response_buffer_size: 8192
+                on_response:
+                  then:
+                    - lambda: |-
+                        id(pending_attributes) = "";
+                        id(pending_commands) = "";
+                        id(layout_changed) = false;
+
+                        if (response->status_code == 401 ||
+                            response->status_code == 403) {
+                          id(forget_token)->execute();
+                          return;
+                        }
+                        if (response->status_code != 200) {
+                          ESP_LOGW("slots", "Config sensor HTTP %d",
+                                   response->status_code);
+                          return;
+                        }
+                        std::string attrs = id(json_object)(body,
+                                                            "attributes");
+                        if (attrs.empty()) return;
+
+                        // -- A payload missing any of the three controller
+                        //    entities is not usable yet and must be retried,
+                        //    not cached. --
+                        std::string player = id(json_field)(attrs, "player");
+                        std::string queue = id(json_field)(attrs, "queue");
+                        std::string lists = id(json_field)(attrs,
+                                                           "playlists");
+                        if (player.empty() || queue.empty() ||
+                            lists.empty()) {
+                          ESP_LOGD("slots", "The config payload is not ready");
+                          return;
+                        }
+                        id(player_entity) = player;
+                        id(queue_entity) = queue;
+                        id(playlists_entity) = lists;
+
+                        // -- Home Assistant owns both poll rates. Clamp them
+                        //    here as well as there: a client trusts a payload
+                        //    no further than it has to. --
+                        std::string settings = id(json_object)(attrs,
+                                                               "settings");
+                        if (!settings.empty()) {
+                          std::string v = id(json_field)(settings,
+                                                         "poll_interval_ms");
+                          if (!v.empty()) {
+                            uint32_t ms = (uint32_t) atof(v.c_str());
+                            if (ms < 500) ms = 500;
+                            if (ms > 30000) ms = 30000;
+                            id(poll_interval_ms) = ms;
+                          }
+                          v = id(json_field)(
+                              settings, "playlist_poll_interval_ms");
+                          if (!v.empty()) {
+                            uint32_t ms = (uint32_t) atof(v.c_str());
+                            if (ms < 10000) ms = 10000;
+                            if (ms > 3600000) ms = 3600000;
+                            id(playlist_poll_interval_ms) = ms;
+                          }
+                        }
+
+                        // -- The four slot entities. They are what makes a
+                        //    button repointable without a reflash, so they
+                        //    are read on every payload, not only when the
+                        //    revision moved. --
+                        id(slot1_entity) = id(slot_entity_parser)(attrs, 1);
+                        id(slot2_entity) = id(slot_entity_parser)(attrs, 2);
+                        id(slot3_entity) = id(slot_entity_parser)(attrs, 3);
+                        id(slot4_entity) = id(slot_entity_parser)(attrs, 4);
+
+                        // -- The revision covers the layout and nothing else,
+                        //    so an unchanged one costs no widget work. --
+                        uint32_t rev = (uint32_t) atof(
+                            id(json_field)(attrs, "revision").c_str());
+                        if (rev == 0 || rev != id(config_revision)) {
+                          id(config_revision) = rev;
+                          id(layout_changed) = true;
+                        }
+
+                        id(pending_commands) = id(json_object)(attrs,
+                                                               "commands");
+                        id(pending_attributes) = attrs;
+                    - script.execute: read_commands
+                    - script.execute: apply_commands
+                    - if:
+                        condition:
+                          lambda: return id(layout_changed);
+                        then:
+                          - script.execute:
+                              id: apply_slots
+                              payload: !lambda |-
+                                return id(pending_attributes);
+
+  - id: refresh_queue
+    mode: restart
+    then:
+      - if:
+          condition:
+            lambda: |-
+              return !id(ha_token).empty() && !id(queue_entity).empty();
+          then:
+            - http_request.get:
+                url: !lambda |-
+                  return "${ha_url}/api/states/" + id(queue_entity);
+                request_headers:
+                  Authorization: !lambda return id(auth_header).c_str();
+                capture_response: true
+                max_response_buffer_size: 32768
+                on_response:
+                  then:
+                    - if:
+                        condition:
+                          lambda: return response->status_code == 200;
+                        then:
+                          - script.execute:
+                              id: rebuild_queue
+                              payload: !lambda return body;
+
+  - id: poll_playlists
+    mode: restart
+    then:
+      - if:
+          condition:
+            lambda: |-
+              return !id(ha_token).empty() &&
+                     !id(playlists_entity).empty();
+          then:
+            - http_request.get:
+                url: !lambda |-
+                  return "${ha_url}/api/states/" + id(playlists_entity);
+                request_headers:
+                  Authorization: !lambda return id(auth_header).c_str();
+                capture_response: true
+                max_response_buffer_size: 32768
+                on_response:
+                  then:
+                    - if:
+                        condition:
+                          lambda: return response->status_code == 200;
+                        then:
+                          - script.execute:
+                              id: rebuild_playlists
+                              payload: !lambda return body;
+                        else:
+                          - lambda: |-
+                              ESP_LOGW("playlists", "HTTP %d",
+                                       response->status_code);
+
+  # ════════════════════════════════════════════════════════════
+  # PANEL COMMANDS
+  # ════════════════════════════════════════════════════════════
+  # A command is a moment, not a message: each carries the millisecond it was
+  # issued at, and it is acted on only when that is newer than the last one
+  # acted on. That is what makes a poll a safe transport — a command runs once
+  # however often it is read, and a restart does not repeat on every boot.
+  #
+  # Parsing and acting are two scripts because a lambda cannot turn a
+  # backlight on; only an action can.
+  #
+  # `screen_off_seconds` is deliberately not applied. This device already owns
+  # a "Screen Timeout" number of its own on its ESPHome device, its range is
+  # narrower than the contract's, and two owners for one setting is a bug
+  # waiting to happen.
+
+  - id: read_commands
+    then:
+      - lambda: |-
+          const std::string &payload = id(pending_commands);
+          id(want_display) = 0;
+          id(want_brightness) = -1;
+          id(want_restart) = false;
+          id(want_page) = "";
+          if (payload.empty()) return;
+
+          std::string block = id(json_object)(payload, "display");
+          if (!block.empty()) {
+            double at = atof(id(json_field)(block, "at").c_str());
+            if (at > id(last_display_at)) {
+              id(last_display_at) = at;
+              id(want_display) =
+                  (id(json_field)(block, "state") == "on") ? 1 : 2;
+            }
+          }
+
+          block = id(json_object)(payload, "brightness");
+          if (!block.empty()) {
+            double at = atof(id(json_field)(block, "at").c_str());
+            if (at > id(last_brightness_at)) {
+              id(last_brightness_at) = at;
+              int value = atoi(id(json_field)(block, "value").c_str());
+              if (value >= 1 && value <= 100) id(want_brightness) = value;
+            }
+          }
+
+          block = id(json_object)(payload, "restart");
+          if (!block.empty()) {
+            double at = atof(id(json_field)(block, "at").c_str());
+            if (at > id(last_restart_at)) {
+              id(last_restart_at) = at;
+              id(want_restart) = true;
+            }
+          }
+
+          block = id(json_object)(payload, "page");
+          if (!block.empty()) {
+            double at = atof(id(json_field)(block, "at").c_str());
+            if (at > id(last_page_at)) {
+              id(last_page_at) = at;
+              id(want_page) = id(json_field)(block, "value");
+            }
+          }
+
+  - id: apply_commands
+    then:
+      - if:
+          condition:
+            lambda: return id(want_display) == 2;
+          then:
+            - lvgl.pause:
+            - light.turn_off: backlight
+      - if:
+          condition:
+            lambda: return id(want_display) == 1;
+          then:
+            - light.turn_on: backlight
+            - lvgl.resume:
+            - lambda: id(screen_last_active_ms) = millis();
+      - if:
+          condition:
+            lambda: return id(want_brightness) >= 0;
+          then:
+            - light.turn_on:
+                id: backlight
+                brightness: !lambda return id(want_brightness) / 100.0f;
+      - if:
+          condition:
+            lambda: return id(want_page) == "player";
+          then:
+            - script.execute: show_home_page
+      - if:
+          condition:
+            lambda: return id(want_page) == "queue";
+          then:
+            - lvgl.page.show: page_queue
+      - if:
+          condition:
+            lambda: return id(want_page) == "playlists";
+          then:
+            - lvgl.page.show: page_playlists
+      - if:
+          condition:
+            lambda: return id(want_page) == "room";
+          then:
+            - lvgl.page.show: page_switches
+      - if:
+          condition:
+            lambda: return id(want_restart);
+          then:
+            # -- Long enough for the watermark to reach flash, so the restart
+            # -- is not replayed on the next boot. --
+            - delay: 2s
+            - lambda: App.safe_reboot();
+
+  # -- Home Assistant cannot ask this device anything, so what it knows about
+  # -- it is pushed. There is no battery to report; the integration expects an
+  # -- absent one. --
+  - id: report_status
+    mode: restart
+    then:
+      - if:
+          condition:
+            lambda: return !id(ha_token).empty();
+          then:
+            - http_request.post:
+                url: "${ha_url}/api/media_controller/panel_status"
+                request_headers:
+                  Authorization: !lambda return id(auth_header).c_str();
+                  Content-Type: "application/json"
+                # -- No battery and no signal strength: this device is mains
+                # -- powered, and the importing configuration decides whether
+                # -- it is on Wi-Fi or Ethernet at all, so the package cannot
+                # -- declare a wifi_signal sensor. Both are optional in the
+                # -- contract, and the report is what keeps
+                # -- binary_sensor.<panel>_connected honest. --
+                body: !lambda |-
+                  char buf[224];
+                  snprintf(buf, sizeof(buf),
+                           "{\"panel_id\":\"%s\",\"version\":\"%s\","
+                           "\"uptime_seconds\":%u,"
+                           "\"display\":{\"available\":true,\"on\":%s,"
+                           "\"brightness\":%d}}",
+                           get_mac_address().c_str(), "${firmware_version}",
+                           (unsigned) (millis() / 1000),
+                           id(backlight).remote_values.is_on() ? "true"
+                                                               : "false",
+                           (int) (id(backlight).remote_values.get_brightness()
+                                  * 100.0f));
+                  return std::string(buf);
+                capture_response: false
+
+# -------------------- THE POLL CYCLE --------------------
+# ESPHome cannot retune an interval at runtime, so the tick is fixed and each
+# job decides for itself whether enough time has passed. Home Assistant owns
+# the two intervals; they arrive in the config sensor.
+interval:
+  - interval: 250ms
+    then:
+      - lambda: |-
+          uint32_t now = millis();
+
+          if (id(ha_token).empty()) {
+            if (id(last_pairing_poll_ms) == 0 ||
+                now - id(last_pairing_poll_ms) >= 3000) {
+              id(last_pairing_poll_ms) = now;
+              id(poll_pairing)->execute();
+            }
+            return;
+          }
+
+          if (now - id(last_poll_ms) >= id(poll_interval_ms)) {
+            id(last_poll_ms) = now;
+            id(ui_load_room_config)->execute();
+            id(poll_player)->execute();
+          }
+
+          if (now - id(last_slot_poll_ms) >= id(poll_interval_ms) * 5) {
+            id(last_slot_poll_ms) = now;
+            id(poll_slots)->execute();
+          }
+
+          // -- Fetch as soon as the config sensor has named the playlists
+          //    entity, then on its own interval. The clock does not start
+          //    until there is something to ask for, so a freshly paired
+          //    device does not show an empty playlist page for a minute. --
+          if (!id(playlists_entity).empty() &&
+              (id(last_playlist_poll_ms) == 0 ||
+               now - id(last_playlist_poll_ms) >=
+                   id(playlist_poll_interval_ms))) {
+            id(last_playlist_poll_ms) = now;
+            id(poll_playlists)->execute();
+          }
+
+          if (now - id(last_report_ms) >= 60000) {
+            id(last_report_ms) = now;
+            id(report_status)->execute();
+          }
+
+# -------------------- THE PAIRING PAGE --------------------
+# Appended to the pages the interface package defines; the classic firmware
+# never compiles it. It is the only screen this firmware adds, and the only
+# one a person sees before the device belongs to a Home Assistant.
+lvgl:
+  pages:
+    - id: page_pairing
+      widgets:
+        - label:
+            text: "MEDIA CONTROLLER"
+            text_font: roboto_16
+            text_color: 0x5588cc
+            align: TOP_MID
+            y: 90
+
+        - label:
+            id: lbl_pairing_code
+            text: "------"
+            text_font: roboto_36
+            text_color: 0xffffff
+            align: CENTER
+            y: -20
+
+        - label:
+            id: lbl_pairing_hint
+            text: "Add this device in Home Assistant"
+            text_font: roboto_16
+            text_color: 0x77779A
+            align: CENTER
+            y: 60

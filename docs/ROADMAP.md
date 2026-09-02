@@ -99,6 +99,38 @@ not before it.
 
 ## 3. Removing the REST token from the firmware
 
-Tracked in [ESP32_CONTROLLER.md](ESP32_CONTROLLER.md#rest-token-limitation).
-It requires payload-size, memory, reconnect, and album-art testing on hardware,
-so it stays a separate milestone.
+**Answered, by a second firmware rather than by changing the first.**
+[media-controller-paired.yaml](../firmware/media-controller-paired.yaml) is
+paired from Home Assistant with a six-digit code, is handed a revocable token,
+and keeps no entity ID and no secret in the build. See
+[ESP32_PAIRED_CONTROLLER.md](ESP32_PAIRED_CONTROLLER.md).
+
+The classic firmware keeps its compile-time token so that devices already in the
+field are not disturbed; its
+[limitation](ESP32_CONTROLLER.md#rest-token-limitation) is now a documented
+property of that variant rather than an open problem.
+
+Still outstanding: the paired firmware has passed `esphome config` and a full
+compile but has not run on the physical device. The payload-size, memory,
+reconnect and album-art testing this item always called for is now the hardware
+checklist at the end of its document.
+
+## 4. One interface, two transports
+
+The two firmwares share
+[media-controller-ui.yaml](../firmware/media-controller-ui.yaml), and the seam
+between interface and transport is a list of names in its header: the `cmd_`
+scripts a widget calls, the three scripts that turn a payload into widgets, and
+the thirteen state ids the interface reads. It holds today because nothing in
+the interface names a Home Assistant entity or performs a Home Assistant call.
+
+A widget that reaches for `homeassistant.service` directly, or a substitution
+that creeps into the interface package, would compile happily under the classic
+firmware and break the paired one. `.github/workflows/firmware.yml` now checks
+both: the interface package may contain no `homeassistant.` call and no
+substitution other than `ha_url` and `asset_base_url`.
+
+What is still only a convention is the rest of the seam — the `cmd_` names, the
+three payload-to-widget scripts, and the thirteen state ids. Renaming one of
+them breaks the other firmware in a way nothing catches until it is compiled,
+which is why both firmwares are validated on every change to `firmware/**`.

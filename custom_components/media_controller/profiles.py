@@ -96,12 +96,33 @@ T560 = ClientProfile(
     ),
 )
 
+# The same hardware as ESP32_S3, running the paired firmware instead. It is a
+# separate profile rather than a widening of ESP32_S3 because the two differ
+# in what a slot may hold, and ESP32_S3 describes devices already in the field
+# whose buttons carry a compile-time domain.
+#
+# Here the domain arrives with the slot at runtime, so any of the four may be
+# a light or a switch. Colour temperature is still absent: the firmware has
+# four buttons and a brightness long-press, and no control to set it with.
+ESP32_S3_PANEL = ClientProfile(
+    slug="esp32_s3_panel",
+    name="ESP32-S3 controller (paired)",
+    slots=tuple(
+        SlotSpec(
+            index,
+            (LIGHT_DOMAIN, SWITCH_DOMAIN),
+            (CONTROL_TOGGLE, CONTROL_BRIGHTNESS),
+        )
+        for index in range(1, 5)
+    ),
+)
+
 # The controller config entry always carries the ESP32 slots; every other
 # client is a panel subentry. Only panels are offered in the subentry flow.
 CONTROLLER_PROFILE = ESP32_S3
-PANEL_PROFILES: tuple[ClientProfile, ...] = (T560,)
+PANEL_PROFILES: tuple[ClientProfile, ...] = (T560, ESP32_S3_PANEL)
 PROFILES: dict[str, ClientProfile] = {
-    profile.slug: profile for profile in (ESP32_S3, T560)
+    profile.slug: profile for profile in (ESP32_S3, T560, ESP32_S3_PANEL)
 }
 
 

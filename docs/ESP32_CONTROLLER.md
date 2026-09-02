@@ -9,6 +9,23 @@ paste into ESPHome Device Builder stays small, and `packages:` downloads
 [firmware/media-controller.yaml](../firmware/media-controller.yaml) and the
 image assets from this repository during validation and compilation.
 
+> **There are two firmwares for this board.** This one is configured by
+> flashing: you copy nine entity IDs and a long-lived token into the YAML, and
+> changing which lamp a button drives means flashing again. The other,
+> [ESP32_PAIRED_CONTROLLER.md](ESP32_PAIRED_CONTROLLER.md), is paired from Home
+> Assistant with a six-digit code and needs no entity IDs and no token at all.
+> They share every pixel of their interface — see the
+> [comparison](ESP32_PAIRED_CONTROLLER.md#which-firmware-to-use) — and both work
+> against one Home Assistant at the same time. Nothing here changed; a device
+> already in the field needs no attention.
+
+Since the two firmwares differ only in how they reach Home Assistant, everything
+they draw lives in a third file,
+[firmware/media-controller-ui.yaml](../firmware/media-controller-ui.yaml), which
+both include. Its header lists the handful of script and entity names the two
+halves agree on; a widget that needs to act on Home Assistant calls a `cmd_`
+script rather than naming a transport itself.
+
 It consumes the entities and services described in
 [CONTRACT.md](CONTRACT.md), which the Home Assistant integration provides.
 Install that first: see [INTEGRATION.md](INTEGRATION.md).
@@ -24,6 +41,31 @@ The packaged firmware also passes `esphome config` and a complete ESPHome
 ESP32-S3 + ST7701S + GT911 target, including the Git package installation flow.
 Use the [hardware checklist](#hardware-verification) when installing it on
 another board revision.
+
+**The interface was moved into a shared package after that hardware run, and the
+firmware has not been re-flashed since.** The move is verified rather than
+assumed: `esphome config` prints the fully merged and substituted configuration,
+and its output before and after the split is identical line for line, only
+reordered. The one deliberate behaviour change is that the widget actions now go
+through `cmd_` scripts, and the two copies of the playlist parser became one, so
+two log lines that used to differ now read the same. Re-flash a device once to
+confirm, then treat step 1 of the
+[paired firmware's checklist](ESP32_PAIRED_CONTROLLER.md#hardware-verification)
+as done.
+
+**One real bug turned up on the way.** `ui_load_room_config` addressed the room
+buttons and their labels as `id(btn_light1)->obj`. ESPHome generates those
+widgets as plain `lv_obj_t *`, which has no `obj` member and is an incomplete
+type in that header, so the lambda could not compile against ESPHome 2026.8.0 —
+the whole firmware failed to build, not merely the room page. The `->obj` form
+is correct for a roller and is still used for `playlist_roller`, which ESPHome
+generates as a wrapper; it was wrong for everything else. Fixed in the shared
+package, so both firmwares get it. Whatever compile the status above refers to,
+it was against an older ESPHome.
+
+With that fix in place both firmwares build again on ESPHome 2026.8.0: this one
+at 37.4% RAM and 21.9% flash, the paired one at 38.0% and 21.9%. The split cost
+essentially nothing in either.
 
 The `Minimal Ring` and `Cover Card` screen styles, the UI synchronisation
 refactor behind them, and the swipe debounce are validated by `esphome config`
@@ -245,14 +287,18 @@ preserves aspect ratio, so non-square art is letterboxed rather than stretched.
 
 ## REST token limitation
 
-The firmware currently uses the Home Assistant REST transport for queue,
-playlist, and album-art requests. The ESP32 sends a bearer token only to the
-configured local `ha_url`.
+This firmware uses the Home Assistant REST transport for queue, playlist, and
+album-art requests, and the token for it is compiled in. The ESP32 sends that
+bearer token only to the configured local `ha_url`.
 
 Use a dedicated token, store it only in `secrets.yaml`, do not commit it, and
-keep the ESPHome device and Home Assistant on a trusted local network. Removing
-the token is a later security milestone that requires payload-size, ESP32
-memory, reconnect, and album-art testing, so it remains a separate follow-up.
+keep the ESPHome device and Home Assistant on a trusted local network.
+
+The token is gone in
+[the paired firmware](ESP32_PAIRED_CONTROLLER.md), which is handed a revocable
+one by Home Assistant during pairing and stores it in flash rather than in a
+build. That is the fix; this firmware keeps its compile-time token so that
+devices already in the field are not disturbed.
 
 ## Hardware verification
 

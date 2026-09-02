@@ -1,0 +1,3374 @@
+# Media Controller — shared interface package
+#
+# Everything both firmwares draw: the panel, the touchscreen, the three LVGL
+# screen styles, the theme entities, and the scripts that move widgets around.
+# It contains no Home Assistant entity ID and performs no Home Assistant call.
+#
+# Two files include it:
+#
+#   media-controller.yaml         entity IDs and a token in substitutions,
+#                                 state over the ESPHome native API
+#   media-controller-paired.yaml  paired from Home Assistant, state over REST
+#
+# The seam between this file and either of them is a set of names, and both
+# halves have to agree on them:
+#
+#   Commands this file calls.     cmd_prev, cmd_play_pause, cmd_next,
+#                                 cmd_volume_up, cmd_volume_down,
+#                                 cmd_volume_set(level), cmd_shuffle_set(state),
+#                                 cmd_repeat_set(mode), cmd_play_playlist,
+#                                 cmd_slot_toggle(slot),
+#                                 cmd_slot_brightness(slot, pct)
+#   Fetches this file calls.      refresh_queue, ui_load_room_config,
+#                                 play_queue_item
+#   State this file reads.        media_title, media_artist, player_state,
+#                                 volume_level, media_position, media_duration,
+#                                 entity_picture, shuffle_state, repeat_state,
+#                                 light1_state, light2_state,
+#                                 fan_switch_state, ac_switch_state
+#
+# Renaming any of those is a change to both firmwares. Adding a widget that
+# talks to Home Assistant directly is what this split exists to prevent: give
+# it a cmd_ script instead.
+#
+# Two substitutions are expected from whichever file includes this one:
+# ha_url and asset_base_url.
+#
+# This file is reached by a relative !include from a file devices fetch by raw
+# URL, so its path is frozen for the same reason media-controller.yaml is.
+# See docs/MERGE.md.
+
+esphome:
+  on_boot:
+    priority: -100
+    then:
+      # -- LVGL widgets exist from here on. Restored text/number values that were
+      # -- published earlier during setup were skipped by the ui_ready guard, so
+      # -- the full theme is applied once here instead. --
+      - lambda: id(ui_ready) = true;
+      - script.execute: apply_theme
+      # -- Honour the screen style restored from flash before the first frame. --
+      - script.execute: show_home_page
+
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: ESP32S3
+  flash_size: 16MB
+  framework:
+    type: esp-idf
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+# The importing user configuration supplies Wi-Fi or Ethernet. Declaring the
+# shared network component keeps this maintained package valid on its own.
+network:
+
+logger:
+
+# -------------------- DEBUG / STABILITY DIAGNOSTICS --------------------
+debug:
+  update_interval: 5s
+
+spi:
+  clk_pin: GPIO48
+  mosi_pin: GPIO47
+  interface: hardware
+  id: spihwd
+
+i2c:
+  id: touchscreen_bus
+  sda: GPIO19
+  scl:
+    number: 45
+    ignore_strapping_warning: true
+
+# -------------------- BACKLIGHT --------------------
+output:
+  - platform: ledc
+    pin: GPIO38
+    id: backlight_output
+    frequency: 1000Hz
+
+light:
+  - platform: monochromatic
+    output: backlight_output
+    id: backlight
+    name: "Backlight"
+    restore_mode: ALWAYS_ON
+
+# -------------------- DISPLAY (ST7701S RGB) --------------------
+display:
+  - platform: st7701s
+    id: tft_display
+    spi_id: spihwd
+    dimensions:
+      width: 480
+      height: 480
+    spi_mode: MODE3
+    data_rate: 2MHz
+    color_order: RGB
+    invert_colors: false
+    cs_pin: 39
+    de_pin: 18
+    hsync_pin: 16
+    vsync_pin: 17
+    pclk_pin: 21
+    pclk_frequency: 12MHz
+    pclk_inverted: false
+    hsync_pulse_width: 8
+    hsync_front_porch: 10
+    hsync_back_porch: 20
+    vsync_pulse_width: 8
+    vsync_front_porch: 10
+    vsync_back_porch: 10
+    auto_clear_enabled: false
+    update_interval: never
+    init_sequence:
+      - 1
+      - [0xFF, 0x77, 0x01, 0x00, 0x00, 0x10]
+      - [0xCD, 0x00]
+    data_pins:
+      red: [11, 12, 13, 14, 0]
+      green: [8, 20, 3, 46, 9, 10]
+      blue: [4, 5, 6, 7, 15]
+
+# -------------------- TOUCHSCREEN --------------------
+touchscreen:
+  - platform: gt911
+    id: tft_touch
+    display: tft_display
+    on_touch:
+      - lambda: |-
+          // -- Any touch counts as activity: reset the sleep timer --
+          id(screen_last_active_ms) = millis();
+      - if:
+          condition:
+            lambda: return !id(backlight).remote_values.is_on();
+          then:
+            # -- Wake-up touch is consumed: turn on only the backlight.
+            # -- Keep LVGL paused until the finger/gesture is fully released,
+            # -- so this same interaction cannot click, long-press or swipe anything.
+            - light.turn_on: backlight
+    on_release:
+      - lambda: |-
+          // -- Start the inactivity timeout from the end of the wake gesture --
+          id(screen_last_active_ms) = millis();
+      - if:
+          condition:
+            lvgl.is_paused:
+          then:
+            # -- Resume only after release; the wake gesture is already finished. --
+            - lvgl.resume:
+
+# -------------------- ICON IMAGES --------------------
+image:
+  - platform: file
+    file: "${asset_base_url}/icon_repeat_off.png"
+    id: icon_repeat_off
+    resize: 20x20
+    type: RGB
+    transparency: alpha_channel
+  - platform: file
+    file: "${asset_base_url}/icon_repeat_all.png"
+    id: icon_repeat_all
+    resize: 20x20
+    type: RGB
+    transparency: alpha_channel
+  - platform: file
+    file: "${asset_base_url}/icon_repeat_one.png"
+    id: icon_repeat_one
+    resize: 20x20
+    type: RGB
+    transparency: alpha_channel
+  - platform: file
+    file: "${asset_base_url}/icon_shuffle_off.png"
+    id: icon_shuffle_off
+    resize: 20x20
+    type: RGB
+    transparency: alpha_channel
+  - platform: file
+    file: "${asset_base_url}/icon_shuffle_on.png"
+    id: icon_shuffle_on
+    resize: 20x20
+    type: RGB
+    transparency: alpha_channel
+  - platform: file
+    file: "${asset_base_url}/1lamp.png"
+    id: icon_light1
+    resize: 128x128
+    type: RGB
+    transparency: alpha_channel
+  - platform: file
+    file: "${asset_base_url}/2lamps.png"
+    id: icon_light2
+    resize: 128x128
+    type: RGB
+    transparency: alpha_channel
+  - platform: file
+    file: "${asset_base_url}/fan.png"
+    id: icon_fan
+    resize: 128x128
+    type: RGB
+    transparency: alpha_channel
+  - platform: file
+    file: "${asset_base_url}/ac.png"
+    id: icon_ac
+    resize: 128x128
+    type: RGB
+    transparency: alpha_channel
+    
+# -- Initial URL is a placeholder; real URL is set dynamically via entity_picture sensor --
+# -- Classic layout source, decoded straight to the size of the screen. Without
+# -- resize the buffer is whatever Home Assistant served (2 MB of PSRAM for a
+# -- 1000x1000 cover) and the 480x480 widget shows a centre crop of it; at this
+# -- size the whole cover is visible and the decode is cheaper. --
+  - platform: online_image
+    url: "${ha_url}/"
+    id: album_art
+    format: JPEG
+    type: RGB565
+    resize: 480x480
+    update_interval: never
+    buffer_size: 4096
+    on_download_finished:
+      then:
+        - lvgl.image.update:
+            id: album_art_img
+            src: album_art
+    on_error:
+      then:
+        - logger.log: Album art download failed
+
+# -- Minimal Ring layout source. A separate image decoded straight to the size
+# -- of the disc, rather than the Classic image scaled down at draw time: LVGL
+# -- is built here with LV_COLOR_16_SWAP and without LV_DRAW_SW_SUPPORT_SWAPPED,
+# -- so the software renderer cannot transform a swapped RGB565 source and
+# -- produces corrupted output if asked to. resize preserves the aspect ratio,
+# -- so non-square art is letterboxed in the disc instead of stretched. Only the
+# -- source belonging to the active layout is downloaded; see ui_load_album_art.
+  - platform: online_image
+    url: "${ha_url}/"
+    id: album_art_small
+    format: JPEG
+    type: RGB565
+    resize: 244x244
+    update_interval: never
+    buffer_size: 4096
+    on_download_finished:
+      then:
+        - lvgl.image.update:
+            id: album_art_circle
+            src: album_art_small
+        - lvgl.image.update:
+            id: album_art_cover
+            src: album_art_small
+    on_error:
+      then:
+        - logger.log: Album art (disc) download failed
+
+# -------------------- COLOR CONTROLS --------------------
+text:
+  # -- Progress ring background color (hex, e.g. 1a1a35) --
+  - platform: template
+    name: "Progress Ring Color"
+    id: color_arc
+    mode: text
+    initial_value: "1a1a35"
+    optimistic: true
+    restore_value: true
+    on_value:
+      then:
+        - script.execute: apply_theme
+
+  # -- Progress ring fill (indicator) color --
+  - platform: template
+    name: "Progress Ring Fill Color"
+    id: color_arc_indicator
+    mode: text
+    initial_value: "00cfff"
+    optimistic: true
+    restore_value: true
+    on_value:
+      then:
+        - script.execute: apply_theme
+
+  # -- Decoration circle background color --
+  - platform: template
+    name: "Decoration Color"
+    id: color_decoration
+    mode: text
+    initial_value: "00cfff"
+    optimistic: true
+    restore_value: true
+    on_value:
+      then:
+        - script.execute: apply_theme
+
+  # -- Track title text color --
+  - platform: template
+    name: "Title Color"
+    id: color_title
+    mode: text
+    initial_value: "ffffff"
+    optimistic: true
+    restore_value: true
+    on_value:
+      then:
+        - script.execute: apply_theme
+
+  # -- Artist name text color --
+  - platform: template
+    name: "Artist Color"
+    id: color_artist
+    mode: text
+    initial_value: "5588cc"
+    optimistic: true
+    restore_value: true
+    on_value:
+      then:
+        - script.execute: apply_theme
+
+  # -- Volume label text color --
+  - platform: template
+    name: "Volume Color"
+    id: color_volume
+    mode: text
+    initial_value: "334466"
+    optimistic: true
+    restore_value: true
+    on_value:
+      then:
+        - script.execute: apply_theme
+
+  # -- Control buttons border and icon color --
+  - platform: template
+    name: "Buttons Color"
+    id: color_buttons
+    mode: text
+    initial_value: "00cfff"
+    optimistic: true
+    restore_value: true
+    on_value:
+      then:
+        - script.execute: apply_theme
+
+  # -- Transport glyph colour for the Minimal Ring and Cover Card layouts.
+  # -- Kept separate from "Buttons Color" because both layouts deliberately
+  # -- reserve the accent for the progress indicator and one play button, and
+  # -- render everything else in neutral grey. --
+  - platform: template
+    name: "Flat Controls Color"
+    id: color_flat_controls
+    mode: text
+    initial_value: "d8dce6"
+    optimistic: true
+    restore_value: true
+    on_value:
+      then:
+        - script.execute: apply_theme
+
+# -------------------- SCREEN STYLE --------------------
+# -- Selecting a different option swaps the whole home layout at runtime.
+# -- The value survives reboots, so no reflash is needed to change it. --
+select:
+  - platform: template
+    name: "Screen Style"
+    id: screen_style
+    optimistic: true
+    restore_value: true
+    initial_option: "Classic"
+    options:
+      - "Classic"
+      - "Minimal Ring"
+      - "Cover Card"
+    on_value:
+      then:
+        - script.execute: apply_screen_style
+
+# -------------------- OPACITY CONTROLS --------------------
+number:
+  # -- Screen sleep timeout (seconds of no playback + no touch before backlight turns off) --
+  - platform: template
+    name: "Screen Timeout"
+    id: screen_timeout
+    min_value: 5
+    max_value: 120
+    step: 5
+    initial_value: 15
+    unit_of_measurement: s
+    optimistic: true
+    restore_value: true
+
+  # -- Album art image opacity --
+  - platform: template
+    name: "Album Art Opacity"
+    id: album_art_opacity
+    min_value: 0
+    max_value: 255
+    step: 1
+    initial_value: 255
+    optimistic: true
+    restore_value: true
+    on_value:
+      then:
+        - script.execute: apply_theme
+
+  # -- Progress ring opacity --
+  - platform: template
+    name: "Progress Ring Opacity"
+    id: arc_opacity
+    min_value: 0
+    max_value: 255
+    step: 1
+    initial_value: 255
+    optimistic: true
+    restore_value: true
+    on_value:
+      then:
+        - script.execute: apply_theme
+
+  # -- Decoration circle opacity --
+  - platform: template
+    name: "Decoration Opacity"
+    id: deco_opacity
+    min_value: 0
+    max_value: 255
+    step: 1
+    initial_value: 153
+    optimistic: true
+    restore_value: true
+    on_value:
+      then:
+        - script.execute: apply_theme
+
+  # -- Control buttons background opacity --
+  - platform: template
+    name: "Buttons Opacity"
+    id: btn_opacity
+    min_value: 0
+    max_value: 255
+    step: 1
+    initial_value: 153
+    optimistic: true
+    restore_value: true
+    on_value:
+      then:
+        - script.execute: apply_theme
+
+# -------------------- ALBUM ART TRANSPORT --------------------
+# online_image needs an HTTP client, so it is configured here rather than in
+# either firmware: both would declare the same thing.
+http_request:
+  verify_ssl: false
+  timeout: 10s
+
+# -------------------- PLAYBACK PROGRESS (updates arc every second) --------------------
+interval:
+  - interval: 1s
+    then:
+      - if:
+          condition:
+            lambda: return id(player_state).state == "playing";
+          then:
+            # -- publish_state fires media_position.on_value, which redraws the
+            # -- progress ring on every home layout via ui_sync_progress. --
+            - lambda: |-
+                float pos = id(media_position).state + 1.0f;
+                float dur = id(media_duration).state;
+                if (dur > 0) {
+                  if (pos > dur) pos = dur;
+                  id(media_position).publish_state(pos);
+                }
+      - if:
+          condition:
+            lambda: |-
+              bool is_playing = id(player_state).state == "playing";
+              uint32_t timeout_ms = (uint32_t)(id(screen_timeout).state * 1000.0f);
+              uint32_t elapsed = millis() - id(screen_last_active_ms);
+              return !is_playing && elapsed >= timeout_ms && id(backlight).remote_values.is_on();
+          then:
+            # -- Pause LVGL input processing so buttons/swipes can't react while the screen is off --
+            - lvgl.pause:
+            - light.turn_off: backlight
+
+script:
+  # ════════════════════════════════════════════════════════════
+  # HOME LAYOUT SELECTION
+  # ════════════════════════════════════════════════════════════
+  # Every home layout is a full LVGL page. Navigation never names a page
+  # directly any more: it asks these scripts, which resolve the page from the
+  # "Screen Style" select. Adding another layout means adding a page, an
+  # option, and one branch here.
+
+  - id: show_home_page
+    then:
+      # -- Never return to a home layout with its overlay still open. --
+      - lvgl.widget.hide: overlay_more
+      - if:
+          condition:
+            lambda: return id(screen_style).current_option() == "Minimal Ring";
+          then:
+            - lvgl.page.show: page_player_minimal
+          else:
+            - if:
+                condition:
+                  lambda: return id(screen_style).current_option() == "Cover Card";
+                then:
+                  - lvgl.page.show: page_player_cover
+                else:
+                  - lvgl.page.show: page_player
+
+  # -- Swipe navigation entry points. Every page-to-page swipe goes through one
+  # -- of these so the debounce applies uniformly in both directions. --
+  - id: nav_to_switches_move_left
+    then:
+      - if:
+          condition:
+            lambda: |-
+              // -- One drag must cause one page change. A screen load animation
+              // -- runs for 300 ms and the page it loads can otherwise recognise
+              // -- the same drag again and navigate straight back. --
+              uint32_t now = millis();
+              if (now - id(last_nav_ms) < 500) return false;
+              id(last_nav_ms) = now;
+              return true;
+          then:
+            - lvgl.page.show:
+                id: page_switches
+                animation: MOVE_LEFT
+                time: 300ms
+
+  - id: nav_to_switches_move_right
+    then:
+      - if:
+          condition:
+            lambda: |-
+              // -- One drag must cause one page change. A screen load animation
+              // -- runs for 300 ms and the page it loads can otherwise recognise
+              // -- the same drag again and navigate straight back. --
+              uint32_t now = millis();
+              if (now - id(last_nav_ms) < 500) return false;
+              id(last_nav_ms) = now;
+              return true;
+          then:
+            - lvgl.page.show:
+                id: page_switches
+                animation: MOVE_RIGHT
+                time: 300ms
+
+  - id: nav_home_move_left
+    then:
+      - if:
+          condition:
+            lambda: |-
+              // -- One drag must cause one page change. A screen load animation
+              // -- runs for 300 ms and the page it loads can otherwise recognise
+              // -- the same drag again and navigate straight back. --
+              uint32_t now = millis();
+              if (now - id(last_nav_ms) < 500) return false;
+              id(last_nav_ms) = now;
+              return true;
+          then:
+            - script.execute: show_home_page_move_left
+
+  - id: nav_home_move_right
+    then:
+      - if:
+          condition:
+            lambda: |-
+              // -- One drag must cause one page change. A screen load animation
+              // -- runs for 300 ms and the page it loads can otherwise recognise
+              // -- the same drag again and navigate straight back. --
+              uint32_t now = millis();
+              if (now - id(last_nav_ms) < 500) return false;
+              id(last_nav_ms) = now;
+              return true;
+          then:
+            - script.execute: show_home_page_move_right
+
+  - id: show_home_page_move_left
+    then:
+      - lvgl.widget.hide: overlay_more
+      - if:
+          condition:
+            lambda: return id(screen_style).current_option() == "Minimal Ring";
+          then:
+            - lvgl.page.show:
+                id: page_player_minimal
+                animation: MOVE_LEFT
+                time: 300ms
+          else:
+            - if:
+                condition:
+                  lambda: return id(screen_style).current_option() == "Cover Card";
+                then:
+                  - lvgl.page.show:
+                      id: page_player_cover
+                      animation: MOVE_LEFT
+                      time: 300ms
+                else:
+                  - lvgl.page.show:
+                      id: page_player
+                      animation: MOVE_LEFT
+                      time: 300ms
+
+  - id: show_home_page_move_right
+    then:
+      - lvgl.widget.hide: overlay_more
+      - if:
+          condition:
+            lambda: return id(screen_style).current_option() == "Minimal Ring";
+          then:
+            - lvgl.page.show:
+                id: page_player_minimal
+                animation: MOVE_RIGHT
+                time: 300ms
+          else:
+            - if:
+                condition:
+                  lambda: return id(screen_style).current_option() == "Cover Card";
+                then:
+                  - lvgl.page.show:
+                      id: page_player_cover
+                      animation: MOVE_RIGHT
+                      time: 300ms
+                else:
+                  - lvgl.page.show:
+                      id: page_player
+                      animation: MOVE_RIGHT
+                      time: 300ms
+
+  # -- Switch layouts only while a home layout is on screen. Changing the
+  # -- select from Home Assistant must not yank the user off the queue,
+  # -- playlists or room controls page. --
+  - id: apply_screen_style
+    then:
+      - if:
+          condition:
+            lambda: |-
+              if (!id(ui_ready)) return false;
+              return id(page_player)->is_showing() ||
+                     id(page_player_minimal)->is_showing() ||
+                     id(page_player_cover)->is_showing();
+          then:
+            - script.execute: show_home_page
+            - script.execute: ui_load_album_art
+
+  # ════════════════════════════════════════════════════════════
+  # UI SYNCHRONISATION
+  # ════════════════════════════════════════════════════════════
+  # Player state is written to every home layout, including hidden ones, so a
+  # layout is already correct the instant it is shown. Sensors call these
+  # scripts instead of touching widgets directly.
+
+  - id: ui_sync_title
+    then:
+      - lambda: |-
+          if (!id(ui_ready)) return;
+          const char *t = id(media_title).state.c_str();
+          lv_obj_t *labels[] = { id(lbl_title), id(lbl_title_m), id(lbl_title_c) };
+          for (auto *l : labels) {
+            lv_label_set_text(l, t);
+            lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
+          }
+
+  - id: ui_sync_artist
+    then:
+      - lambda: |-
+          if (!id(ui_ready)) return;
+          const char *a = id(media_artist).state.c_str();
+          lv_obj_t *labels[] = { id(lbl_artist), id(lbl_artist_m), id(lbl_artist_c) };
+          for (auto *l : labels) {
+            lv_label_set_text(l, a);
+            lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
+          }
+
+  - id: ui_sync_play_state
+    then:
+      - lambda: |-
+          if (!id(ui_ready)) return;
+          const char *sym = (id(player_state).state == "playing")
+                            ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY;
+          lv_label_set_text(id(lbl_play_pause), sym);
+          lv_label_set_text(id(lbl_play_pause_m), sym);
+          lv_label_set_text(id(lbl_play_pause_c), sym);
+
+  - id: ui_sync_volume
+    then:
+      - lambda: |-
+          if (!id(ui_ready)) return;
+          int pct = (int)(id(volume_level).state * 100.0f);
+          std::string vol = "Volume: " + to_string(pct) + "%";
+          lv_label_set_text(id(lbl_volume), vol.c_str());
+          // -- Do not move the Cover Card knob out from under a finger that is
+          // -- still on it, nor snap it back before HA has applied the change. --
+          if (millis() - id(volume_touch_ms) > 2000) {
+            lv_slider_set_value(id(slider_volume_c), pct, LV_ANIM_OFF);
+          }
+
+  # -- Both rings share one source of truth. The Minimal Ring layout also
+  # -- carries a knob dot that has to be placed on the ring by hand, because
+  # -- the arc knob part is removed for non-adjustable arcs. --
+  - id: ui_sync_progress
+    then:
+      - lambda: |-
+          if (!id(ui_ready)) return;
+          float dur = id(media_duration).state;
+          int progress = 0;
+          if (dur > 0) {
+            progress = (int)((id(media_position).state / dur) * 100.0f);
+            if (progress < 0) progress = 0;
+            if (progress > 100) progress = 100;
+          }
+          lv_arc_set_value(id(progress_arc), progress);
+          lv_arc_set_value(id(progress_arc_m), progress);
+          lv_bar_set_value(id(progress_bar_c), progress, LV_ANIM_OFF);
+
+          // -- Cover Card time readout --
+          auto fmt = [](int secs) {
+            if (secs < 0) secs = 0;
+            char buf[12];
+            snprintf(buf, sizeof(buf), "%d:%02d", secs / 60, secs % 60);
+            return std::string(buf);
+          };
+          if (dur > 0) {
+            lv_label_set_text(id(lbl_elapsed_c), fmt((int)id(media_position).state).c_str());
+            lv_label_set_text(id(lbl_total_c), fmt((int)dur).c_str());
+          } else {
+            lv_label_set_text(id(lbl_elapsed_c), "--:--");
+            lv_label_set_text(id(lbl_total_c), "--:--");
+          }
+
+          // -- Ring geometry of the Minimal Ring layout, kept in sync with the
+          // -- arc widget below: 300 px across, 4 px stroke, centred at y=-78. --
+          const float MIN_RING_RADIUS = 148.0f;
+          const int   MIN_RING_CENTER_Y = -78;
+          const float MIN_ARC_START_DEG = 135.0f;
+          const float MIN_ARC_SWEEP_DEG = 270.0f;
+
+          float deg = MIN_ARC_START_DEG + MIN_ARC_SWEEP_DEG * (progress / 100.0f);
+          float rad = deg * (float)M_PI / 180.0f;
+          lv_obj_align(id(progress_dot_m), LV_ALIGN_CENTER,
+                       (int)(MIN_RING_RADIUS * cosf(rad)),
+                       MIN_RING_CENTER_Y + (int)(MIN_RING_RADIUS * sinf(rad)));
+
+  - id: ui_sync_shuffle
+    then:
+      - lambda: |-
+          if (!id(ui_ready)) return;
+          const std::string &x = id(shuffle_state).state;
+          bool is_on = (x == "on" || x == "True" || x == "true" || x == "1");
+          lv_obj_t *offs[] = { id(img_shuffle_off), id(img_shuffle_off_m), id(img_shuffle_off_c) };
+          lv_obj_t *ons[]  = { id(img_shuffle_on),  id(img_shuffle_on_m),  id(img_shuffle_on_c)  };
+          for (size_t i = 0; i < sizeof(offs) / sizeof(offs[0]); i++) {
+            if (is_on) {
+              lv_obj_add_flag(offs[i], LV_OBJ_FLAG_HIDDEN);
+              lv_obj_remove_flag(ons[i], LV_OBJ_FLAG_HIDDEN);
+            } else {
+              lv_obj_remove_flag(offs[i], LV_OBJ_FLAG_HIDDEN);
+              lv_obj_add_flag(ons[i], LV_OBJ_FLAG_HIDDEN);
+            }
+          }
+
+  - id: ui_sync_repeat
+    then:
+      - lambda: |-
+          if (!id(ui_ready)) return;
+          const std::string &x = id(repeat_state).state;
+          lv_obj_t *offs[] = { id(img_repeat_off), id(img_repeat_off_m), id(img_repeat_off_c) };
+          lv_obj_t *alls[] = { id(img_repeat_all), id(img_repeat_all_m), id(img_repeat_all_c) };
+          lv_obj_t *ones[] = { id(img_repeat_one), id(img_repeat_one_m), id(img_repeat_one_c) };
+          for (size_t i = 0; i < sizeof(offs) / sizeof(offs[0]); i++) {
+            lv_obj_add_flag(offs[i], LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(alls[i], LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(ones[i], LV_OBJ_FLAG_HIDDEN);
+            if (x == "off") {
+              lv_obj_remove_flag(offs[i], LV_OBJ_FLAG_HIDDEN);
+            } else if (x == "all") {
+              lv_obj_remove_flag(alls[i], LV_OBJ_FLAG_HIDDEN);
+            } else {
+              lv_obj_remove_flag(ones[i], LV_OBJ_FLAG_HIDDEN);
+            }
+          }
+
+  # -- Each layout has its own album art source at its own resolution. Fetch
+  # -- only the one that is on screen, so switching styles never triggers two
+  # -- concurrent HTTP requests and a hidden layout costs no traffic. --
+  # ════════════════════════════════════════════════════════════
+  # ROOM SLOTS
+  # ════════════════════════════════════════════════════════════
+  # A button here knows only its slot number. What it is called and whether it
+  # is shown at all comes from the integration at runtime — an empty slot has
+  # no tile — and which entity is behind it is the transport half's business:
+  # a compile-time substitution in the classic firmware, a string read from the
+  # config sensor in the paired one.
+
+  - id: ui_load_album_art
+    then:
+      - if:
+          condition:
+            lambda: |-
+              // -- Minimal Ring and Cover Card share the 244 px source. --
+              auto style = id(screen_style).current_option();
+              return style == "Minimal Ring" || style == "Cover Card";
+          then:
+            - lambda: |-
+                id(album_art_small).update();
+          else:
+            - lambda: |-
+                id(album_art).update();
+
+  # ════════════════════════════════════════════════════════════
+  # THEME
+  # ════════════════════════════════════════════════════════════
+  # Single place where the colour and opacity entities are turned into LVGL
+  # styles. Called once from on_boot and again whenever one of them changes,
+  # so on-boot restore and live edits cannot drift apart.
+
+  - id: apply_theme
+    then:
+      - lambda: |-
+          if (!id(ui_ready)) return;
+
+          auto hex = [](const std::string &s) {
+            unsigned long v = strtoul(s.c_str(), nullptr, 16);
+            return lv_color_make((v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF);
+          };
+
+          lv_color_t col_arc  = hex(id(color_arc).state);
+          lv_color_t col_ind  = hex(id(color_arc_indicator).state);
+          lv_color_t col_deco = hex(id(color_decoration).state);
+          lv_color_t col_ttl  = hex(id(color_title).state);
+          lv_color_t col_art  = hex(id(color_artist).state);
+          lv_color_t col_vol  = hex(id(color_volume).state);
+          lv_color_t col_btn  = hex(id(color_buttons).state);
+          lv_color_t col_flat = hex(id(color_flat_controls).state);
+
+          int arc_opa  = (int)id(arc_opacity).state;
+          int art_opa  = (int)id(album_art_opacity).state;
+          int deco_opa = (int)id(deco_opacity).state;
+          int btn_opa  = (int)id(btn_opacity).state;
+
+          // -------- Progress indicators --------
+          lv_obj_t *arcs[] = { id(progress_arc), id(progress_arc_m) };
+          for (auto *a : arcs) {
+            lv_obj_set_style_arc_color(a, col_arc, LV_PART_MAIN);
+            lv_obj_set_style_arc_color(a, col_ind, LV_PART_INDICATOR);
+            lv_obj_set_style_arc_opa(a, arc_opa, LV_PART_MAIN);
+            lv_obj_set_style_arc_opa(a, arc_opa, LV_PART_INDICATOR);
+          }
+          lv_obj_set_style_bg_color(id(progress_dot_m), col_ind, 0);
+          lv_obj_set_style_shadow_color(id(progress_dot_m), col_ind, 0);
+          lv_obj_set_style_bg_opa(id(progress_dot_m), arc_opa, 0);
+
+          // -- Cover Card uses a linear bar and a volume slider for the same
+          // -- two roles the rings fill elsewhere. --
+          lv_obj_set_style_bg_color(id(progress_bar_c), col_arc, LV_PART_MAIN);
+          lv_obj_set_style_bg_color(id(progress_bar_c), col_ind, LV_PART_INDICATOR);
+          lv_obj_set_style_bg_opa(id(progress_bar_c), arc_opa, LV_PART_INDICATOR);
+          lv_obj_set_style_bg_color(id(slider_volume_c), col_arc, LV_PART_MAIN);
+          lv_obj_set_style_bg_color(id(slider_volume_c), col_ind, LV_PART_INDICATOR);
+
+          // -------- Track text --------
+          lv_obj_t *titles[]  = { id(lbl_title), id(lbl_title_m), id(lbl_title_c) };
+          lv_obj_t *artists[] = { id(lbl_artist), id(lbl_artist_m), id(lbl_artist_c) };
+          for (auto *l : titles) {
+            lv_obj_set_style_text_color(l, col_ttl, 0);
+            lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
+          }
+          for (auto *l : artists) {
+            lv_obj_set_style_text_color(l, col_art, 0);
+            lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
+          }
+          lv_obj_set_style_text_color(id(lbl_volume), col_vol, 0);
+          lv_obj_set_style_text_color(id(lbl_elapsed_c), col_vol, 0);
+          lv_obj_set_style_text_color(id(lbl_total_c), col_vol, 0);
+
+          // -------- Album art --------
+          lv_obj_set_style_img_opa(id(album_art_img), art_opa, 0);
+          lv_obj_set_style_img_opa(id(album_art_circle), art_opa, 0);
+          lv_obj_set_style_img_opa(id(album_art_cover), art_opa, 0);
+
+          // -------- Classic decoration circle --------
+          lv_obj_set_style_bg_color(id(btn_decoration), col_deco, 0);
+          lv_obj_set_style_shadow_color(id(btn_decoration), col_deco, 0);
+          lv_obj_set_style_bg_opa(id(btn_decoration), deco_opa, 0);
+
+          // -------- Accent-coloured buttons (Classic, playlists, overlay) --------
+          lv_obj_t *accent_btns[] = {
+            id(btn_prev), id(btn_play_pause), id(btn_next),
+            id(btn_vol_down), id(btn_vol_up),
+            id(btn_to_queue), id(btn_to_playlists),
+            id(btn_shuffle), id(btn_repeat),
+            id(btn_back_playlists), id(btn_play_playlist),
+            id(btn_shuffle_m), id(btn_repeat_m),
+            id(btn_queue_m), id(btn_playlists_m), id(btn_close_more_m),
+          };
+          for (auto *b : accent_btns) {
+            lv_obj_set_style_border_color(b, col_btn, 0);
+            lv_obj_set_style_bg_opa(b, btn_opa, 0);
+            lv_obj_t *child = lv_obj_get_child(b, 0);
+            if (child != NULL && lv_obj_check_type(child, &lv_label_class)) {
+              lv_obj_set_style_text_color(child, col_btn, 0);
+            }
+          }
+
+          // -------- Shuffle / repeat icons --------
+          lv_obj_t *icons[] = {
+            id(img_shuffle_off), id(img_shuffle_on),
+            id(img_repeat_off), id(img_repeat_all), id(img_repeat_one),
+            id(img_shuffle_off_m), id(img_shuffle_on_m),
+            id(img_repeat_off_m), id(img_repeat_all_m), id(img_repeat_one_m),
+            id(img_shuffle_off_c), id(img_shuffle_on_c),
+            id(img_repeat_off_c), id(img_repeat_all_c), id(img_repeat_one_c),
+          };
+          for (auto *i : icons) {
+            lv_obj_set_style_img_recolor(i, col_btn, 0);
+            lv_obj_set_style_img_recolor_opa(i, LV_OPA_COVER, 0);
+          }
+
+          // -------- Flat transport glyphs (Minimal Ring, Cover Card) --------
+          lv_obj_t *flat_glyphs[] = {
+            id(btn_prev_m), id(btn_play_pause_m), id(btn_next_m),
+            id(btn_vol_down_m), id(btn_vol_up_m), id(btn_more_m),
+            id(btn_prev_c), id(btn_next_c),
+            id(btn_to_queue_c), id(btn_to_playlists_c),
+            id(btn_vol_down_c), id(btn_vol_up_c),
+          };
+          for (auto *b : flat_glyphs) {
+            lv_obj_t *child = lv_obj_get_child(b, 0);
+            if (child != NULL && lv_obj_check_type(child, &lv_label_class)) {
+              lv_obj_set_style_text_color(child, col_flat, 0);
+            }
+          }
+          lv_obj_set_style_border_color(id(btn_play_pause_m), col_flat, 0);
+
+          // -- Cover Card's play button is the one filled accent control. --
+          lv_obj_set_style_bg_color(id(btn_play_pause_c), col_btn, 0);
+          lv_obj_set_style_shadow_color(id(btn_play_pause_c), col_btn, 0);
+
+  - id: apply_light1_style
+    then:
+      - lambda: |-
+          bool on = id(light1_state).state;
+          if (on) {
+            // Warm amber "lit glass" surface.
+            lv_obj_set_style_bg_color(id(btn_light1), lv_color_hex(0xFFF1B8), 0);
+            lv_obj_set_style_bg_grad_color(id(btn_light1), lv_color_hex(0xFF9F1C), 0);
+            lv_obj_set_style_border_color(id(btn_light1), lv_color_hex(0xFFF7D6), 0);
+            lv_obj_set_style_border_width(id(btn_light1), 2, 0);
+            lv_obj_set_style_text_color(id(btn_light1), lv_color_hex(0x271400), 0);
+            lv_obj_set_style_shadow_width(id(btn_light1), 24, 0);
+            lv_obj_set_style_shadow_color(id(btn_light1), lv_color_hex(0xFFAE24), 0);
+            lv_obj_set_style_shadow_opa(id(btn_light1), LV_OPA_80, 0);
+            lv_label_set_text(id(lbl_light1_status), "ON");
+            lv_obj_set_style_text_color(id(lbl_light1_status), lv_color_hex(0x271400), 0);
+          } else {
+            lv_obj_set_style_bg_color(id(btn_light1), lv_color_hex(0x303050), 0);
+            lv_obj_set_style_bg_grad_color(id(btn_light1), lv_color_hex(0x11111F), 0);
+            lv_obj_set_style_border_color(id(btn_light1), lv_color_hex(0x505078), 0);
+            lv_obj_set_style_border_width(id(btn_light1), 2, 0);
+            lv_obj_set_style_text_color(id(btn_light1), lv_color_hex(0xD8D8F0), 0);
+            lv_obj_set_style_shadow_width(id(btn_light1), 20, 0);
+            lv_obj_set_style_shadow_color(id(btn_light1), lv_color_hex(0x000000), 0);
+            lv_obj_set_style_shadow_opa(id(btn_light1), LV_OPA_80, 0);
+            lv_label_set_text(id(lbl_light1_status), "OFF");
+            lv_obj_set_style_text_color(id(lbl_light1_status), lv_color_hex(0x77779A), 0);
+          }
+
+  - id: apply_light2_style
+    then:
+      - lambda: |-
+          bool on = id(light2_state).state;
+          if (on) {
+            // Magenta-violet glass keeps the second light visually distinct.
+            lv_obj_set_style_bg_color(id(btn_light2), lv_color_hex(0xFFD0F4), 0);
+            lv_obj_set_style_bg_grad_color(id(btn_light2), lv_color_hex(0xD946EF), 0);
+            lv_obj_set_style_border_color(id(btn_light2), lv_color_hex(0xFFE4FA), 0);
+            lv_obj_set_style_border_width(id(btn_light2), 2, 0);
+            lv_obj_set_style_text_color(id(btn_light2), lv_color_hex(0x2B062E), 0);
+            lv_obj_set_style_shadow_width(id(btn_light2), 24, 0);
+            lv_obj_set_style_shadow_color(id(btn_light2), lv_color_hex(0xE84DF2), 0);
+            lv_obj_set_style_shadow_opa(id(btn_light2), LV_OPA_80, 0);
+            lv_label_set_text(id(lbl_light2_status), "ON");
+            lv_obj_set_style_text_color(id(lbl_light2_status), lv_color_hex(0x2B062E), 0);
+          } else {
+            lv_obj_set_style_bg_color(id(btn_light2), lv_color_hex(0x303050), 0);
+            lv_obj_set_style_bg_grad_color(id(btn_light2), lv_color_hex(0x11111F), 0);
+            lv_obj_set_style_border_color(id(btn_light2), lv_color_hex(0x505078), 0);
+            lv_obj_set_style_border_width(id(btn_light2), 2, 0);
+            lv_obj_set_style_text_color(id(btn_light2), lv_color_hex(0xD8D8F0), 0);
+            lv_obj_set_style_shadow_width(id(btn_light2), 20, 0);
+            lv_obj_set_style_shadow_color(id(btn_light2), lv_color_hex(0x000000), 0);
+            lv_obj_set_style_shadow_opa(id(btn_light2), LV_OPA_80, 0);
+            lv_label_set_text(id(lbl_light2_status), "OFF");
+            lv_obj_set_style_text_color(id(lbl_light2_status), lv_color_hex(0x77779A), 0);
+          }
+
+  - id: apply_fan_style
+    then:
+      - lambda: |-
+          bool on = id(fan_switch_state).state;
+          if (on) {
+            // Cool cyan surface for moving air.
+            lv_obj_set_style_bg_color(id(btn_switch_fan), lv_color_hex(0xC8FAFF), 0);
+            lv_obj_set_style_bg_grad_color(id(btn_switch_fan), lv_color_hex(0x00A8CC), 0);
+            lv_obj_set_style_border_color(id(btn_switch_fan), lv_color_hex(0xE6FDFF), 0);
+            lv_obj_set_style_border_width(id(btn_switch_fan), 2, 0);
+            lv_obj_set_style_text_color(id(btn_switch_fan), lv_color_hex(0x00232B), 0);
+            lv_obj_set_style_shadow_width(id(btn_switch_fan), 24, 0);
+            lv_obj_set_style_shadow_color(id(btn_switch_fan), lv_color_hex(0x00D5FF), 0);
+            lv_obj_set_style_shadow_opa(id(btn_switch_fan), LV_OPA_80, 0);
+            lv_label_set_text(id(lbl_fan_status), "ON");
+            lv_obj_set_style_text_color(id(lbl_fan_status), lv_color_hex(0x00232B), 0);
+          } else {
+            lv_obj_set_style_bg_color(id(btn_switch_fan), lv_color_hex(0x303050), 0);
+            lv_obj_set_style_bg_grad_color(id(btn_switch_fan), lv_color_hex(0x11111F), 0);
+            lv_obj_set_style_border_color(id(btn_switch_fan), lv_color_hex(0x505078), 0);
+            lv_obj_set_style_border_width(id(btn_switch_fan), 2, 0);
+            lv_obj_set_style_text_color(id(btn_switch_fan), lv_color_hex(0xD8D8F0), 0);
+            lv_obj_set_style_shadow_width(id(btn_switch_fan), 20, 0);
+            lv_obj_set_style_shadow_color(id(btn_switch_fan), lv_color_hex(0x000000), 0);
+            lv_obj_set_style_shadow_opa(id(btn_switch_fan), LV_OPA_80, 0);
+            lv_label_set_text(id(lbl_fan_status), "OFF");
+            lv_obj_set_style_text_color(id(lbl_fan_status), lv_color_hex(0x77779A), 0);
+          }
+
+  - id: apply_ac_style
+    then:
+      - lambda: |-
+          bool on = id(ac_switch_state).state;
+          if (on) {
+            // Icy blue-violet surface for climate control.
+            lv_obj_set_style_bg_color(id(btn_switch_ac), lv_color_hex(0xDDE8FF), 0);
+            lv_obj_set_style_bg_grad_color(id(btn_switch_ac), lv_color_hex(0x5B6CFF), 0);
+            lv_obj_set_style_border_color(id(btn_switch_ac), lv_color_hex(0xF2F5FF), 0);
+            lv_obj_set_style_border_width(id(btn_switch_ac), 2, 0);
+            lv_obj_set_style_text_color(id(btn_switch_ac), lv_color_hex(0x0B123B), 0);
+            lv_obj_set_style_shadow_width(id(btn_switch_ac), 24, 0);
+            lv_obj_set_style_shadow_color(id(btn_switch_ac), lv_color_hex(0x7180FF), 0);
+            lv_obj_set_style_shadow_opa(id(btn_switch_ac), LV_OPA_80, 0);
+            lv_label_set_text(id(lbl_ac_status), "ON");
+            lv_obj_set_style_text_color(id(lbl_ac_status), lv_color_hex(0x0B123B), 0);
+          } else {
+            lv_obj_set_style_bg_color(id(btn_switch_ac), lv_color_hex(0x303050), 0);
+            lv_obj_set_style_bg_grad_color(id(btn_switch_ac), lv_color_hex(0x11111F), 0);
+            lv_obj_set_style_border_color(id(btn_switch_ac), lv_color_hex(0x505078), 0);
+            lv_obj_set_style_border_width(id(btn_switch_ac), 2, 0);
+            lv_obj_set_style_text_color(id(btn_switch_ac), lv_color_hex(0xD8D8F0), 0);
+            lv_obj_set_style_shadow_width(id(btn_switch_ac), 20, 0);
+            lv_obj_set_style_shadow_color(id(btn_switch_ac), lv_color_hex(0x000000), 0);
+            lv_obj_set_style_shadow_opa(id(btn_switch_ac), LV_OPA_80, 0);
+            lv_label_set_text(id(lbl_ac_status), "OFF");
+            lv_obj_set_style_text_color(id(lbl_ac_status), lv_color_hex(0x77779A), 0);
+          }
+
+  # ════════════════════════════════════════════════════════════
+  # PAYLOAD TO WIDGETS
+  # ════════════════════════════════════════════════════════════
+  # Three payloads arrive from Home Assistant and three parts of the screen
+  # are built out of them. Which request fetched a payload is not their
+  # business, so each takes it as a parameter and both firmwares call the
+  # same script. See this file's header for the rest of the seam.
+
+  - id: rebuild_playlists
+    parameters:
+      payload: string
+    then:
+      - lambda: |-
+          size_t attr_pos = payload.find("\"attributes\":");
+          if (attr_pos == std::string::npos) return;
+          size_t names_pos = payload.find("\"names\":", attr_pos);
+          size_t uris_pos = payload.find("\"uris\":", attr_pos);
+          if (names_pos == std::string::npos || uris_pos == std::string::npos) return;
+          size_t names_start = payload.find('[', names_pos);
+          size_t names_end = payload.find(']', names_start);
+          std::string names_json = payload.substr(names_start, names_end - names_start + 1);
+          size_t uris_start = payload.find('[', uris_pos);
+          size_t uris_end = payload.find(']', uris_start);
+          std::string uris_json = payload.substr(uris_start, uris_end - uris_start + 1);
+          id(playlist_names) = id(json_string_array_parser)(names_json);
+          id(playlist_uris) = id(json_string_array_parser)(uris_json);
+          ESP_LOGD("playlist", "Loaded %d playlists",
+                   id(playlist_names).size());
+          std::string options = "";
+          for (size_t i = 0; i < id(playlist_names).size(); i++) {
+            if (i > 0) options += "\n";
+            options += id(playlist_names)[i];
+          }
+          if (!options.empty()) {
+            lv_roller_set_options(
+              (lv_obj_t*)id(playlist_roller)->obj,
+              options.c_str(),
+              LV_ROLLER_MODE_NORMAL);
+          }
+
+  # -- Rebuilding the list creates about fifty widgets, so it must not be
+  # -- allowed to run twice at once. --
+  - id: rebuild_queue
+    mode: restart
+    parameters:
+      payload: string
+    then:
+      - lambda: |-
+          size_t data_pos = payload.find("\"data\":");
+          if (data_pos == std::string::npos) return;
+
+          // -- Guard: "count" key must exist, else str_end math underflows into a huge size_t --
+          size_t count_pos = payload.find("\"count\"");
+          if (count_pos == std::string::npos || count_pos < 2) {
+            ESP_LOGD("queue", "No count key, skipping rebuild");
+            lv_obj_clean((lv_obj_t*)id(queue_container));
+            id(queue_title_list).clear();
+            id(queue_artist_list).clear();
+            id(queue_id_list).clear();
+            id(queue_current_idx) = 0;
+            return;
+          }
+
+          size_t str_quote = payload.find('"', data_pos + 7);
+          if (str_quote == std::string::npos) {
+            ESP_LOGW("queue", "Malformed data field: opening quote not found");
+            return;
+          }
+          size_t str_start = str_quote + 1;
+          size_t str_end = payload.rfind('"', count_pos - 2);
+          if (str_end == std::string::npos || str_end <= str_start) {
+            ESP_LOGW("queue", "Malformed data field, skipping rebuild");
+            return;
+          }
+          std::string s = payload.substr(str_start, str_end - str_start);
+
+          std::string unescaped;
+          unescaped.reserve(s.size());
+          for (size_t i = 0; i < s.size(); i++) {
+            if (s[i] == '\\' && i + 1 < s.size()) {
+              if (s[i+1] == '"') { unescaped += '"'; i++; }
+              else if (s[i+1] == '\\') { unescaped += '\\'; i++; }
+              else if (s[i+1] == 'n') { unescaped += '\n'; i++; }
+              else { unescaped += s[i]; }
+            } else {
+              unescaped += s[i];
+            }
+          }
+
+          // -- Bail out early when the queue is empty / player idle --
+          if (unescaped.find("\"titles\":") == std::string::npos ||
+              unescaped.find("\"titles\":[]") != std::string::npos) {
+            ESP_LOGD("queue", "Empty queue, skipping rebuild");
+            lv_obj_clean((lv_obj_t*)id(queue_container));
+            id(queue_title_list).clear();
+            id(queue_artist_list).clear();
+            id(queue_id_list).clear();
+            id(queue_current_idx) = 0;
+            return;
+          }
+
+          size_t ci_pos = unescaped.find("\"current_index\":");
+          if (ci_pos != std::string::npos) {
+            std::string ci_raw = unescaped.substr(ci_pos + 16, 8);
+            // -- Trim leading whitespace --
+            size_t nb = ci_raw.find_first_not_of(" \t");
+            int ci_val = 0;
+            if (nb != std::string::npos &&
+                (isdigit((unsigned char)ci_raw[nb]) || ci_raw[nb] == '-')) {
+              ci_val = atoi(ci_raw.c_str() + nb);
+            }
+            if (ci_val < 0) ci_val = 0;
+            id(queue_current_idx) = ci_val;
+          }
+
+          size_t t_start = unescaped.find("\"titles\":");
+          size_t a_start = unescaped.find("\"artists\":");
+          size_t q_start = unescaped.find("\"queue_ids\":");
+          if (t_start == std::string::npos || a_start == std::string::npos || q_start == std::string::npos) {
+            ESP_LOGW("queue", "Queue JSON is missing one or more required arrays");
+            return;
+          }
+
+          size_t t_arr_start = unescaped.find('[', t_start);
+          size_t t_arr_end = (t_arr_start != std::string::npos) ? unescaped.find(']', t_arr_start) : std::string::npos;
+          size_t a_arr_start = unescaped.find('[', a_start);
+          size_t a_arr_end = (a_arr_start != std::string::npos) ? unescaped.find(']', a_arr_start) : std::string::npos;
+          size_t q_arr_start = unescaped.find('[', q_start);
+          size_t q_arr_end = (q_arr_start != std::string::npos) ? unescaped.find(']', q_arr_start) : std::string::npos;
+
+          if (t_arr_start == std::string::npos || t_arr_end == std::string::npos ||
+              a_arr_start == std::string::npos || a_arr_end == std::string::npos ||
+              q_arr_start == std::string::npos || q_arr_end == std::string::npos ||
+              t_arr_end < t_arr_start || a_arr_end < a_arr_start || q_arr_end < q_arr_start) {
+            ESP_LOGW("queue", "Queue JSON contains malformed arrays");
+            return;
+          }
+
+          std::string titles_json = unescaped.substr(t_arr_start, t_arr_end - t_arr_start + 1);
+          std::string artists_json = unescaped.substr(a_arr_start, a_arr_end - a_arr_start + 1);
+          std::string ids_json = unescaped.substr(q_arr_start, q_arr_end - q_arr_start + 1);
+
+          id(queue_title_list) = id(json_string_array_parser)(titles_json);
+          id(queue_artist_list) = id(json_string_array_parser)(artists_json);
+          id(queue_id_list) = id(json_string_array_parser)(ids_json);
+
+          // Keep all parallel arrays at the same safe size.
+          size_t safe_count = id(queue_title_list).size();
+          if (id(queue_artist_list).size() < safe_count) safe_count = id(queue_artist_list).size();
+          if (id(queue_id_list).size() < safe_count) safe_count = id(queue_id_list).size();
+          if (id(queue_title_list).size() != safe_count) id(queue_title_list).resize(safe_count);
+          if (id(queue_artist_list).size() != safe_count) id(queue_artist_list).resize(safe_count);
+          if (id(queue_id_list).size() != safe_count) id(queue_id_list).resize(safe_count);
+
+          if (safe_count == 0) {
+            ESP_LOGD("queue", "Parsed queue is empty");
+            lv_obj_clean((lv_obj_t*)id(queue_container));
+            id(queue_current_idx) = 0;
+            id(selected_queue_idx) = -1;
+            return;
+          }
+
+          if (id(queue_current_idx) >= (int)safe_count) {
+            id(queue_current_idx) = (int)safe_count - 1;
+          }
+          id(selected_queue_idx) = -1;
+
+          ESP_LOGD("queue", "Parsed %d tracks, current=%d",
+                   (int)safe_count, id(queue_current_idx));
+
+          // -- Rebuild queue buttons --
+          // -- Only render a window of tracks around the current one: with long
+          //    queues (100+ tracks), creating a native LVGL widget per track blew
+          //    up memory/layout cost enough to crash the device --
+          lv_obj_t* cont = (lv_obj_t*)id(queue_container);
+          lv_obj_clean(cont);
+          lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_COLUMN);
+          lv_obj_set_flex_align(cont, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+
+          int qw_total = (int)id(queue_title_list).size();
+          const int WINDOW_BEFORE = 5;
+          const int WINDOW_SIZE = 50;
+          int qw_start = id(queue_current_idx) - WINDOW_BEFORE;
+          if (qw_start < 0) qw_start = 0;
+          int qw_end = qw_start + WINDOW_SIZE;
+          if (qw_end > qw_total) qw_end = qw_total;
+          if (qw_end - qw_start < WINDOW_SIZE) {
+            qw_start = qw_end - WINDOW_SIZE;
+            if (qw_start < 0) qw_start = 0;
+          }
+          id(queue_window_start) = qw_start;
+
+          for (int i = qw_start; i < qw_end; i++) {
+            lv_obj_t* btn = lv_btn_create(cont);
+            lv_obj_set_width(btn, 428);
+            lv_obj_set_height(btn, LV_SIZE_CONTENT);
+            lv_obj_set_style_pad_ver(btn, 6, 0);
+            lv_obj_set_style_pad_hor(btn, 8, 0);
+            lv_obj_set_style_radius(btn, 6, 0);
+            lv_obj_set_style_border_width(btn, 0, 0);
+            lv_obj_set_style_margin_bottom(btn, 2, 0);
+            lv_obj_set_flex_flow(btn, LV_FLEX_FLOW_COLUMN);
+
+            if ((int)i < id(queue_current_idx)) {
+              // -- Past: темний і приглушений --
+              lv_obj_set_style_bg_color(btn, lv_color_hex(0x080810), 0);
+              lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+            } else if ((int)i == id(queue_current_idx)) {
+              // -- Current: підсвічений cyan рамкою --
+              lv_obj_set_style_bg_color(btn, lv_color_hex(0x002233), 0);
+              lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+              lv_obj_set_style_border_color(btn, lv_color_hex(0x00cfff), 0);
+              lv_obj_set_style_border_width(btn, 2, 0);
+            } else {
+              // -- Future: звичайний --
+              lv_obj_set_style_bg_color(btn, lv_color_hex(0x12122a), 0);
+              lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+            }
+
+            if ((int)i == id(selected_queue_idx)) {
+              // -- Selected (одинарний клік): бурштиновий фон поверх базового кольору --
+              lv_obj_set_style_bg_color(btn, lv_color_hex(0x664400), 0);
+              lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+            }
+
+            // -- Title --
+            lv_obj_t* lbl_t = lv_label_create(btn);
+            lv_label_set_text(lbl_t, id(queue_title_list)[i].c_str());
+            lv_label_set_long_mode(lbl_t, LV_LABEL_LONG_DOT);
+            lv_obj_set_width(lbl_t, 408);
+            lv_obj_set_style_text_font(lbl_t, id(roboto_16), 0);
+
+            if ((int)i < id(queue_current_idx)) {
+              lv_obj_set_style_text_color(lbl_t, lv_color_hex(0x333355), 0);
+            } else if ((int)i == id(queue_current_idx)) {
+              lv_obj_set_style_text_color(lbl_t, lv_color_hex(0x00cfff), 0);
+            } else {
+              lv_obj_set_style_text_color(lbl_t, lv_color_hex(0xffffff), 0);
+            }
+
+            // -- Artist --
+            lv_obj_t* lbl_a = lv_label_create(btn);
+            lv_label_set_text(lbl_a, id(queue_artist_list)[i].c_str());
+            lv_label_set_long_mode(lbl_a, LV_LABEL_LONG_DOT);
+            lv_obj_set_width(lbl_a, 408);
+            lv_obj_set_style_text_font(lbl_a, id(roboto_16), 0);
+
+            if ((int)i < id(queue_current_idx)) {
+              lv_obj_set_style_text_color(lbl_a, lv_color_hex(0x222244), 0);
+            } else if ((int)i == id(queue_current_idx)) {
+              lv_obj_set_style_text_color(lbl_a, lv_color_hex(0x0077aa), 0);
+            } else {
+              lv_obj_set_style_text_color(lbl_a, lv_color_hex(0x5588cc), 0);
+            }
+
+            lv_obj_set_user_data(btn, (void*)i);
+            lv_obj_add_event_cb(btn, [](lv_event_t* e) {
+              lv_obj_t* b = (lv_obj_t*)lv_event_get_target(e);
+              int idx = (int)(size_t)lv_obj_get_user_data(b);
+              uint32_t now = lv_tick_get();
+              static uint32_t last_click_time = 0;
+              static int last_click_idx = -1;
+              bool is_double = (idx == last_click_idx) && (now - last_click_time < 400);
+
+              // -- Revert previously selected track back to its base color --
+              int prev_idx = id(selected_queue_idx);
+              if (prev_idx != idx && prev_idx >= 0) {
+                lv_obj_t* cont = (lv_obj_t*)id(queue_container);
+                int prev_child = prev_idx - id(queue_window_start);
+                lv_obj_t* prev_btn = (prev_child >= 0) ? lv_obj_get_child(cont, prev_child) : NULL;
+                if (prev_btn) {
+                  if (prev_idx < id(queue_current_idx)) {
+                    lv_obj_set_style_bg_color(prev_btn, lv_color_hex(0x080810), 0);
+                  } else if (prev_idx == id(queue_current_idx)) {
+                    lv_obj_set_style_bg_color(prev_btn, lv_color_hex(0x002233), 0);
+                  } else {
+                    lv_obj_set_style_bg_color(prev_btn, lv_color_hex(0x12122a), 0);
+                  }
+                }
+              }
+
+              // -- Highlight the newly selected track --
+              lv_obj_set_style_bg_color(b, lv_color_hex(0x664400), 0);
+              id(selected_queue_idx) = idx;
+
+              if (is_double) {
+                last_click_idx = -1;
+                // -- Simulate pressing the "Play" button, so behavior is identical --
+                lv_obj_send_event(id(btn_play_queue_item), LV_EVENT_CLICKED, NULL);
+              } else {
+                last_click_idx = idx;
+                last_click_time = now;
+              }
+            }, LV_EVENT_CLICKED, NULL);
+          }
+
+      # -- Scroll after a short delay, once LVGL has settled the layout of the
+      #    freshly created widgets: forcing a scroll (which forces a layout
+      #    recalculation) immediately after creating ~50 objects crashed the device --
+      - delay: 100ms
+      - lambda: |-
+          lv_obj_t* cont = (lv_obj_t*)id(queue_container);
+          int cur_child = id(queue_current_idx) - id(queue_window_start);
+          lv_obj_t* cur_btn = (cur_child >= 0) ? lv_obj_get_child(cont, cur_child) : NULL;
+          if (cur_btn) lv_obj_scroll_to_view(cur_btn, LV_ANIM_OFF);
+
+  # -- A slot with no label is not configured, and an unconfigured slot has
+  # -- no tile. --
+  - id: apply_slots
+    parameters:
+      payload: string
+    then:
+      - lambda: |-
+          // -- LVGL widgets exist only after the on_boot handler has
+          //    run. A client that connects earlier is handled by the
+          //    next reconnect, which runs this script again. --
+          if (!id(ui_ready)) return;
+          // -- An LVGL widget id is already an lv_obj_t *. It used to be a
+          //    wrapper with an .obj member, and the ->obj this code carried
+          //    from that era stopped compiling when ESPHome changed it. --
+          lv_obj_t *buttons[4] = {
+            id(btn_light1),
+            id(btn_light2),
+            id(btn_switch_fan),
+            id(btn_switch_ac),
+          };
+          lv_obj_t *labels[4] = {
+            id(lbl_slot1_name),
+            id(lbl_slot2_name),
+            id(lbl_slot3_name),
+            id(lbl_slot4_name),
+          };
+          for (int slot = 1; slot <= 4; slot++) {
+            std::string label = id(slot_label_parser)(payload, slot);
+            lv_obj_t *button = buttons[slot - 1];
+            if (label.empty()) {
+              lv_obj_add_flag(button, LV_OBJ_FLAG_HIDDEN);
+              continue;
+            }
+            lv_label_set_text(labels[slot - 1], label.c_str());
+            lv_obj_clear_flag(button, LV_OBJ_FLAG_HIDDEN);
+          }
+          ESP_LOGD("slots", "Applied the room slots");
+
+# -------------------- DEVICE DIAGNOSTICS --------------------
+sensor:
+  # -- Uptime tells a stale "Reset Reason" apart from a device that is actually
+  # -- rebooting: the reset reason is carried over from the previous boot and
+  # -- stays there until the next one. --
+  - platform: uptime
+    name: "Media Controller Uptime"
+
+  # -- Stability diagnostics: heap/PSRAM/main-loop health.
+  # -- Loop Time is the longest single loop iteration in the last update
+  # -- interval, not an average, so single expensive frames show up there. --
+  - platform: debug
+    free:
+      name: "Media Controller Heap Free"
+    block:
+      name: "Media Controller Heap Max Block"
+    min_free:
+      name: "Media Controller Heap Min Free"
+    fragmentation:
+      name: "Media Controller Heap Fragmentation"
+    psram:
+      name: "Media Controller Free PSRAM"
+    loop_time:
+      name: "Media Controller Loop Time"
+
+text_sensor:
+  # -- Last reboot reason: useful for distinguishing watchdog/memory/power resets --
+  - platform: debug
+    reset_reason:
+      name: "Media Controller Reset Reason"
+
+font:
+  - file: "gfonts://Roboto"
+    id: roboto_16
+    size: 16
+    glyphs: &common_glyphs >-
+      АБВГДЕЄЖЗИІЇЙКЛМНОПРСТУФХЦЧШЩЬЮЯабвгдеєжзиіїйклмнопрстуфхцчшщьюя0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ .,!?-:/%()'&"ëéàüöäïîèêâûôùœæçñãõøåðþßýÿıİğšžčćđżźąęłóńáíúÁÉÀÈÌÒÙÂÊÎÔÛÄËÏÖÜÓÍÚÑÃÕØÅÆŒÇŽČŠĆĐŻŹĄĘŁ@#$+=ʼ[]
+
+  - file: "gfonts://Roboto"
+    id: roboto_22
+    size: 22
+    glyphs: *common_glyphs
+
+  - file: "gfonts://Roboto"
+    id: roboto_30
+    size: 30
+    glyphs: *common_glyphs
+
+  - file: "gfonts://Roboto"
+    id: roboto_36
+    size: 36
+    glyphs: *common_glyphs
+
+# -------------------- PARSERS AND UI STATE --------------------
+globals:
+  # Captureless function pointer: the same parser formerly provided by the
+  # local playlist_parser.h, which ESPHome Git packages cannot resolve.
+  - id: json_string_array_parser
+    type: std::vector<std::string> (*)(const std::string &)
+    restore_value: no
+    initial_value: |-
+      [](const std::string &json) -> std::vector<std::string> {
+        std::vector<std::string> result;
+        std::string s = json;
+        size_t pos = s.find('[');
+        if (pos == std::string::npos) return result;
+        s = s.substr(pos + 1);
+
+        while (true) {
+          size_t start = s.find('"');
+          if (start == std::string::npos) break;
+          s = s.substr(start + 1);
+
+          std::string item;
+          size_t i = 0;
+          while (i < s.size()) {
+            if (s[i] == '\\' && i + 1 < s.size()) {
+              if (s[i + 1] == '"') item += '"';
+              else if (s[i + 1] == 'n') item += '\n';
+              else if (s[i + 1] == '\\') item += '\\';
+              else item += s[i + 1];
+              i += 2;
+            } else if (s[i] == '"') {
+              i++;
+              break;
+            } else {
+              item += s[i];
+              i++;
+            }
+          }
+          result.push_back(item);
+          s = s.substr(i);
+
+          size_t next = s.find_first_not_of(" ,\n\r\t");
+          if (next != std::string::npos && s[next] == ']') break;
+        }
+        return result;
+      }
+
+  # Reads one slot label out of the config sensor payload. The firmware has
+  # no JSON library, so this walks the "slots" array by brace depth while
+  # skipping string literals, the same hand-rolled style as the playlist
+  # parser above. Returns an empty string when the slot is not configured,
+  # which is what hides the tile.
+  - id: slot_label_parser
+    type: std::string (*)(const std::string &, int)
+    restore_value: no
+    initial_value: |-
+      [](const std::string &body, int slot) -> std::string {
+        size_t slots_pos = body.find("\"slots\":");
+        if (slots_pos == std::string::npos) return std::string();
+        size_t i = body.find('[', slots_pos);
+        if (i == std::string::npos) return std::string();
+
+        int depth = 0;
+        size_t object_start = std::string::npos;
+        for (; i < body.size(); i++) {
+          char c = body[i];
+          if (c == '"') {
+            // -- Skip a string literal so a label containing a brace
+            //    cannot break the depth count. --
+            i++;
+            while (i < body.size()) {
+              if (body[i] == '\\') { i++; }
+              else if (body[i] == '"') break;
+              i++;
+            }
+            continue;
+          }
+          if (c == '{') {
+            if (depth == 0) object_start = i;
+            depth++;
+            continue;
+          }
+          if (c == '}') {
+            depth--;
+            if (depth != 0 || object_start == std::string::npos) continue;
+            std::string object = body.substr(object_start,
+                                             i - object_start + 1);
+            object_start = std::string::npos;
+            size_t slot_pos = object.find("\"slot\":");
+            if (slot_pos == std::string::npos) continue;
+            if (atoi(object.c_str() + slot_pos + 7) != slot) continue;
+            size_t label_pos = object.find("\"label\":\"");
+            if (label_pos == std::string::npos) return std::string();
+            label_pos += 9;
+            std::string label;
+            for (size_t k = label_pos; k < object.size(); k++) {
+              if (object[k] == '\\' && k + 1 < object.size()) {
+                label += object[k + 1];
+                k++;
+                continue;
+              }
+              if (object[k] == '"') break;
+              label += object[k];
+            }
+            return label;
+          }
+          if (c == ']' && depth == 0) break;
+        }
+        return std::string();
+      }
+
+  - id: playlist_names
+    type: std::vector<std::string>
+    restore_value: no
+
+  - id: playlist_uris
+    type: std::vector<std::string>
+    restore_value: no
+
+  - id: selected_playlist_idx
+    type: int
+    restore_value: no
+    initial_value: '0'
+
+  - id: queue_title_list
+    type: std::vector<std::string>
+    restore_value: no
+
+  - id: queue_artist_list
+    type: std::vector<std::string>
+    restore_value: no
+
+  - id: queue_id_list
+    type: std::vector<std::string>
+    restore_value: no
+
+  - id: queue_current_idx
+    type: int
+    restore_value: no
+    initial_value: '0'
+
+  - id: queue_window_start
+    type: int
+    restore_value: no
+    initial_value: '0'
+
+  - id: selected_queue_idx
+    type: int
+    restore_value: no
+    initial_value: '-1'
+
+  - id: light1_pct
+    type: float
+    restore_value: no
+    initial_value: '50.0'
+
+  - id: light1_dir
+    type: int
+    restore_value: no
+    initial_value: '1'
+
+  - id: light2_pct
+    type: float
+    restore_value: no
+    initial_value: '50.0'
+
+  - id: light2_dir
+    type: int
+    restore_value: no
+    initial_value: '1'
+
+  - id: light1_long_active
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
+  - id: light2_long_active
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
+  # Set as soon as PAGE 4 recognizes a swipe. Button release events use it
+  # to avoid toggling a device after the page has already started moving.
+  - id: switches_swipe_active
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
+  - id: screen_last_active_ms
+    type: uint32_t
+    restore_value: no
+    initial_value: '0'
+
+  # Restored text/number/select values are published while components are still
+  # setting up. Every script that touches LVGL checks this first, and on_boot
+  # (priority -100) applies the full state once the widget tree exists.
+  - id: ui_ready
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
+  # Timestamp of the last swipe-driven page change. A screen load animation runs
+  # for 300 ms, and a single drag can otherwise be recognised again by the page
+  # it just loaded, which navigates straight back. See the nav_* scripts.
+  - id: last_nav_ms
+    type: uint32_t
+    restore_value: no
+    initial_value: '0'
+
+  # Set while the Cover Card volume slider is being dragged. Incoming volume
+  # updates from Home Assistant are ignored briefly afterwards so the knob does
+  # not fight the finger, and does not snap back before HA has caught up.
+  - id: volume_touch_ms
+    type: uint32_t
+    restore_value: no
+    initial_value: '0'
+
+# -------------------- LVGL UI --------------------
+lvgl:
+  displays:
+    - tft_display
+  touchscreens:
+    - tft_touch
+  # -- Do not let LVGL auto-resume from the same input that wakes the backlight.
+  # -- We explicitly resume in touchscreen.on_release instead.
+  resume_on_input: false
+  color_depth: 16
+  bg_color: 0x0a0a14
+  default_font: roboto_22
+
+  style_definitions:
+    # -- Default control button style --
+    - id: style_ctrl_btn
+      bg_color: 0x12122a
+      bg_opa: COVER
+      border_color: 0x00cfff
+      border_width: 1
+      radius: 40
+      text_color: 0xffffff
+      shadow_width: 0
+      pad_all: 0
+
+    # -- Control button pressed state --
+    - id: style_ctrl_btn_pressed
+      bg_color: 0x00cfff
+      text_color: 0x0a0a14
+
+    # -- Decoration circle style --
+    - id: style_play_btn
+      bg_color: 0x00cfff
+      bg_opa: COVER
+      border_width: 0
+      radius: 50
+      text_color: 0x0a0a14
+      shadow_width: 20
+      shadow_color: 0x00cfff
+      shadow_opa: 80%
+      pad_all: 0
+
+    # -- Decoration circle pressed state --
+    - id: style_play_btn_pressed
+      bg_color: 0x0090bb
+      shadow_width: 5
+
+    # -- Volume button style --
+    - id: style_vol_btn
+      bg_color: 0x1a1a35
+      bg_opa: COVER
+      border_color: 0x2a2a55
+      border_width: 1
+      radius: 8
+      text_color: 0x00cfff
+      shadow_width: 0
+      pad_all: 0
+
+    # -- Volume button pressed state --
+    - id: style_vol_btn_pressed
+      bg_color: 0x2a2a55
+
+    # -- Playlists button style --
+    - id: style_playlist_btn
+      bg_color: 0x0a0a14
+      bg_opa: COVER
+      border_color: 0x2a2a55
+      border_width: 1
+      radius: 20
+      text_color: 0x5555aa
+      shadow_width: 0
+      pad_all: 0
+
+    # -- Playlists button pressed state --
+    - id: style_playlist_btn_pressed
+      bg_color: 0x12122a
+      text_color: 0x00cfff
+
+    # -- Switches page toggle card: raised glass slab --
+    - id: style_switch_btn
+      bg_color: 0x303050
+      bg_grad_color: 0x11111f
+      bg_grad_dir: VER
+      bg_opa: COVER
+      border_color: 0x505078
+      border_width: 2
+      radius: 26
+      text_color: 0xd8d8f0
+      shadow_width: 20
+      shadow_color: 0x000000
+      shadow_opa: 80%
+      shadow_offset_y: 12
+      shadow_spread: 1
+      outline_color: 0x7777a8
+      outline_width: 1
+      outline_opa: 35%
+      outline_pad: 0
+      pad_all: 0
+
+    # -- Switches page toggle card: physically pushed down --
+    - id: style_switch_btn_pressed
+      bg_color: 0x151526
+      bg_grad_color: 0x272742
+      border_color: 0x00cfff
+      shadow_width: 6
+      shadow_opa: 60%
+      shadow_offset_y: 3
+      translate_y: 8
+      outline_color: 0x00cfff
+      outline_opa: 55%
+
+    # -- Minimal Ring: bare glyph, no chrome at all --
+    - id: style_min_ghost
+      bg_opa: TRANSP
+      border_width: 0
+      shadow_width: 0
+      radius: 0
+      pad_all: 0
+      text_color: 0xd8dce6
+
+    - id: style_min_ghost_pressed
+      bg_color: 0xffffff
+      bg_opa: 12%
+      radius: 20
+
+    # -- Minimal Ring: play/pause sits in a thin outlined circle --
+    - id: style_min_circle
+      bg_opa: TRANSP
+      border_color: 0xd8dce6
+      border_width: 1
+      radius: 34
+      shadow_width: 0
+      pad_all: 0
+      text_color: 0xd8dce6
+
+    - id: style_min_circle_pressed
+      bg_color: 0xffffff
+      bg_opa: 14%
+
+    # -- Cover Card: flat control glyph, chrome only while pressed --
+    - id: style_cover_ghost
+      bg_opa: TRANSP
+      border_width: 0
+      shadow_width: 0
+      radius: 22
+      pad_all: 0
+      text_color: 0xd8dce6
+
+    - id: style_cover_ghost_pressed
+      bg_color: 0xffffff
+      bg_opa: 12%
+
+    # -- Cover Card: the single filled accent control --
+    - id: style_cover_play
+      bg_color: 0x00cfff
+      bg_opa: COVER
+      border_width: 0
+      radius: 33
+      pad_all: 0
+      text_color: 0x05060c
+      shadow_width: 14
+      shadow_color: 0x00cfff
+      shadow_opa: 55%
+
+    - id: style_cover_play_pressed
+      bg_color: 0x00a6cc
+      shadow_width: 6
+
+  pages:
+    # ════════════════════════════════════════
+    # PAGE 1 — Player
+    # ════════════════════════════════════════
+    - id: page_player
+      on_swipe_left:
+        - script.execute: nav_to_switches_move_left
+      on_swipe_right:
+        - script.execute: nav_to_switches_move_right
+      widgets:
+
+        # -- Album art background (full screen, dimmed with recolor) --
+        - image:
+            id: album_art_img
+            src: album_art
+            align: CENTER
+            y: 0
+            width: 480
+            height: 480
+            image_recolor: 0x0a0a14
+            image_recolor_opa: 60%
+
+        # -- Progress arc (shows track playback position) --
+        - arc:
+            id: progress_arc
+            width: 400
+            height: 400
+            align: CENTER
+            y: -30
+            value: 0
+            min_value: 0
+            max_value: 100
+            start_angle: 150
+            end_angle: 30
+            arc_color: 0x1a1a35
+            arc_width: 4
+            indicator:
+              arc_color: 0x00cfff
+              arc_width: 4
+            adjustable: false
+
+        # -- Open queue page --
+        - button:
+            id: btn_to_queue
+            styles: style_playlist_btn
+            pressed:
+              styles: style_playlist_btn_pressed
+            width: 140
+            height: 38
+            align: CENTER
+            x: 0
+            y: -180
+            bg_opa: 60%
+            widgets:
+              - label:
+                  text: !lambda return (std::string(LV_SYMBOL_AUDIO) + "   Queue").c_str();
+                  text_font: montserrat_14
+                  align: CENTER
+            on_click:
+              - lvgl.page.show: page_queue
+
+        # -- Decoration circle (background for title/artist/volume) --
+        - button:
+            id: btn_decoration
+            width: 320
+            height: 190
+            align: CENTER
+            y: -40
+            styles: style_play_btn
+            bg_opa: 60%
+            checkable: false
+            clickable: false
+            widgets:
+              - label:
+                  text: ""
+                  align: CENTER
+
+        # -- Track title (scrolls if too long) --
+        - label:
+            id: lbl_title
+            text: "No track"
+            text_color: 0xffffff
+            text_font: roboto_36
+            align: CENTER
+            y: -95
+            width: 300
+            long_mode: SCROLL_CIRCULAR
+            text_align: CENTER
+
+        # -- Artist name (scrolls if too long) --
+        - label:
+            id: lbl_artist
+            text: "Unknown"
+            text_color: 0x5588cc
+            text_font: roboto_30
+            align: CENTER
+            y: -35
+            width: 300
+            long_mode: SCROLL_CIRCULAR
+            text_align: CENTER
+
+        # -- Volume percentage label --
+        - label:
+            id: lbl_volume
+            text: "--"
+            text_color: 0x334466
+            text_font: montserrat_24
+            align: CENTER
+            y: 15
+
+        # -- Shuffle button --
+        - button:
+            id: btn_shuffle
+            styles: style_ctrl_btn
+            pressed:
+              styles: style_ctrl_btn_pressed
+            width: 60
+            height: 60
+            align: CENTER
+            x: -200
+            y: -200
+            bg_opa: 60%
+            widgets:
+              - image:
+                  id: img_shuffle_off
+                  src: icon_shuffle_off
+                  align: CENTER
+                  hidden: false
+              - image:
+                  id: img_shuffle_on
+                  src: icon_shuffle_on
+                  align: CENTER
+                  hidden: true
+            on_click:
+              - if:
+                  condition:
+                    lambda: |-
+                      return (id(shuffle_state).state == "on" ||
+                              id(shuffle_state).state == "True" ||
+                              id(shuffle_state).state == "true");
+                  then:
+                    - script.execute:
+                        id: cmd_shuffle_set
+                        state: "off"
+                  else:
+                    - script.execute:
+                        id: cmd_shuffle_set
+                        state: "on"
+
+        # -- Repeat button (cycles: off -> all -> one -> off) --
+        - button:
+            id: btn_repeat
+            styles: style_ctrl_btn
+            pressed:
+              styles: style_ctrl_btn_pressed
+            width: 60
+            height: 60
+            align: CENTER
+            x: 200
+            y: -200
+            bg_opa: 60%
+            widgets:
+              - image:
+                  id: img_repeat_off
+                  src: icon_repeat_off
+                  align: CENTER
+                  hidden: false
+              - image:
+                  id: img_repeat_all
+                  src: icon_repeat_all
+                  align: CENTER
+                  hidden: true
+              - image:
+                  id: img_repeat_one
+                  src: icon_repeat_one
+                  align: CENTER
+                  hidden: true
+            on_click:
+              - if:
+                  condition:
+                    lambda: return id(repeat_state).state == "off";
+                  then:
+                    - script.execute:
+                        id: cmd_repeat_set
+                        mode: "all"
+              - if:
+                  condition:
+                    lambda: return id(repeat_state).state == "all";
+                  then:
+                    - script.execute:
+                        id: cmd_repeat_set
+                        mode: "one"
+              - if:
+                  condition:
+                    lambda: return id(repeat_state).state == "one";
+                  then:
+                    - script.execute:
+                        id: cmd_repeat_set
+                        mode: "off"
+
+        # -- Previous track button --
+        - button:
+            id: btn_prev
+            styles: style_ctrl_btn
+            pressed:
+              styles: style_ctrl_btn_pressed
+            width: 80
+            height: 80
+            align: CENTER
+            x: -155
+            y: 130
+            bg_opa: 60%
+            widgets:
+              - label:
+                  text: !lambda return std::string(LV_SYMBOL_PREV);
+                  text_font: montserrat_24
+                  text_color: 0x00cfff
+                  align: CENTER
+            on_click:
+              - logger.log: "Prev button pressed"
+              - lambda: |-
+                  // -- media_previous_track always restarts playback at position 0
+                  //    (either the current track or the actual previous one), so
+                  //    reset the arc immediately instead of waiting for HA's next poll --
+                  id(media_position).publish_state(0);
+                  lv_arc_set_value(id(progress_arc), 0);
+              - script.execute: cmd_prev
+
+        # -- Play / Pause button --
+        - button:
+            id: btn_play_pause
+            styles: style_ctrl_btn
+            pressed:
+              styles: style_ctrl_btn_pressed
+            width: 100
+            height: 100
+            align: CENTER
+            y: 130
+            bg_opa: 60%
+            widgets:
+              - label:
+                  id: lbl_play_pause
+                  text: !lambda return std::string(LV_SYMBOL_PLAY);
+                  text_font: montserrat_28
+                  text_color: 0x00cfff
+                  align: CENTER
+            on_click:
+              - logger.log: "Play/Pause button pressed"
+              - script.execute: cmd_play_pause
+
+        # -- Next track button --
+        - button:
+            id: btn_next
+            styles: style_ctrl_btn
+            pressed:
+              styles: style_ctrl_btn_pressed
+            width: 80
+            height: 80
+            align: CENTER
+            x: 155
+            y: 130
+            bg_opa: 60%
+            widgets:
+              - label:
+                  text: !lambda return std::string(LV_SYMBOL_NEXT);
+                  text_font: montserrat_24
+                  text_color: 0x00cfff
+                  align: CENTER
+            on_click:
+              - logger.log: "Next track button pressed"
+              - script.execute: cmd_next
+
+        # -- Volume down button --
+        - button:
+            id: btn_vol_down
+            styles: style_vol_btn
+            pressed:
+              styles: style_vol_btn_pressed
+            width: 90
+            height: 45
+            align: BOTTOM_LEFT
+            x: 20
+            y: -5
+            bg_opa: 60%
+            widgets:
+              - label:
+                  text: !lambda return std::string(LV_SYMBOL_VOLUME_MID);
+                  text_font: montserrat_16
+                  align: CENTER
+            on_click:
+              - logger.log: "Vol - button pressed"
+              - script.execute: cmd_volume_down
+
+        # -- Volume up button --
+        - button:
+            id: btn_vol_up
+            styles: style_vol_btn
+            pressed:
+              styles: style_vol_btn_pressed
+            width: 90
+            height: 45
+            align: BOTTOM_RIGHT
+            x: -20
+            y: -5
+            bg_opa: 60%
+            widgets:
+              - label:
+                  text: !lambda return std::string(LV_SYMBOL_VOLUME_MAX);
+                  text_font: montserrat_16
+                  align: CENTER
+            on_click:
+              - logger.log: "Vol + button pressed"
+              - script.execute: cmd_volume_up
+
+        # -- Open playlists page --
+        - button:
+            id: btn_to_playlists
+            styles: style_playlist_btn
+            pressed:
+              styles: style_playlist_btn_pressed
+            width: 140
+            height: 38
+            align: BOTTOM_MID
+            x: 0
+            y: -5
+            bg_opa: 60%
+            widgets:
+              - label:
+                  id: lbl_playlist
+                  text: !lambda return (std::string(LV_SYMBOL_LIST) + "   Playlists").c_str();
+                  text_font: montserrat_14
+                  align: CENTER
+            on_click:
+              - lvgl.page.show: page_playlists
+
+    # ════════════════════════════════════════
+    # PAGE 1B — Player, "Minimal Ring" layout
+    # ════════════════════════════════════════
+    # Selected through the "Screen Style" select. Album art becomes a disc
+    # inside the progress ring; everything that is not a transport control
+    # moves behind the "..." overlay.
+    - id: page_player_minimal
+      bg_color: 0x05060c
+      bg_opa: COVER
+      on_swipe_left:
+        - script.execute: nav_to_switches_move_left
+      on_swipe_right:
+        - script.execute: nav_to_switches_move_right
+      widgets:
+
+        # -- Progress ring. The 270 degree sweep leaves its gap at the bottom,
+        # -- exactly where the transport row starts. --
+        - arc:
+            id: progress_arc_m
+            width: 300
+            height: 300
+            align: CENTER
+            y: -78
+            value: 0
+            min_value: 0
+            max_value: 100
+            start_angle: 135
+            end_angle: 45
+            arc_color: 0x1a1a35
+            arc_width: 4
+            indicator:
+              arc_color: 0x00cfff
+              arc_width: 4
+            adjustable: false
+
+        # -- Album art disc. The container does the circular clipping and the
+        # -- source is decoded at exactly this size, so nothing has to be
+        # -- transformed at draw time. --
+        - obj:
+            id: art_clip_m
+            width: 244
+            height: 244
+            align: CENTER
+            y: -78
+            radius: 122
+            clip_corner: true
+            bg_color: 0x0d0f16
+            bg_opa: COVER
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+            clickable: false
+            widgets:
+              - image:
+                  id: album_art_circle
+                  src: album_art_small
+                  align: CENTER
+
+        # -- Ring knob. A non-adjustable arc has its knob part removed, so the
+        # -- dot is a separate widget positioned by ui_sync_progress. --
+        - obj:
+            id: progress_dot_m
+            width: 14
+            height: 14
+            align: CENTER
+            x: -104
+            y: 26
+            radius: 7
+            bg_color: 0x00cfff
+            bg_opa: COVER
+            border_width: 0
+            shadow_width: 10
+            shadow_color: 0x00cfff
+            shadow_opa: 70%
+            scrollable: false
+            clickable: false
+
+        # -- Previous track --
+        - button:
+            id: btn_prev_m
+            gesture_bubble: true
+            styles: style_min_ghost
+            pressed:
+              styles: style_min_ghost_pressed
+            width: 54
+            height: 54
+            align: CENTER
+            x: -100
+            y: 98
+            widgets:
+              - label:
+                  text: !lambda return std::string(LV_SYMBOL_PREV);
+                  text_font: montserrat_24
+                  align: CENTER
+            on_click:
+              - logger.log: "Prev button pressed (minimal)"
+              # -- Same reasoning as the Classic layout: media_previous_track
+              # -- restarts at position 0, so do not wait for HA to catch up. --
+              - lambda: id(media_position).publish_state(0);
+              - script.execute: cmd_prev
+
+        # -- Play / Pause --
+        - button:
+            id: btn_play_pause_m
+            gesture_bubble: true
+            styles: style_min_circle
+            pressed:
+              styles: style_min_circle_pressed
+            width: 68
+            height: 68
+            align: CENTER
+            y: 98
+            widgets:
+              - label:
+                  id: lbl_play_pause_m
+                  text: !lambda return std::string(LV_SYMBOL_PLAY);
+                  text_font: montserrat_24
+                  align: CENTER
+            on_click:
+              - logger.log: "Play/Pause button pressed (minimal)"
+              - script.execute: cmd_play_pause
+
+        # -- Next track --
+        - button:
+            id: btn_next_m
+            gesture_bubble: true
+            styles: style_min_ghost
+            pressed:
+              styles: style_min_ghost_pressed
+            width: 54
+            height: 54
+            align: CENTER
+            x: 100
+            y: 98
+            widgets:
+              - label:
+                  text: !lambda return std::string(LV_SYMBOL_NEXT);
+                  text_font: montserrat_24
+                  align: CENTER
+            on_click:
+              - logger.log: "Next track button pressed (minimal)"
+              - script.execute: cmd_next
+
+        # -- Track title --
+        - label:
+            id: lbl_title_m
+            text: "No track"
+            text_color: 0xffffff
+            text_font: roboto_22
+            align: CENTER
+            y: 152
+            width: 300
+            long_mode: SCROLL_CIRCULAR
+            text_align: CENTER
+
+        # -- Artist --
+        - label:
+            id: lbl_artist_m
+            text: "Unknown"
+            text_color: 0x5588cc
+            text_font: roboto_16
+            align: CENTER
+            y: 180
+            width: 300
+            long_mode: SCROLL_CIRCULAR
+            text_align: CENTER
+
+        # -- Volume down --
+        - button:
+            id: btn_vol_down_m
+            gesture_bubble: true
+            styles: style_min_ghost
+            pressed:
+              styles: style_min_ghost_pressed
+            width: 54
+            height: 38
+            align: BOTTOM_LEFT
+            x: 14
+            y: -10
+            widgets:
+              - label:
+                  text: !lambda return std::string(LV_SYMBOL_VOLUME_MID);
+                  text_font: montserrat_16
+                  align: CENTER
+            on_click:
+              - script.execute: cmd_volume_down
+
+        # -- Volume up --
+        - button:
+            id: btn_vol_up_m
+            gesture_bubble: true
+            styles: style_min_ghost
+            pressed:
+              styles: style_min_ghost_pressed
+            width: 54
+            height: 38
+            align: BOTTOM_RIGHT
+            x: -14
+            y: -10
+            widgets:
+              - label:
+                  text: !lambda return std::string(LV_SYMBOL_VOLUME_MAX);
+                  text_font: montserrat_16
+                  align: CENTER
+            on_click:
+              - script.execute: cmd_volume_up
+
+        # -- Everything that is not transport lives behind this --
+        - button:
+            id: btn_more_m
+            gesture_bubble: true
+            styles: style_min_ghost
+            pressed:
+              styles: style_min_ghost_pressed
+            width: 72
+            height: 32
+            align: BOTTOM_MID
+            y: -12
+            widgets:
+              - label:
+                  text: "..."
+                  text_font: montserrat_24
+                  align: CENTER
+                  y: -8
+            on_click:
+              - lvgl.widget.show: overlay_more
+
+        # -- "..." overlay: shuffle, repeat, queue, playlists.
+        # -- Full-screen and hidden by default, so while it is open it also
+        # -- blocks swipes and transport taps. Tapping the backdrop closes it. --
+        - obj:
+            id: overlay_more
+            width: 480
+            height: 480
+            align: CENTER
+            hidden: true
+            radius: 0
+            pad_all: 0
+            bg_color: 0x05060c
+            bg_opa: 94%
+            border_width: 0
+            scrollable: false
+            clickable: true
+            on_click:
+              - lvgl.widget.hide: overlay_more
+            on_swipe_left:
+              - lvgl.widget.hide: overlay_more
+            on_swipe_right:
+              - lvgl.widget.hide: overlay_more
+            widgets:
+              - label:
+                  text: "MORE"
+                  text_font: montserrat_14
+                  text_color: 0x77779a
+                  align: TOP_MID
+                  y: 44
+
+              # -- Shuffle --
+              - button:
+                  id: btn_shuffle_m
+                  styles: style_ctrl_btn
+                  pressed:
+                    styles: style_ctrl_btn_pressed
+                  width: 96
+                  height: 96
+                  align: CENTER
+                  x: -70
+                  y: -60
+                  widgets:
+                    - image:
+                        id: img_shuffle_off_m
+                        src: icon_shuffle_off
+                        align: CENTER
+                        hidden: false
+                    - image:
+                        id: img_shuffle_on_m
+                        src: icon_shuffle_on
+                        align: CENTER
+                        hidden: true
+                  on_click:
+                    - if:
+                        condition:
+                          lambda: |-
+                            return (id(shuffle_state).state == "on" ||
+                                    id(shuffle_state).state == "True" ||
+                                    id(shuffle_state).state == "true");
+                        then:
+                          - script.execute:
+                              id: cmd_shuffle_set
+                              state: "off"
+                        else:
+                          - script.execute:
+                              id: cmd_shuffle_set
+                              state: "on"
+
+              # -- Repeat (cycles: off -> all -> one -> off) --
+              - button:
+                  id: btn_repeat_m
+                  styles: style_ctrl_btn
+                  pressed:
+                    styles: style_ctrl_btn_pressed
+                  width: 96
+                  height: 96
+                  align: CENTER
+                  x: 70
+                  y: -60
+                  widgets:
+                    - image:
+                        id: img_repeat_off_m
+                        src: icon_repeat_off
+                        align: CENTER
+                        hidden: false
+                    - image:
+                        id: img_repeat_all_m
+                        src: icon_repeat_all
+                        align: CENTER
+                        hidden: true
+                    - image:
+                        id: img_repeat_one_m
+                        src: icon_repeat_one
+                        align: CENTER
+                        hidden: true
+                  on_click:
+                    - if:
+                        condition:
+                          lambda: return id(repeat_state).state == "off";
+                        then:
+                          - script.execute:
+                              id: cmd_repeat_set
+                              mode: "all"
+                    - if:
+                        condition:
+                          lambda: return id(repeat_state).state == "all";
+                        then:
+                          - script.execute:
+                              id: cmd_repeat_set
+                              mode: "one"
+                    - if:
+                        condition:
+                          lambda: return id(repeat_state).state == "one";
+                        then:
+                          - script.execute:
+                              id: cmd_repeat_set
+                              mode: "off"
+
+              # -- Queue --
+              - button:
+                  id: btn_queue_m
+                  styles: style_playlist_btn
+                  pressed:
+                    styles: style_playlist_btn_pressed
+                  width: 240
+                  height: 56
+                  align: CENTER
+                  y: 60
+                  widgets:
+                    - label:
+                        text: !lambda return (std::string(LV_SYMBOL_AUDIO) + "   Queue").c_str();
+                        text_font: montserrat_16
+                        align: CENTER
+                  on_click:
+                    - lvgl.widget.hide: overlay_more
+                    - lvgl.page.show: page_queue
+
+              # -- Playlists --
+              - button:
+                  id: btn_playlists_m
+                  styles: style_playlist_btn
+                  pressed:
+                    styles: style_playlist_btn_pressed
+                  width: 240
+                  height: 56
+                  align: CENTER
+                  y: 130
+                  widgets:
+                    - label:
+                        text: !lambda return (std::string(LV_SYMBOL_LIST) + "   Playlists").c_str();
+                        text_font: montserrat_16
+                        align: CENTER
+                  on_click:
+                    - lvgl.widget.hide: overlay_more
+                    - lvgl.page.show: page_playlists
+
+              # -- Close --
+              - button:
+                  id: btn_close_more_m
+                  styles: style_playlist_btn
+                  pressed:
+                    styles: style_playlist_btn_pressed
+                  width: 160
+                  height: 46
+                  align: BOTTOM_MID
+                  y: -22
+                  widgets:
+                    - label:
+                        text: !lambda return (std::string(LV_SYMBOL_CLOSE) + "   Close").c_str();
+                        text_font: montserrat_14
+                        align: CENTER
+                  on_click:
+                    - lvgl.widget.hide: overlay_more
+
+    # ════════════════════════════════════════
+    # PAGE 1C — Player, "Cover Card" layout
+    # ════════════════════════════════════════
+    # A rounded cover card with the full transport underneath: elapsed and
+    # remaining time, a linear progress bar, shuffle and repeat inline, and a
+    # volume slider. Nothing is hidden behind an overlay. Reuses the pre-sized
+    # album_art_small source, so this layout costs no extra image buffer and no
+    # extra download.
+    - id: page_player_cover
+      bg_color: 0x05060c
+      bg_opa: COVER
+      on_swipe_left:
+        - script.execute: nav_to_switches_move_left
+      on_swipe_right:
+        - script.execute: nav_to_switches_move_right
+      widgets:
+
+        # -- Queue --
+        - button:
+            id: btn_to_queue_c
+            gesture_bubble: true
+            styles: style_cover_ghost
+            pressed:
+              styles: style_cover_ghost_pressed
+            width: 44
+            height: 44
+            align: TOP_LEFT
+            x: 10
+            y: 8
+            widgets:
+              - label:
+                  text: !lambda return std::string(LV_SYMBOL_AUDIO);
+                  text_font: montserrat_16
+                  align: CENTER
+            on_click:
+              - lvgl.page.show: page_queue
+
+        # -- Playlists --
+        - button:
+            id: btn_to_playlists_c
+            gesture_bubble: true
+            styles: style_cover_ghost
+            pressed:
+              styles: style_cover_ghost_pressed
+            width: 44
+            height: 44
+            align: TOP_RIGHT
+            x: -10
+            y: 8
+            widgets:
+              - label:
+                  text: !lambda return std::string(LV_SYMBOL_LIST);
+                  text_font: montserrat_16
+                  align: CENTER
+            on_click:
+              - lvgl.page.show: page_playlists
+
+        # -- Cover card. Same 244 px source as the Minimal Ring disc, clipped to
+        # -- a rounded square instead of a circle. No transform, see the
+        # -- album_art_small comment. --
+        - obj:
+            id: art_clip_c
+            width: 244
+            height: 244
+            align: CENTER
+            y: -104
+            radius: 24
+            clip_corner: true
+            bg_color: 0x0d0f16
+            bg_opa: COVER
+            border_width: 0
+            pad_all: 0
+            shadow_width: 0
+            scrollable: false
+            clickable: false
+            widgets:
+              - image:
+                  id: album_art_cover
+                  src: album_art_small
+                  align: CENTER
+
+        # -- Track title --
+        - label:
+            id: lbl_title_c
+            text: "No track"
+            text_color: 0xffffff
+            text_font: roboto_30
+            align: CENTER
+            y: 48
+            width: 420
+            long_mode: SCROLL_CIRCULAR
+            text_align: CENTER
+
+        # -- Artist --
+        - label:
+            id: lbl_artist_c
+            text: "Unknown"
+            text_color: 0x5588cc
+            text_font: roboto_22
+            align: CENTER
+            y: 82
+            width: 420
+            long_mode: SCROLL_CIRCULAR
+            text_align: CENTER
+
+        # -- Elapsed time --
+        - label:
+            id: lbl_elapsed_c
+            text: "0:00"
+            text_color: 0x77779a
+            text_font: montserrat_14
+            align: CENTER
+            x: -186
+            y: 112
+
+        # -- Linear progress --
+        - bar:
+            id: progress_bar_c
+            width: 300
+            height: 6
+            align: CENTER
+            y: 112
+            min_value: 0
+            max_value: 100
+            value: 0
+            animated: false
+            radius: 3
+            bg_color: 0x1a1a35
+            bg_opa: COVER
+            indicator:
+              bg_color: 0x00cfff
+              radius: 3
+
+        # -- Track length --
+        - label:
+            id: lbl_total_c
+            text: "0:00"
+            text_color: 0x77779a
+            text_font: montserrat_14
+            align: CENTER
+            x: 186
+            y: 112
+
+        # -- Shuffle --
+        - button:
+            id: btn_shuffle_c
+            gesture_bubble: true
+            styles: style_cover_ghost
+            pressed:
+              styles: style_cover_ghost_pressed
+            width: 44
+            height: 44
+            align: CENTER
+            x: -175
+            y: 156
+            widgets:
+              - image:
+                  id: img_shuffle_off_c
+                  src: icon_shuffle_off
+                  align: CENTER
+                  hidden: false
+              - image:
+                  id: img_shuffle_on_c
+                  src: icon_shuffle_on
+                  align: CENTER
+                  hidden: true
+            on_click:
+              - if:
+                  condition:
+                    lambda: |-
+                      return (id(shuffle_state).state == "on" ||
+                              id(shuffle_state).state == "True" ||
+                              id(shuffle_state).state == "true");
+                  then:
+                    - script.execute:
+                        id: cmd_shuffle_set
+                        state: "off"
+                  else:
+                    - script.execute:
+                        id: cmd_shuffle_set
+                        state: "on"
+
+        # -- Previous track --
+        - button:
+            id: btn_prev_c
+            gesture_bubble: true
+            styles: style_cover_ghost
+            pressed:
+              styles: style_cover_ghost_pressed
+            width: 52
+            height: 52
+            align: CENTER
+            x: -95
+            y: 156
+            widgets:
+              - label:
+                  text: !lambda return std::string(LV_SYMBOL_PREV);
+                  text_font: montserrat_24
+                  align: CENTER
+            on_click:
+              - logger.log: "Prev button pressed (cover)"
+              # -- media_previous_track restarts at position 0; reset the bar now
+              # -- instead of waiting for the next Home Assistant poll. --
+              - lambda: id(media_position).publish_state(0);
+              - script.execute: cmd_prev
+
+        # -- Play / Pause, the one filled accent control on this layout --
+        - button:
+            id: btn_play_pause_c
+            gesture_bubble: true
+            styles: style_cover_play
+            pressed:
+              styles: style_cover_play_pressed
+            width: 66
+            height: 66
+            align: CENTER
+            y: 156
+            widgets:
+              - label:
+                  id: lbl_play_pause_c
+                  text: !lambda return std::string(LV_SYMBOL_PLAY);
+                  text_font: montserrat_28
+                  align: CENTER
+            on_click:
+              - logger.log: "Play/Pause button pressed (cover)"
+              - script.execute: cmd_play_pause
+
+        # -- Next track --
+        - button:
+            id: btn_next_c
+            gesture_bubble: true
+            styles: style_cover_ghost
+            pressed:
+              styles: style_cover_ghost_pressed
+            width: 52
+            height: 52
+            align: CENTER
+            x: 95
+            y: 156
+            widgets:
+              - label:
+                  text: !lambda return std::string(LV_SYMBOL_NEXT);
+                  text_font: montserrat_24
+                  align: CENTER
+            on_click:
+              - logger.log: "Next track button pressed (cover)"
+              - script.execute: cmd_next
+
+        # -- Repeat (cycles: off -> all -> one -> off) --
+        - button:
+            id: btn_repeat_c
+            gesture_bubble: true
+            styles: style_cover_ghost
+            pressed:
+              styles: style_cover_ghost_pressed
+            width: 44
+            height: 44
+            align: CENTER
+            x: 175
+            y: 156
+            widgets:
+              - image:
+                  id: img_repeat_off_c
+                  src: icon_repeat_off
+                  align: CENTER
+                  hidden: false
+              - image:
+                  id: img_repeat_all_c
+                  src: icon_repeat_all
+                  align: CENTER
+                  hidden: true
+              - image:
+                  id: img_repeat_one_c
+                  src: icon_repeat_one
+                  align: CENTER
+                  hidden: true
+            on_click:
+              - if:
+                  condition:
+                    lambda: return id(repeat_state).state == "off";
+                  then:
+                    - script.execute:
+                        id: cmd_repeat_set
+                        mode: "all"
+              - if:
+                  condition:
+                    lambda: return id(repeat_state).state == "all";
+                  then:
+                    - script.execute:
+                        id: cmd_repeat_set
+                        mode: "one"
+              - if:
+                  condition:
+                    lambda: return id(repeat_state).state == "one";
+                  then:
+                    - script.execute:
+                        id: cmd_repeat_set
+                        mode: "off"
+
+        # -- Volume down. The glyph doubles as a step button so the slider is
+        # -- not the only way to change volume on this layout. --
+        - button:
+            id: btn_vol_down_c
+            gesture_bubble: true
+            styles: style_cover_ghost
+            pressed:
+              styles: style_cover_ghost_pressed
+            width: 44
+            height: 40
+            align: CENTER
+            x: -168
+            y: 210
+            widgets:
+              - label:
+                  id: lbl_vol_min_c
+                  text: !lambda return std::string(LV_SYMBOL_VOLUME_MID);
+                  text_font: montserrat_14
+                  align: CENTER
+            on_click:
+              - script.execute: cmd_volume_down
+
+        # -- Horizontal drags on the slider must move the knob, never the page,
+        # -- so this one widget does not bubble gestures. Home Assistant is
+        # -- called on release rather than on every step of the drag. --
+        - slider:
+            id: slider_volume_c
+            gesture_bubble: false
+            width: 268
+            height: 8
+            align: CENTER
+            y: 210
+            min_value: 0
+            max_value: 100
+            value: 0
+            radius: 4
+            bg_color: 0x1a1a35
+            bg_opa: COVER
+            indicator:
+              bg_color: 0x00cfff
+              radius: 4
+            knob:
+              bg_color: 0xffffff
+              radius: 9
+              pad_all: 6
+            on_press:
+              - lambda: id(volume_touch_ms) = millis();
+            on_release:
+              - lambda: id(volume_touch_ms) = millis();
+              - script.execute:
+                  id: cmd_volume_set
+                  level: !lambda return (int) lv_slider_get_value(id(slider_volume_c));
+
+        # -- Volume up --
+        - button:
+            id: btn_vol_up_c
+            gesture_bubble: true
+            styles: style_cover_ghost
+            pressed:
+              styles: style_cover_ghost_pressed
+            width: 44
+            height: 40
+            align: CENTER
+            x: 168
+            y: 210
+            widgets:
+              - label:
+                  id: lbl_vol_max_c
+                  text: !lambda return std::string(LV_SYMBOL_VOLUME_MAX);
+                  text_font: montserrat_14
+                  align: CENTER
+            on_click:
+              - script.execute: cmd_volume_up
+    # ════════════════════════════════════════
+    # PAGE 2 — Playlists
+    # ════════════════════════════════════════
+    - id: page_playlists
+      widgets:
+        - label:
+            text: "Playlists"
+            text_color: 0xffffff
+            text_font: roboto_22
+            align: TOP_MID
+            y: 15
+
+        # -- Back to player --
+        - button:
+            id: btn_back_playlists
+            styles: style_vol_btn
+            pressed:
+              styles: style_vol_btn_pressed
+            width: 100
+            height: 40
+            align: TOP_LEFT
+            x: 10
+            y: 10
+            widgets:
+              - label:
+                  text: "< Back"
+                  text_font: montserrat_16
+                  align: CENTER
+            on_click:
+              - script.execute: show_home_page
+
+        # -- Scrollable playlist roller --
+        - roller:
+            id: playlist_roller
+            align: CENTER
+            y: -10
+            width: 420
+            height: 380
+            options: "Loading..."
+            visible_row_count: 8
+            selected_index: 0
+            text_font: roboto_22
+            text_align: LEFT
+            bg_color: 0x9d9d9d
+            selected:
+              text_color: 0x00cfff
+              bg_color: 0x12122a
+            on_change:
+              - lambda: |-
+                  id(selected_playlist_idx) = lv_roller_get_selected(
+                    (lv_obj_t*)id(playlist_roller)->obj);
+
+        # -- Play selected playlist --
+        - button:
+            id: btn_play_playlist
+            styles: style_ctrl_btn
+            pressed:
+              styles: style_ctrl_btn_pressed
+            width: 200
+            height: 55
+            align: BOTTOM_MID
+            y: -10
+            widgets:
+              - label:
+                  text: !lambda return std::string(LV_SYMBOL_PLAY) + " Play";
+                  text_font: montserrat_22
+                  align: CENTER
+            on_click:
+              - lambda: |-
+                  int idx = id(selected_playlist_idx);
+                  if (idx >= 0 && idx < (int)id(playlist_uris).size()) {
+                    std::string uri = id(playlist_uris)[idx];
+                    std::string name = id(playlist_names)[idx];
+                    ESP_LOGD("playlist", "Playing: %s (%s)",
+                             name.c_str(), uri.c_str());
+                  }
+              - script.execute: cmd_play_playlist
+              - script.execute: show_home_page
+
+    # ════════════════════════════════════════
+    # PAGE 3 — Queue
+    # ════════════════════════════════════════
+    - id: page_queue
+      on_load:
+        - script.execute: refresh_queue
+      widgets:
+        - label:
+            text: "Queue"
+            text_color: 0xffffff
+            text_font: roboto_22
+            align: TOP_MID
+            y: 15
+
+        - button:
+            id: btn_back_queue
+            styles: style_vol_btn
+            pressed:
+              styles: style_vol_btn_pressed
+            width: 100
+            height: 40
+            align: TOP_LEFT
+            x: 10
+            y: 10
+            widgets:
+              - label:
+                  text: "< Back"
+                  text_font: montserrat_16
+                  align: CENTER
+            on_click:
+              - script.execute: show_home_page
+
+        # -- Scrollable container — кнопки генеруються динамічно в лямбді --
+        - obj:
+            id: queue_container
+            align: TOP_MID
+            y: 55
+            width: 440
+            height: 365
+            bg_color: 0x0a0a14
+            bg_opa: COVER
+            border_width: 0
+            pad_all: 2
+            scrollable: true
+            scroll_dir: VER
+            layout:
+              type: flex
+              flex_flow: COLUMN
+              flex_align_main: START
+              flex_align_cross: START
+              flex_align_track: START
+            widgets: []
+
+        # -- Play selected track --
+        - button:
+            id: btn_play_queue_item
+            styles: style_ctrl_btn
+            pressed:
+              styles: style_ctrl_btn_pressed
+            width: 200
+            height: 50
+            align: BOTTOM_MID
+            y: -5
+            widgets:
+              - label:
+                  text: !lambda return std::string(LV_SYMBOL_PLAY) + " Play";
+                  text_font: montserrat_22
+                  align: CENTER
+            on_click:
+              - script.execute: play_queue_item
+
+    # ════════════════════════════════════════
+    # PAGE 4 — Switches (світло + розетки)
+    # ════════════════════════════════════════
+    - id: page_switches
+      on_load:
+        - lambda: id(switches_swipe_active) = false;
+      on_swipe_right:
+        - lambda: id(switches_swipe_active) = true;
+        - script.execute: nav_home_move_right
+      on_swipe_left:
+        - lambda: id(switches_swipe_active) = true;
+        - script.execute: nav_home_move_left
+      widgets:
+        # -- Compact scene header --
+        - label:
+            text: "ROOM CONTROLS"
+            text_font: roboto_22
+            text_color: 0xf4f4ff
+            align: TOP_MID
+            y: 12
+
+        - label:
+            text: "Tap to toggle  |  hold lights to dim"
+            text_font: montserrat_14
+            text_color: 0x77779a
+            align: TOP_MID
+            y: 43
+
+        # -- Light 1 --
+        - button:
+            id: btn_light1
+            gesture_bubble: true
+            styles: style_switch_btn
+            pressed:
+              styles: style_switch_btn_pressed
+            width: 190
+            height: 140
+            align: TOP_LEFT
+            x: 25
+            y: 75
+            widgets:
+              # Specular highlight sells the raised glass surface.
+              - obj:
+                  width: 146
+                  height: 4
+                  align: TOP_MID
+                  y: 10
+                  bg_color: 0xffffff
+                  bg_opa: 22%
+                  border_width: 0
+                  radius: 2
+                  clickable: false
+                  scrollable: false
+              - label:
+                  id: lbl_light1_status
+                  text: "OFF"
+                  text_font: montserrat_14
+                  text_color: 0x77779a
+                  align: TOP_RIGHT
+                  x: -13
+                  y: 17
+              - image:
+                  id: img_light1
+                  src: icon_light1
+                  align: CENTER
+                  y: -18
+              - label:
+                  id: lbl_slot1_name
+                  text: "LIGHT 1"
+                  text_font: montserrat_16
+                  align: CENTER
+                  y: 50
+            on_press:
+              - lambda: id(light1_long_active) = false;
+            on_long_press:
+              - lambda: id(light1_long_active) = true;
+            on_long_press_repeat:
+              - lambda: |-
+                  float step = 4.0f;
+                  float pct = id(light1_pct) + id(light1_dir) * step;
+                  if (pct >= 100.0f) { pct = 100.0f; id(light1_dir) = -1; }
+                  if (pct <= 1.0f) { pct = 1.0f; id(light1_dir) = 1; }
+                  id(light1_pct) = pct;
+              - script.execute:
+                  id: cmd_slot_brightness
+                  slot: 1
+                  pct: !lambda return (int) id(light1_pct);
+            on_click:
+              - if:
+                  condition:
+                    lambda: return !id(light1_long_active) && !id(switches_swipe_active);
+                  then:
+                    - script.execute:
+                        id: cmd_slot_toggle
+                        slot: 1
+              - lambda: id(light1_long_active) = false;
+
+        # -- Light 2 --
+        - button:
+            id: btn_light2
+            gesture_bubble: true
+            styles: style_switch_btn
+            pressed:
+              styles: style_switch_btn_pressed
+            width: 190
+            height: 140
+            align: TOP_RIGHT
+            x: -25
+            y: 75
+            widgets:
+              - obj:
+                  width: 146
+                  height: 4
+                  align: TOP_MID
+                  y: 10
+                  bg_color: 0xffffff
+                  bg_opa: 22%
+                  border_width: 0
+                  radius: 2
+                  clickable: false
+                  scrollable: false
+              - label:
+                  id: lbl_light2_status
+                  text: "OFF"
+                  text_font: montserrat_14
+                  text_color: 0x77779a
+                  align: TOP_RIGHT
+                  x: -13
+                  y: 17
+              - image:
+                  id: img_light2
+                  src: icon_light2
+                  align: CENTER
+                  y: -18
+              - label:
+                  id: lbl_slot2_name
+                  text: "LIGHT 2"
+                  text_font: montserrat_16
+                  align: CENTER
+                  y: 50
+            on_press:
+              - lambda: id(light2_long_active) = false;
+            on_long_press:
+              - lambda: id(light2_long_active) = true;
+            on_long_press_repeat:
+              - lambda: |-
+                  float step = 4.0f;
+                  float pct = id(light2_pct) + id(light2_dir) * step;
+                  if (pct >= 100.0f) { pct = 100.0f; id(light2_dir) = -1; }
+                  if (pct <= 1.0f) { pct = 1.0f; id(light2_dir) = 1; }
+                  id(light2_pct) = pct;
+              - script.execute:
+                  id: cmd_slot_brightness
+                  slot: 2
+                  pct: !lambda return (int) id(light2_pct);
+            on_click:
+              - if:
+                  condition:
+                    lambda: return !id(light2_long_active) && !id(switches_swipe_active);
+                  then:
+                    - script.execute:
+                        id: cmd_slot_toggle
+                        slot: 2
+              - lambda: id(light2_long_active) = false;
+
+        # -- Fan socket --
+        - button:
+            id: btn_switch_fan
+            gesture_bubble: true
+            styles: style_switch_btn
+            pressed:
+              styles: style_switch_btn_pressed
+            width: 190
+            height: 140
+            align: BOTTOM_LEFT
+            x: 25
+            y: -35
+            widgets:
+              - obj:
+                  width: 146
+                  height: 4
+                  align: TOP_MID
+                  y: 10
+                  bg_color: 0xffffff
+                  bg_opa: 22%
+                  border_width: 0
+                  radius: 2
+                  clickable: false
+                  scrollable: false
+              - label:
+                  id: lbl_fan_status
+                  text: "OFF"
+                  text_font: montserrat_14
+                  text_color: 0x77779a
+                  align: TOP_RIGHT
+                  x: -13
+                  y: 17
+              - image:
+                  id: img_fan
+                  src: icon_fan
+                  align: CENTER
+                  y: -18
+              - label:
+                  id: lbl_slot3_name
+                  text: "FAN"
+                  text_font: montserrat_16
+                  align: CENTER
+                  y: 50
+            on_click:
+              - if:
+                  condition:
+                    lambda: return !id(switches_swipe_active);
+                  then:
+                    - script.execute:
+                        id: cmd_slot_toggle
+                        slot: 3
+
+        # -- AC socket --
+        - button:
+            id: btn_switch_ac
+            gesture_bubble: true
+            styles: style_switch_btn
+            pressed:
+              styles: style_switch_btn_pressed
+            width: 190
+            height: 140
+            align: BOTTOM_RIGHT
+            x: -25
+            y: -35
+            widgets:
+              - obj:
+                  width: 146
+                  height: 4
+                  align: TOP_MID
+                  y: 10
+                  bg_color: 0xffffff
+                  bg_opa: 22%
+                  border_width: 0
+                  radius: 2
+                  clickable: false
+                  scrollable: false
+              - label:
+                  id: lbl_ac_status
+                  text: "OFF"
+                  text_font: montserrat_14
+                  text_color: 0x77779a
+                  align: TOP_RIGHT
+                  x: -13
+                  y: 17
+              - image:
+                  id: img_ac
+                  src: icon_ac
+                  align: CENTER
+                  y: -18
+              - label:
+                  id: lbl_slot4_name
+                  text: "AC"
+                  text_font: montserrat_16
+                  align: CENTER
+                  y: 50
+            on_click:
+              - if:
+                  condition:
+                    lambda: return !id(switches_swipe_active);
+                  then:
+                    - script.execute:
+                        id: cmd_slot_toggle
+                        slot: 4

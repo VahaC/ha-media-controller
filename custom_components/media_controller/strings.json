@@ -8,7 +8,7 @@
         "description": "What are you adding?",
         "menu_options": {
           "controller": "Media controller (Music Assistant player)",
-          "panel": "Panel (a tablet that could not be discovered)"
+          "panel": "Panel (a device that could not be discovered)"
         }
       },
       "controller": {
@@ -37,7 +37,7 @@
       },
       "pair": {
         "title": "Pair the panel",
-        "description": "{name} is showing a six-digit code on its screen. Type it here first: Home Assistant hands the panel an access token of its own, and nothing else is asked until the panel has answered. Nothing has to be typed on the tablet.",
+        "description": "{name} is showing a six-digit code on its screen. Type it here first: Home Assistant hands the panel an access token of its own, and nothing else is asked until the panel has answered. Nothing has to be typed on the panel.",
         "data": {
           "pairing_code": "Pairing code"
         }
@@ -69,7 +69,7 @@
       },
       "reauth_confirm": {
         "title": "Pair the panel again",
-        "description": "{name} is asking for a new access token, which happens after the tablet is wiped. Type the code it is showing. Its room controls and entity IDs stay as they are; only the token is replaced.",
+        "description": "{name} is asking for a new access token, which happens after a tablet is wiped or a controller is reflashed. Type the code it is showing. Its room controls and entity IDs stay as they are; only the token is replaced.",
         "data": {
           "pairing_code": "Pairing code"
         }
@@ -79,7 +79,7 @@
       "not_music_assistant": "Select a media player provided by Music Assistant.",
       "invalid_code": "The pairing code is six digits.",
       "token_failed": "Home Assistant could not create an access token for this panel. Check the log.",
-      "code_mismatch": "The panel is showing a different code. Read the six digits off the tablet again.",
+      "code_mismatch": "The panel is showing a different code. Read the six digits off the panel's screen again.",
       "pairing_timeout": "The panel did not answer. Check that it is on, on the same network, and still showing a pairing code."
     },
     "abort": {
@@ -89,7 +89,7 @@
       "no_panel_id": "The panel did not announce an identifier and cannot be added automatically."
     },
     "progress": {
-      "waiting_for_panel": "Waiting for {name} to answer with that code. Leave the tablet on its pairing screen."
+      "waiting_for_panel": "Waiting for {name} to answer with that code. Leave the panel on its pairing screen."
     }
   },
   "options": {

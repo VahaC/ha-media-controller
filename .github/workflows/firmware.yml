@@ -23,8 +23,38 @@ jobs:
           python-version: "3.12"
       - name: Install ESPHome
         run: pip install esphome
-      - name: Validate the maintained package
-        # The maintained file carries its own substitution defaults and no
-        # !secret lookups, so it validates standalone. Image assets are fetched
-        # from asset_base_url during validation.
-        run: esphome config firmware/media-controller.yaml
+      - name: Validate the maintained packages
+        # Each maintained file carries its own substitution defaults and no
+        # !secret lookups, so both validate standalone. Image assets are
+        # fetched from asset_base_url during validation. Both are checked
+        # because they share media-controller-ui.yaml: a change to the
+        # interface ships to both firmwares at once.
+        run: |
+          esphome config firmware/media-controller.yaml
+          esphome config firmware/media-controller-paired.yaml
+
+      - name: Check the interface package names no transport
+        # The two firmwares can only share an interface for as long as the
+        # interface knows nothing about how Home Assistant is reached. A widget
+        # that calls homeassistant.service directly, or a Home Assistant entity
+        # ID that creeps back into a substitution, compiles happily under the
+        # classic firmware and breaks the paired one. Catch it here rather than
+        # on the bench. See the header of media-controller-ui.yaml.
+        run: |
+          ui=firmware/media-controller-ui.yaml
+          status=0
+
+          if grep -n 'homeassistant\.' "$ui"; then
+            echo "::error file=$ui::The interface package must not call Home Assistant directly; add a cmd_ script to each transport half instead."
+            status=1
+          fi
+
+          # ha_url and asset_base_url are the two the interface is allowed to
+          # expect from whichever firmware includes it.
+          if grep -o '\${[a-z_0-9]*}' "$ui" | sort -u \
+              | grep -vE '^\$\{(ha_url|asset_base_url)\}$'; then
+            echo "::error file=$ui::The interface package may only use the ha_url and asset_base_url substitutions."
+            status=1
+          fi
+
+          exit $status

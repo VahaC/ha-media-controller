@@ -58,10 +58,17 @@ and creating a new one, and reflashing the ESP32 if the slot is one of its four.
 
 ## Client profiles
 
-A profile is not a bare maximum. The ESP32 constrains each slot individually,
-because its four LVGL buttons have different compile-time actions: buttons 1–2
-carry `on_long_press_repeat` with `light.turn_on` / `brightness_pct`, buttons
-3–4 only `switch.toggle`.
+A profile is not a bare maximum. The classic ESP32 firmware constrains each slot
+individually, because its four LVGL buttons have different compile-time actions:
+buttons 1–2 carry `on_long_press_repeat` with `light.turn_on` /
+`brightness_pct`, buttons 3–4 only `switch.toggle`.
+
+That is exactly what the paired firmware removes. There the button calls
+`cmd_slot_toggle(slot)` and the script reads the domain off the entity it was
+given at runtime, so every slot accepts either domain — which is why the two
+firmwares need two profiles rather than one widened one. Widening `ESP32_S3`
+would offer a switch in slot 1 to devices already in the field, whose button 1
+can only call `light.toggle`.
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -97,11 +104,28 @@ T560 = ClientProfile(
         for n in range(1, 7)
     ),
 )
+
+# The same board on the paired firmware. Four buttons still, but the entity
+# behind each arrives at runtime, so no slot is tied to a domain. No colour
+# temperature: there is no control on the screen to set one with.
+ESP32_S3_PANEL = ClientProfile(
+    slug="esp32_s3_panel",
+    name="ESP32-S3 controller (paired)",
+    slots=tuple(
+        SlotSpec(n, ("light", "switch"), ("toggle", "brightness"))
+        for n in range(1, 5)
+    ),
+)
 ```
 
 The controls a client actually draws for a slot are
 `target_capabilities & spec.controls`. A colour-temperature lamp in ESP32 slot 1
 is toggled and dimmed there, and gets its full control set on the T560.
+
+`CONTROLLER_PROFILE` is `ESP32_S3` and always has been; `PANEL_PROFILES` is
+`(T560, ESP32_S3_PANEL)`. A slug appearing in one does not appear in the other,
+which is what keeps `panel_profile("esp32_s3")` from ever resolving: the classic
+firmware is not a panel and cannot be added as one.
 
 New profiles live in `custom_components/media_controller/profiles.py`.
 
@@ -109,8 +133,14 @@ New profiles live in `custom_components/media_controller/profiles.py`.
 
 | Client | Slot storage | Reason |
 | --- | --- | --- |
-| ESP32-S3 | The controller config entry (`data` / `options`) | Its four proxies already exist there and it is compile-time bound to them |
-| T560 and later panels | One config entry per device | A panel announces itself over mDNS, and a discovery flow creates an entry — `async_step_zeroconf` exists on `ConfigFlow` and has no subentry equivalent |
+| ESP32-S3, classic firmware | The controller config entry (`data` / `options`) | Its four proxies already exist there and it is compile-time bound to them |
+| T560, paired ESP32-S3, and later panels | One config entry per device | A panel announces itself over mDNS, and a discovery flow creates an entry — `async_step_zeroconf` exists on `ConfigFlow` and has no subentry equivalent |
+
+The two ESP32 rows are the same hardware in different places, and that is
+deliberate: a device that is reflashed from the classic firmware to the paired
+one is paired as a new panel and picks its rooms again. Its old controller-level
+slots stay where they are until they are removed, so nothing breaks in the
+meantime and a reflash back is possible.
 
 A panel entry stores which controller it reads. It never reaches into that
 controller's runtime: the three entity IDs it needs are shared through one
@@ -147,9 +177,13 @@ The description line states the limit: *"The ESP32-S3 controller drives up to
 ### Panel discovery flow
 
 The manifest declares `"zeroconf": ["_media-controller._tcp.local."]`. A panel
-publishes that service with `panel_id`, `profile`, and `name` TXT records;
-`t560-announce-panel` does it with `avahi-publish-service`, so no code in the
-panel process is involved.
+publishes that service with `panel_id`, `profile`, and `name` TXT records. On
+the tablet `t560-announce-panel` does it with `avahi-publish-service`, so no
+code in the panel process is involved; on a paired ESP32 it is an `mdns:`
+service in the firmware, with the MAC address as `panel_id`.
+
+This is why the service type is not T560-specific and never was: a second kind
+of panel needed a new `profile` record and nothing else.
 
 1. **`zeroconf`** — the unique ID is `panel_<panel_id>`, so a panel that is
    already configured only has its address updated.
