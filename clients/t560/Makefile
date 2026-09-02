@@ -22,6 +22,7 @@ SOURCES = src/main.c \
 	  src/home_assistant_client.c \
 	  src/json_helpers.c \
 	  src/panel_config.c \
+	  src/panel_display.c \
 	  src/panel_pairing.c \
 	  src/panel_ui.c \
 	  src/system_status.c \

@@ -20,15 +20,22 @@
 # Set this only when that sensor was renamed in Home Assistant.
 #config_entity=sensor.t560_config
 
+# Every key in this section is owned by Home Assistant, which offers all
+# three as number entities on the panel's device. What is set here is only the
+# fallback: it decides until the panel has read a configuration from Home
+# Assistant, and again if the cached one is lost. Editing Home Assistant
+# changes them within a second and without restarting anything, so there is
+# normally no reason to set them here at all.
 [panel]
-# 1000 ms is responsive while keeping CPU/network use low.
+# 1000 ms is responsive while keeping CPU/network use low. 500-30000 ms.
 poll_interval_ms=1000
-# Playlists and the panel layout change infrequently and share this interval.
+# Playlists change infrequently. 10000-3600000 ms.
 playlist_poll_interval_ms=60000
 # Turn the display off after this many seconds without touchscreen, key, or
 # camera-detected activity. Use 0 to keep the display on until the Power
 # button is pressed. Values are clamped to 5-3600 seconds. The Power and Home
-# button handler reads this key at start-up.
+# button handler applies it, and re-reads it whenever Home Assistant changes
+# it.
 screen_off_seconds=30
 
 # Front camera motion detection. While the display is off, detected motion

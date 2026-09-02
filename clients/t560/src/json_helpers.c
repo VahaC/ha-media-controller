@@ -49,6 +49,21 @@ JsonObject *json_state_attributes(JsonObject *state)
                : NULL;
 }
 
+/* Unlike the array helper above, this one refuses a member that is present
+ * but is not an object. The settings and command blocks are optional, so a
+ * payload from an older or a broken producer must read as "absent" rather
+ * than abort the panel. */
+JsonObject *json_optional_object(JsonObject *object, const gchar *member)
+{
+    if (object == NULL || !json_object_has_member(object, member))
+        return NULL;
+
+    JsonNode *node = json_object_get_member(object, member);
+    return node != NULL && JSON_NODE_HOLDS_OBJECT(node)
+               ? json_node_get_object(node)
+               : NULL;
+}
+
 JsonArray *json_optional_array(JsonObject *object, const gchar *member)
 {
     return object != NULL && json_object_has_member(object, member)

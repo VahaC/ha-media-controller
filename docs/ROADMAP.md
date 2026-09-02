@@ -54,7 +54,11 @@ Planned shape:
 4. **Client bootstrap.** `config.ini` keeps only what cannot come from Home
    Assistant: `url`, the token, one bootstrap entity ID for the layout sensor,
    and tablet-local settings (`screen_off_seconds`, the whole `[camera]`
-   section, poll intervals).
+   section, poll intervals). **Done, and gone further than planned:**
+   `screen_off_seconds` and both poll intervals are owned by Home Assistant as
+   of contract version 3, and the `config.ini` keys are the fallback used
+   before a tablet has ever reached it. Only the `[camera]` section is still
+   tablet-local.
 5. **Offline cache.** The panel must render the last known layout when Home
    Assistant is unreachable at boot. Today the configuration is local and this
    problem does not exist; after the move it does.

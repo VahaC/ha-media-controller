@@ -1,5 +1,7 @@
 #include "home_assistant_client.h"
 
+#include "app_config.h"
+
 #include <libsoup/soup.h>
 #include <string.h>
 
@@ -93,7 +95,8 @@ HomeAssistantClient *home_assistant_client_new(const gchar *base_url,
     client->base_url = g_strdup(base_url);
     client->token = g_strdup(token);
     client->session = soup_session_new_with_options(
-        "timeout", 8, "user-agent", "t560-music-panel/0.2", NULL);
+        "timeout", 8, "user-agent",
+        "t560-music-panel/" T560_PANEL_VERSION, NULL);
     return client;
 }
 

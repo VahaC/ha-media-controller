@@ -173,6 +173,9 @@
       },
       "slot_6": {
         "name": "Slot 6"
+      },
+      "screen": {
+        "name": "Screen"
       }
     },
     "sensor": {
@@ -184,6 +187,59 @@
       },
       "config": {
         "name": "Config"
+      },
+      "battery": {
+        "name": "Battery"
+      },
+      "uptime": {
+        "name": "Uptime"
+      },
+      "last_report": {
+        "name": "Last report"
+      },
+      "wifi_signal": {
+        "name": "Wi-Fi signal"
+      },
+      "temperature": {
+        "name": "Temperature"
+      }
+    },
+    "binary_sensor": {
+      "connected": {
+        "name": "Connected"
+      },
+      "charging": {
+        "name": "Charging"
+      }
+    },
+    "button": {
+      "restart": {
+        "name": "Restart panel app"
+      }
+    },
+    "number": {
+      "poll_interval": {
+        "name": "Update interval"
+      },
+      "playlist_poll_interval": {
+        "name": "Library refresh interval"
+      },
+      "screen_off": {
+        "name": "Screen timeout"
+      },
+      "screen_brightness": {
+        "name": "Screen brightness"
+      }
+    },
+    "select": {
+      "page": {
+        "name": "Page",
+        "state": {
+          "player": "Player",
+          "queue": "Queue",
+          "playlists": "Playlists",
+          "room": "Room"
+        }
       }
     }
   },

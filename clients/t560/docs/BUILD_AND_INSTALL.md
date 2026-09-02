@@ -226,10 +226,12 @@ and verifies the announcement before it finishes; it stops with the exact root
 commands when the account cannot install packages. Nothing about mDNS has to
 be set up by hand.
 
-The `[panel]` section holds the tablet-local settings: polling timings and
-the inactivity timeout that turns the display off. They stay on the tablet
-because the Power button handler and the motion detector read them directly,
-without going through Home Assistant.
+The `[panel]` section holds the polling timings and the inactivity timeout
+that turns the display off. **Home Assistant owns all three**, as number
+entities on the panel's device, and changing them there needs nothing on the
+tablet. What is written here is only the fallback used before this tablet has
+ever reached Home Assistant, and again if the cached configuration is lost —
+so the whole section can be left out.
 
 ```ini
 [panel]
@@ -346,6 +348,46 @@ motion: detected
 
 ```text
 motion: backlight on
+```
+
+Then verify, from the panel's device page in Home Assistant:
+
+17. **Battery** and **Charging** show the same values as the header indicator
+    on the tablet, and follow within about ten seconds of plugging the charger
+    in. **Connected** is on.
+18. Turning **Screen** off blanks the tablet within about a second, and
+    turning it on lights it again. Pressing Power on the tablet moves the
+    switch the other way within five seconds.
+19. **Screen brightness** is either unavailable — no writable backlight on
+    this tablet, which is normal — or moves the backlight and reads back the
+    level it reached.
+20. Changing **Screen timeout** changes when the display blanks, with no
+    restart. The handler log records the new value:
+
+```text
+auto screen off: 60s idle timer
+```
+
+21. Changing **Update interval** changes how often the panel polls, with no
+    restart and no visible interruption.
+22. **Restart panel app** blanks and redraws the panel within a few seconds,
+    and the panel comes back on the same page. It must do this once and not
+    repeat on the next poll.
+23. Switching the tablet off makes **Connected**, **Battery**, and **Screen**
+    unavailable within three minutes.
+24. **Page** follows the navigation buttons on the tablet within a second, and
+    setting it in Home Assistant moves the panel to that page.
+25. **Uptime** holds still while the panel runs, and jumps to the present the
+    moment **Restart panel app** is pressed. **Last report** advances at least
+    once a minute.
+26. **Wi-Fi signal** shows a plausible negative value, and **Temperature** a
+    plausible one in degrees. Either may be unavailable if this tablet exposes
+    no wireless interface or no thermal zone; check the tablet directly before
+    treating that as a fault:
+
+```sh
+cat /proc/net/wireless
+cat /sys/class/thermal/thermal_zone*/type /sys/class/thermal/thermal_zone*/temp
 ```
 
 17. Pressing Power to turn the display off does not wake it again while
@@ -646,8 +688,10 @@ pkill -x t560-panel
 
 The watchdog starts it again within two seconds.
 
-The `screen_off_seconds` value is read by the button handler at start-up.
-Restart that handler after changing it:
+Changing the screen timeout in Home Assistant needs no restart: the button
+handler notices it within half a second. Restart the handler only after
+editing the `config.ini` fallback on a tablet that is not reading Home
+Assistant:
 
 ```sh
 pkill -f '[t]560-power-button.py'

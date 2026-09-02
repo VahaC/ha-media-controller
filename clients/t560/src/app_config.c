@@ -89,8 +89,16 @@ void panel_layout_clear(PanelLayout *layout)
         g_clear_pointer(&layout->rooms[i].entity, g_free);
         g_clear_pointer(&layout->rooms[i].label, g_free);
     }
+    g_clear_pointer(&layout->commands.display_state, g_free);
+    g_clear_pointer(&layout->commands.page, g_free);
     layout->room_count = 0;
     layout->revision = 0;
+    layout->settings.present = FALSE;
+    layout->commands.display_at = 0;
+    layout->commands.brightness = -1;
+    layout->commands.brightness_at = 0;
+    layout->commands.restart_at = 0;
+    layout->commands.page_at = 0;
 }
 
 static void strip_trailing_slashes(gchar *url)

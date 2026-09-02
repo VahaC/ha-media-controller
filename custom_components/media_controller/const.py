@@ -10,6 +10,16 @@ DOMAIN = "media_controller"
 # references as its via_device.
 PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.LIGHT, Platform.SWITCH]
 
+# A panel is a device with a battery, a display, and settings of its own, so
+# it carries entities the ESP32 controller has no equivalent for.
+PANEL_PLATFORMS: list[Platform] = [
+    *PLATFORMS,
+    Platform.BINARY_SENSOR,
+    Platform.BUTTON,
+    Platform.NUMBER,
+    Platform.SELECT,
+]
+
 ENTRY_VERSION = 2
 
 # One domain, two kinds of config entry. A controller is bound to a Music
@@ -31,6 +41,10 @@ CONF_PANEL_ID = "panel_id"
 CONF_CONTROLLER_ENTRY_ID = "controller_entry_id"
 CONF_HOST = "host"
 CONF_NAME = "name"
+# The tablet-local settings Home Assistant owns, stored on the panel entry.
+# They are entry data rather than options: they are changed from entities, one
+# value at a time, and must not reload the entry or restart the tablet.
+CONF_PANEL_SETTINGS = "panel_settings"
 
 # A panel announces itself on the local network with this service type. It is
 # deliberately not T560-specific: the profile travels as a TXT record, so a
@@ -49,6 +63,9 @@ CONF_USER_ID = "user_id"
 DATA_RUNTIMES = "runtimes"
 DATA_CONTROLLER_ENTITIES = "controller_entities"
 DATA_PROVISIONING = "provisioning"
+# Panel state by panel ID. The status endpoint is not tied to a config entry,
+# so it resolves a reporting panel through this.
+DATA_PANELS = "panels"
 
 # Version 1 keys. They survive only in async_migrate_entry.
 CONF_LIGHT_1_ENTITY = "light_1_entity"
@@ -104,3 +121,8 @@ def slot_unique_id(owner_id: str, index: int) -> str:
 def panel_unique_id(panel_id: str) -> str:
     """Return the config-entry unique ID of one panel device."""
     return f"panel_{panel_id}"
+
+
+def panel_entity_unique_id(entry_id: str, key: str) -> str:
+    """Return the unique ID of one of a panel's own entities."""
+    return f"{entry_id}_{key}"

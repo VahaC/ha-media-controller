@@ -77,6 +77,103 @@ The room controls of the ESP32 live on the controller entry itself, because the
 firmware resolves their entity IDs at compile time and they already exist there.
 See [ROOM_SLOTS.md](ROOM_SLOTS.md).
 
+### Panel settings, battery, and display
+
+A panel device carries entities that describe the tablet rather than the room.
+They exist so that nothing on a wall-mounted tablet has to be reached over SSH.
+
+| Entity | What it does |
+| --- | --- |
+| **Update interval** | How often the panel asks for player and room state. |
+| **Library refresh interval** | How often it refreshes playlists. |
+| **Screen timeout** | Inactivity before the display turns off; 0 never. |
+| **Screen brightness** | Backlight level. |
+| **Screen** | Backlight on or off, and what it currently is. |
+| **Page** | Which page the panel shows, and sending it to another. |
+| **Restart panel app** | Restarts the application on the tablet. |
+| **Battery**, **Charging** | What the tablet reports about its power. |
+| **Connected** | Whether the tablet is reporting at all. |
+| **Uptime** | When the panel application last started. |
+| **Last report** | When the tablet was last heard from. |
+| **Wi-Fi signal**, **Temperature** | Diagnostics from the tablet. |
+
+The three settings and the two intervals are stored in Home Assistant and are
+applied by the tablet within one poll cycle, without restarting it. They keep
+their value while the tablet is off, and the same keys in `config.ini` on the
+tablet are only the fallback used before it has ever reached Home Assistant.
+
+Nothing can be pushed to a tablet, so *Screen* and *Restart panel app* are
+requests the panel reads on its next poll — normally within a second — and
+*Screen* shows what was asked for until the tablet confirms what its display
+actually did. **Battery**, **Charging**, and the backlight level are pushed the
+other way: the panel reports them on a change and at least once a minute, and
+every entity that depends on a report goes unavailable when none has arrived
+for three minutes. The tablet's application version appears as the device's
+software version.
+
+**Screen brightness** is the one control the tablet can refuse. Writing the
+kernel's backlight device needs a permission the session user does not have by
+default, and the control stays unavailable where it is missing. Turning the
+display on and off works regardless: that goes through DPMS.
+
+**Page** works both ways, like *Screen*: it shows the page a person navigated
+to on the tablet, and setting it sends the panel there. That is what makes a
+panel addressable from an automation — a doorbell can put the room page in
+front of whoever walks past.
+
+**Uptime** is the moment the application started rather than a duration, so it
+sits still while the application does and moves when the watchdog restarts it.
+**Last report** is when the tablet was last heard from; together with
+**Connected** it is how a tablet that quietly fell off the Wi-Fi is spotted.
+**Wi-Fi signal** and **Temperature** are unavailable on hardware that exposes
+neither.
+
+### Dimming the panel at night
+
+Nothing here is a night mode: the screen timeout and the backlight are
+ordinary entities, so an automation does it. Two automations, one each way:
+
+```yaml
+automation:
+  - alias: Panel dims for the night
+    triggers:
+      - trigger: time
+        at: "22:30:00"
+    actions:
+      - action: number.set_value
+        target:
+          entity_id: number.hallway_panel_screen_brightness
+        data:
+          value: 15
+      - action: number.set_value
+        target:
+          entity_id: number.hallway_panel_screen_timeout
+        data:
+          value: 15
+
+  - alias: Panel returns to daytime
+    triggers:
+      - trigger: time
+        at: "07:00:00"
+    actions:
+      - action: number.set_value
+        target:
+          entity_id: number.hallway_panel_screen_brightness
+        data:
+          value: 100
+      - action: number.set_value
+        target:
+          entity_id: number.hallway_panel_screen_timeout
+        data:
+          value: 60
+```
+
+Substitute the entity IDs Home Assistant gave your panel. Brightness needs the
+backlight permission described above; the timeout alone already helps, and a
+timeout of `0` at the other end keeps the panel lit all day. A panel that was
+asleep when the automation ran picks the values up on its next poll, because
+these are settings rather than commands.
+
 ### Slot capabilities
 
 The integration reads what the entity in a slot actually supports and publishes
@@ -113,7 +210,9 @@ the config sensor on every connection.
 
 
 The T560 panel reads the same queue and playlists sensors and the proxy
-entities of its own panel entry over the Home Assistant REST API.
+entities of its own panel entry over the Home Assistant REST API. It reads its
+own config sensor on every poll cycle, because that sensor is also how a
+request to turn the display off or to restart reaches it.
 
 ## Services
 

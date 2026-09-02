@@ -1,6 +1,6 @@
 # Maintainer: VahaC
 pkgname=t560-music-panel
-pkgver=0.2.0
+pkgver=0.3.1
 pkgrel=0
 pkgdesc="Lightweight Music Assistant touch controller for Samsung SM-T560"
 url="https://github.com/VahaC/ha-media-controller"

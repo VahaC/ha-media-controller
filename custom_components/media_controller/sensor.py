@@ -4,8 +4,20 @@ from __future__ import annotations
 
 from typing import Any
 
-from homeassistant.components.sensor import SensorEntity
+from datetime import datetime, timezone
+
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorStateClass,
+)
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import (
+    EntityCategory,
+    PERCENTAGE,
+    SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
+    UnitOfTemperature,
+)
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
@@ -13,6 +25,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import MediaControllerRuntime
 from .coordinator import PlaylistCoordinator, QueueCoordinator
+from .panel_entity import PanelReadingEntity
 from .proxy import controller_device_info
 from .slots import ClientConfiguration, ControllerEntities
 from .transformations import PlaylistPayload, QueuePayload
@@ -23,12 +36,21 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Set up the config sensor, and the controller's own two sensors."""
+    """Set up the config sensor, and whatever else the entry kind owns."""
     runtime = entry.runtime_data
     async_add_entities(
         [ClientConfigSensor(runtime.client, runtime.device_info)]
     )
     if not isinstance(runtime, MediaControllerRuntime):
+        async_add_entities(
+            [
+                PanelBatterySensor(entry, runtime),
+                PanelUptimeSensor(entry, runtime),
+                PanelLastReportSensor(entry, runtime),
+                PanelWifiSensor(entry, runtime),
+                PanelTemperatureSensor(entry, runtime),
+            ]
+        )
         return
 
     controller = runtime.client.controller
@@ -157,3 +179,144 @@ class ClientConfigSensor(SensorEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         """Expose the slot layout and capabilities."""
         return self._client.payload().as_attributes()
+
+
+class PanelBatterySensor(PanelReadingEntity, SensorEntity):
+    """The charge of the tablet the panel runs on.
+
+    The panel reads it from the kernel and pushes it here, because Home
+    Assistant cannot ask a tablet anything. A tablet without a battery — a
+    panel wired to a permanent supply — never reports one, and the sensor
+    stays unavailable rather than claiming zero.
+    """
+
+    _attr_device_class = SensorDeviceClass.BATTERY
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, entry: ConfigEntry, runtime: Any) -> None:
+        """Initialize the battery sensor of one panel."""
+        super().__init__(entry, runtime, "battery")
+
+    @property
+    def available(self) -> bool:
+        """Return whether the tablet reported a battery it can read."""
+        return super().available and self._panel.status.battery_percent >= 0
+
+    @property
+    def native_value(self) -> int | None:
+        """Return the reported charge."""
+        percent = self._panel.status.battery_percent
+        return None if percent < 0 else percent
+
+
+class PanelUptimeSensor(PanelReadingEntity, SensorEntity):
+    """When the panel application last started.
+
+    A timestamp rather than a duration, because that is the fact worth
+    watching: it stays still while the application does, and a new value means
+    the tablet restarted it — or the watchdog did.
+    """
+
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, entry: ConfigEntry, runtime: Any) -> None:
+        """Initialize the uptime sensor of one panel."""
+        super().__init__(entry, runtime, "uptime")
+
+    @property
+    def available(self) -> bool:
+        """Return whether the tablet reported how long it has been running."""
+        return super().available and self._panel.started_at is not None
+
+    @property
+    def native_value(self) -> datetime | None:
+        """Return the moment the application started."""
+        started_at = self._panel.started_at
+        if started_at is None:
+            return None
+        return datetime.fromtimestamp(started_at, tz=timezone.utc)
+
+
+class PanelLastReportSensor(PanelEntity, SensorEntity):
+    """When the tablet was last heard from.
+
+    Never unavailable, like the connectivity sensor beside it: a panel that
+    stopped reporting is exactly what this is for. It is unknown only until
+    the first report of a Home Assistant run.
+    """
+
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, entry: ConfigEntry, runtime: Any) -> None:
+        """Initialize the last-report sensor of one panel."""
+        super().__init__(entry, runtime, "last_report")
+
+    @property
+    def native_value(self) -> datetime | None:
+        """Return the arrival time of the last accepted report."""
+        reported_wall_at = self._panel.reported_wall_at
+        if reported_wall_at is None:
+            return None
+        return datetime.fromtimestamp(reported_wall_at, tz=timezone.utc)
+
+
+class PanelWifiSensor(PanelReadingEntity, SensorEntity):
+    """The Wi-Fi signal the tablet is seeing.
+
+    A wall-mounted panel that drops out at the same time every day is almost
+    always a signal problem, and this is what makes that visible without
+    logging in to the tablet.
+    """
+
+    _attr_device_class = SensorDeviceClass.SIGNAL_STRENGTH
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = SIGNAL_STRENGTH_DECIBELS_MILLIWATT
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, entry: ConfigEntry, runtime: Any) -> None:
+        """Initialize the Wi-Fi signal sensor of one panel."""
+        super().__init__(entry, runtime, "wifi_signal")
+
+    @property
+    def available(self) -> bool:
+        """Return whether the tablet reported a wireless link at all."""
+        return super().available and self._panel.status.wifi_dbm is not None
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the reported signal strength."""
+        return self._panel.status.wifi_dbm
+
+
+class PanelTemperatureSensor(PanelReadingEntity, SensorEntity):
+    """The temperature the tablet reports.
+
+    A tablet held at full charge on a wall runs warm, and a battery that is
+    swelling runs warmer. It is a diagnostic, not a room temperature.
+    """
+
+    _attr_device_class = SensorDeviceClass.TEMPERATURE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, entry: ConfigEntry, runtime: Any) -> None:
+        """Initialize the temperature sensor of one panel."""
+        super().__init__(entry, runtime, "temperature")
+
+    @property
+    def available(self) -> bool:
+        """Return whether the tablet exposes a thermal zone it can read."""
+        return (
+            super().available
+            and self._panel.status.temperature_c is not None
+        )
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the reported temperature."""
+        return self._panel.status.temperature_c

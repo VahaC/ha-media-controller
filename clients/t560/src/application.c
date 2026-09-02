@@ -4,6 +4,7 @@
 #include "home_assistant_client.h"
 #include "json_helpers.h"
 #include "panel_config.h"
+#include "panel_display.h"
 #include "panel_pairing.h"
 #include "panel_ui.h"
 #include "system_status.h"
@@ -16,6 +17,13 @@
  * token, so a handful of rejections in a row really does mean the token is
  * gone rather than that the server is busy. */
 #define UNAUTHORIZED_POLL_LIMIT 3
+
+/* The battery and the backlight are read this often. Both are two small
+ * sysfs reads, so the cost is in the report that may follow, not here. */
+#define STATUS_INTERVAL_SECONDS 5
+/* Home Assistant is told again after this long even when nothing changed, so
+ * that a panel which is simply idle does not look absent. */
+#define STATUS_HEARTBEAT_SECONDS 60
 
 typedef struct {
     GtkApplication *gtk_application;
@@ -36,14 +44,36 @@ typedef struct {
     gchar *pairing_code;
     gchar *pairing_message;
     guint clock_source;
-    guint battery_source;
+    guint status_source;
     guint config_reload_source;
     GFileMonitor *config_monitor;
     gint64 clock_minute;
     guint poll_pending;
     guint unauthorized_polls;
     gint64 next_playlist_poll_us;
-    gint64 next_config_poll_us;
+    /* The last payload written to the layout cache. It is compared before
+     * every write: the config sensor is polled every cycle, and rewriting an
+     * unchanged file once a second would wear the tablet's flash and would
+     * keep waking the button handler that watches its timestamp. */
+    GBytes *config_cache;
+    /* The moment of the newest command of each kind this panel has acted on.
+     * A command is applied only when it is newer, which is what makes the
+     * poll a safe transport for one. */
+    gint64 applied_display_at;
+    gint64 applied_brightness_at;
+    gint64 applied_restart_at;
+    gint64 applied_page_at;
+    gboolean commands_adopted;
+    /* What was last reported to Home Assistant, and when. */
+    BatteryStatus battery;
+    DisplayStatus display;
+    gint64 next_status_report_us;
+    /* The page the person is looking at. Home Assistant both reads it and
+     * sets it, so it is kept here rather than asked of the widget tree. It
+     * always points into PANEL_PAGES below, never into a parsed payload,
+     * which is freed as soon as it has been applied. */
+    const gchar *current_page;
+    gint64 started_at_us;
     gint queue_selected;
     gint playlist_selected;
     PanelUiStatus poll_status;
@@ -178,6 +208,40 @@ static void start_config_monitor(PanelApplication *application)
 
     g_object_unref(directory);
     g_free(directory_path);
+}
+
+/* The pages the panel can be sent to, and the header each one carries. The
+ * navigation buttons hold the same pairs; this table is what lets a page
+ * arrive from Home Assistant, where no button was pressed. */
+static const struct {
+    const gchar *page;
+    const gchar *title;
+} PANEL_PAGES[] = {
+    {"player", "NOW PLAYING"},
+    {"queue", "QUEUE"},
+    {"playlists", "PLAYLISTS"},
+    {"room", "ROOM CONTROLS"},
+};
+
+/* Returns this build's own name for a page, so that what is remembered
+ * outlives the payload the name arrived in. NULL for a page this build does
+ * not have. */
+static const gchar *canonical_page(const gchar *page)
+{
+    for (gsize i = 0; i < G_N_ELEMENTS(PANEL_PAGES); i++) {
+        if (g_strcmp0(PANEL_PAGES[i].page, page) == 0)
+            return PANEL_PAGES[i].page;
+    }
+    return NULL;
+}
+
+static const gchar *page_title(const gchar *page)
+{
+    for (gsize i = 0; i < G_N_ELEMENTS(PANEL_PAGES); i++) {
+        if (g_strcmp0(PANEL_PAGES[i].page, page) == 0)
+            return PANEL_PAGES[i].title;
+    }
+    return NULL;
 }
 
 static gchar *service_json(const gchar *entity, const gchar *key,
@@ -384,10 +448,17 @@ static void handle_ui_event(PanelUiEvent event, const gchar *value, gint index,
         }
         break;
     }
-    case PANEL_UI_SHOW_PAGE:
+    case PANEL_UI_SHOW_PAGE: {
+        const gchar *page = canonical_page(value);
+        if (page != NULL)
+            application->current_page = page;
+        /* Home Assistant shows which page the panel is on, so a tap on the
+         * tablet is worth telling it about at once. */
+        application->next_status_report_us = 0;
         if (g_str_equal(value, "queue"))
             call_service(application, "media_controller", "refresh", "{}");
         break;
+    }
     case PANEL_UI_SELECT_QUEUE_ITEM:
         application->queue_selected = index;
         break;
@@ -588,41 +659,157 @@ static void update_room(PanelApplication *application, guint index,
                       max_color_temperature);
 }
 
+/* Quitting takes effect on the next main loop iteration, so the request is
+ * made once even if another poll cycle finishes first. The watchdog brings
+ * the panel back within about two seconds. */
+static void request_restart(PanelApplication *application,
+                            const gchar *reason)
+{
+    if (application->restarting)
+        return;
+
+    application->restarting = TRUE;
+    if (application->ui != NULL)
+        panel_ui_set_status(application->ui, reason, PANEL_UI_STATUS_CONNECTED);
+    g_application_quit(G_APPLICATION(application->gtk_application));
+}
+
+/* Settings are a desired configuration rather than an event, so the newest
+ * payload simply wins and no timestamp is involved. The poll timer is the
+ * only one that has to be rebuilt; the playlist interval is read on the next
+ * cycle, and screen_off_seconds is applied by t560-power-button.py, which
+ * reads it out of the layout cache written below. */
+static void apply_settings(PanelApplication *application,
+                           const PanelSettings *settings)
+{
+    if (!settings->present)
+        return;
+
+    application->config->playlist_poll_interval_ms =
+        settings->playlist_poll_interval_ms;
+
+    if (settings->poll_interval_ms == application->config->poll_interval_ms)
+        return;
+
+    application->config->poll_interval_ms = settings->poll_interval_ms;
+    if (application->poll_source != 0) {
+        g_source_remove(application->poll_source);
+        application->poll_source = g_timeout_add(settings->poll_interval_ms,
+                                                 poll_states, application);
+    }
+}
+
+/* Records every command as applied without acting on any of them.
+ *
+ * This runs for the first payload of each start. A command issued while the
+ * panel was down has already been overtaken by events — the display state is
+ * whatever the tablet is showing now, and a restart that has happened must
+ * not happen again on every boot — so the panel adopts the moments and waits
+ * for the next real one. */
+static void adopt_commands(PanelApplication *application,
+                           const PanelCommands *commands)
+{
+    application->applied_display_at = commands->display_at;
+    application->applied_brightness_at = commands->brightness_at;
+    application->applied_restart_at = commands->restart_at;
+    application->applied_page_at = commands->page_at;
+    application->commands_adopted = TRUE;
+}
+
+static void apply_commands(PanelApplication *application,
+                           const PanelCommands *commands)
+{
+    if (!application->commands_adopted) {
+        adopt_commands(application, commands);
+        return;
+    }
+
+    if (commands->brightness_at > application->applied_brightness_at) {
+        application->applied_brightness_at = commands->brightness_at;
+        if (commands->brightness > 0)
+            panel_display_request_brightness(commands->brightness);
+    }
+
+    if (commands->display_at > application->applied_display_at) {
+        application->applied_display_at = commands->display_at;
+        panel_display_request_state(
+            g_strcmp0(commands->display_state, "on") == 0);
+        /* Report as soon as the handler has had time to act, so that the
+         * switch in Home Assistant stops showing what was asked for and
+         * starts showing what happened. */
+        application->next_status_report_us = 0;
+    }
+
+    if (commands->page_at > application->applied_page_at) {
+        application->applied_page_at = commands->page_at;
+        /* A page this build does not have is ignored rather than guessed at:
+         * showing the wrong one would be worse than showing none. */
+        const gchar *page = canonical_page(commands->page);
+        if (page != NULL && application->ui != NULL) {
+            application->current_page = page;
+            panel_ui_show_page(application->ui, page, page_title(page));
+            application->next_status_report_us = 0;
+        }
+    }
+
+    if (commands->restart_at > application->applied_restart_at) {
+        application->applied_restart_at = commands->restart_at;
+        request_restart(application, "Restarting");
+    }
+}
+
 /* The layout is applied once, at start-up. A later change restarts the panel
- * the same way a config.ini change does: the watchdog brings it back within
- * about two seconds, and the fresh layout is read from the cache. */
-static gboolean update_config(PanelApplication *application,
-                              JsonObject *state)
+ * the same way a config.ini change does, and the fresh layout is read from
+ * the cache. Settings and commands are not part of the layout revision and
+ * are applied while the panel keeps running.
+ *
+ * The cache is written before anything is applied, because one of the
+ * commands is a restart: the payload that asked for it has to be on disk
+ * before the panel quits, or the panel would read the same request again on
+ * every boot and never come up. */
+static void update_config(PanelApplication *application, JsonObject *state,
+                          GBytes *body)
 {
     PanelLayout candidate = {0};
     gchar *failure = NULL;
 
     if (!panel_config_parse_state(state, &candidate, &failure)) {
         note_poll_status(application, PANEL_UI_STATUS_WARNING, failure);
-        return FALSE;
+        return;
+    }
+
+    /* Only a payload the panel accepted is cached; an unusable one must not
+     * become the layout of the next boot. */
+    if (application->config_cache == NULL ||
+        !g_bytes_equal(application->config_cache, body)) {
+        gsize length = 0;
+        const gchar *data = g_bytes_get_data(body, &length);
+
+        if (data != NULL) {
+            panel_config_store_cache(data, length);
+            g_clear_pointer(&application->config_cache, g_bytes_unref);
+            application->config_cache = g_bytes_ref(body);
+        }
     }
 
     if (application->ui == NULL) {
+        adopt_commands(application, &candidate.commands);
         panel_layout_clear(&application->config->layout);
         application->config->layout = candidate;
+        apply_settings(application, &application->config->layout.settings);
         start_panel(application);
-        return TRUE;
+        return;
     }
 
     if (candidate.revision != application->config->layout.revision) {
         panel_layout_clear(&candidate);
-        /* Quitting takes effect on the next main loop iteration, so the
-         * request is made once even if another poll cycle finishes first. */
-        if (!application->restarting) {
-            application->restarting = TRUE;
-            panel_ui_set_status(application->ui, "Configuration changed",
-                                PANEL_UI_STATUS_CONNECTED);
-            g_application_quit(G_APPLICATION(application->gtk_application));
-        }
-        return TRUE;
+        request_restart(application, "Configuration changed");
+        return;
     }
+
+    apply_settings(application, &candidate.settings);
+    apply_commands(application, &candidate.commands);
     panel_layout_clear(&candidate);
-    return TRUE;
 }
 
 static void poll_request_free(gpointer user_data)
@@ -778,15 +965,9 @@ static void state_finished(guint status_code, GBytes *body,
 
         if (parse_state(body, &parser, &parse_error)) {
             if (request->kind == POLL_REQUEST_CONFIG) {
-                /* Only a payload the panel accepted is cached; an unusable
-                 * one must not become the layout of the next boot. */
                 JsonObject *state =
                     json_node_get_object(json_parser_get_root(parser));
-                if (update_config(application, state)) {
-                    gsize length = 0;
-                    const gchar *data = g_bytes_get_data(body, &length);
-                    panel_config_store_cache(data, length);
-                }
+                update_config(application, state, body);
             } else {
                 update_state(application, request->kind, request->index,
                              parser);
@@ -834,15 +1015,15 @@ static gboolean poll_states(gpointer user_data)
     g_clear_pointer(&application->poll_message, g_free);
     gint64 now = g_get_monotonic_time();
 
-    /* The layout names every other entity, so it is requested first and, once
-     * known, only as often as the playlists. */
-    if (application->next_config_poll_us == 0 ||
-        now >= application->next_config_poll_us) {
-        start_state_request(application, application->config->config_entity,
-                            POLL_REQUEST_CONFIG, 0);
-        application->next_config_poll_us =
-            now + (gint64)application->config->playlist_poll_interval_ms * 1000;
-    }
+    /* The layout names every other entity, so it is requested first. It is
+     * also the channel Home Assistant asks this panel to turn its display off
+     * or to restart through, which is why it is requested every cycle rather
+     * than as rarely as the layout alone would need: a button in Home
+     * Assistant that took a minute to do anything would read as broken. The
+     * payload is small and the response is cached, not stored, unless it
+     * actually changed. */
+    start_state_request(application, application->config->config_entity,
+                        POLL_REQUEST_CONFIG, 0);
     if (application->config->layout.player_entity == NULL) {
         /* Nothing else can be requested until the layout arrives. */
         if (application->poll_pending == 0)
@@ -896,14 +1077,108 @@ static gboolean update_clock(gpointer user_data)
     return G_SOURCE_CONTINUE;
 }
 
-static gboolean update_battery(gpointer user_data)
+/* Home Assistant cannot ask a tablet anything, so the battery and the
+ * backlight are pushed. The report is deliberately small and infrequent: it
+ * carries no media state, which Home Assistant already has. */
+static void report_status(PanelApplication *application)
+{
+    JsonBuilder *builder = json_builder_new();
+
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "panel_id");
+    json_builder_add_string_value(builder, application->config->panel_id);
+    json_builder_set_member_name(builder, "version");
+    json_builder_add_string_value(builder, T560_PANEL_VERSION);
+    json_builder_set_member_name(builder, "page");
+    json_builder_add_string_value(builder, application->current_page);
+    json_builder_set_member_name(builder, "uptime_seconds");
+    json_builder_add_int_value(
+        builder,
+        (g_get_monotonic_time() - application->started_at_us) /
+            G_USEC_PER_SEC);
+
+    /* Read here rather than on every tick: neither is worth a report of its
+     * own, and both ride along with whatever report is being sent. */
+    SystemDiagnostics diagnostics;
+    system_status_read_diagnostics(&diagnostics);
+    if (diagnostics.wifi_available) {
+        json_builder_set_member_name(builder, "wifi_dbm");
+        json_builder_add_int_value(builder, diagnostics.wifi_dbm);
+    }
+    if (diagnostics.temperature_available) {
+        json_builder_set_member_name(builder, "temperature_c");
+        json_builder_add_double_value(builder, diagnostics.temperature_c);
+    }
+
+    json_builder_set_member_name(builder, "battery");
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "available");
+    json_builder_add_boolean_value(builder, application->battery.available);
+    json_builder_set_member_name(builder, "percent");
+    json_builder_add_int_value(builder, application->battery.percent);
+    json_builder_set_member_name(builder, "charging");
+    json_builder_add_boolean_value(builder, application->battery.charging);
+    json_builder_end_object(builder);
+
+    json_builder_set_member_name(builder, "display");
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "available");
+    json_builder_add_boolean_value(builder, application->display.available);
+    json_builder_set_member_name(builder, "on");
+    json_builder_add_boolean_value(builder, application->display.on);
+    json_builder_set_member_name(builder, "brightness");
+    json_builder_add_int_value(builder, application->display.brightness);
+    json_builder_end_object(builder);
+    json_builder_end_object(builder);
+
+    gchar *json = json_builder_to_string(builder);
+    g_object_unref(builder);
+
+    /* Nothing depends on the answer: a refused or lost report is simply sent
+     * again on the next tick, and the entities go unavailable meanwhile. */
+    home_assistant_client_post_path(application->client,
+                                    "/api/media_controller/panel_status",
+                                    json, NULL, NULL, NULL);
+    g_free(json);
+    application->next_status_report_us =
+        g_get_monotonic_time() +
+        (gint64)STATUS_HEARTBEAT_SECONDS * G_USEC_PER_SEC;
+}
+
+static gboolean status_differs(const BatteryStatus *battery,
+                               const DisplayStatus *display,
+                               const BatteryStatus *previous_battery,
+                               const DisplayStatus *previous_display)
+{
+    return battery->available != previous_battery->available ||
+           battery->percent != previous_battery->percent ||
+           battery->charging != previous_battery->charging ||
+           display->available != previous_display->available ||
+           display->on != previous_display->on ||
+           display->brightness != previous_display->brightness;
+}
+
+static gboolean update_status(gpointer user_data)
 {
     PanelApplication *application = user_data;
-    BatteryStatus status;
+    BatteryStatus battery;
+    DisplayStatus display;
 
-    system_status_read_battery(&status);
-    panel_ui_set_battery(application->ui, status.available, status.percent,
-                         status.charging);
+    system_status_read_battery(&battery);
+    panel_display_read(&display);
+    panel_ui_set_battery(application->ui, battery.available, battery.percent,
+                         battery.charging);
+
+    gboolean changed = status_differs(&battery, &display,
+                                      &application->battery,
+                                      &application->display);
+    application->battery = battery;
+    application->display = display;
+
+    if (application->config->token == NULL)
+        return G_SOURCE_CONTINUE;
+    if (changed || g_get_monotonic_time() >= application->next_status_report_us)
+        report_status(application);
     return G_SOURCE_CONTINUE;
 }
 
@@ -911,16 +1186,22 @@ static void start_header_updates(PanelApplication *application)
 {
     application->clock_minute = -1;
     update_clock(application);
-    update_battery(application);
+    /* Impossible values, so that the first read always counts as a change
+     * and Home Assistant hears from the panel as soon as it is up. */
+    application->battery.percent = -1;
+    application->display.brightness = -2;
+    update_status(application);
     application->clock_source = g_timeout_add_seconds(1, update_clock,
                                                       application);
-    application->battery_source = g_timeout_add_seconds(10, update_battery,
-                                                        application);
+    application->status_source = g_timeout_add_seconds(
+        STATUS_INTERVAL_SECONDS, update_status, application);
 }
 
 static PanelApplication *panel_application_new(void)
 {
     PanelApplication *application = g_new0(PanelApplication, 1);
+    application->started_at_us = g_get_monotonic_time();
+    application->current_page = PANEL_PAGES[0].page;
     application->queue_selected = -1;
     application->playlist_selected = -1;
     application->repeat_state = g_strdup("off");
@@ -940,8 +1221,8 @@ static void panel_application_free(PanelApplication *application)
         g_source_remove(application->pairing_source);
     if (application->clock_source != 0)
         g_source_remove(application->clock_source);
-    if (application->battery_source != 0)
-        g_source_remove(application->battery_source);
+    if (application->status_source != 0)
+        g_source_remove(application->status_source);
     if (application->config_reload_source != 0)
         g_source_remove(application->config_reload_source);
     g_clear_object(&application->config_monitor);
@@ -956,6 +1237,7 @@ static void panel_application_free(PanelApplication *application)
     g_free(application->album_art_url);
     g_free(application->repeat_state);
     g_free(application->queue_data);
+    g_clear_pointer(&application->config_cache, g_bytes_unref);
     g_free(application->poll_message);
     g_free(application->pairing_code);
     g_free(application->pairing_message);
@@ -1141,6 +1423,10 @@ static void activate(GtkApplication *gtk_application, gpointer user_data)
     gchar *cache_failure = NULL;
     if (panel_config_load_cache(&application->config->layout,
                                 &cache_failure)) {
+        /* The cached payload carries the settings Home Assistant last sent,
+         * so the panel starts at the right interval instead of running at the
+         * config.ini fallback until the first poll answers. */
+        apply_settings(application, &application->config->layout.settings);
         start_panel(application);
     } else {
         set_window_content(

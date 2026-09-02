@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import timedelta
 import logging
 from typing import Any
 
@@ -15,26 +17,31 @@ from homeassistant.core import HomeAssistant, ServiceCall, callback
 from homeassistant.exceptions import ConfigEntryNotReady, ServiceValidationError
 from homeassistant.helpers import config_validation as cv, entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.event import async_track_time_interval
 
 from .const import (
     ATTR_ENTRY_ID,
     ATTR_QUEUE_ITEM_ID,
     CONF_CONTROLLER_ENTRY_ID,
     CONF_PANEL_ID,
+    CONF_PANEL_SETTINGS,
     CONF_PLAYER_ENTITY,
     CONF_PROFILE,
     CONF_SLOTS,
     CONF_REFRESH_TOKEN_ID,
     CONF_USER_ID,
     DATA_CONTROLLER_ENTITIES,
+    DATA_PANELS,
     DATA_PROVISIONING,
     DATA_RUNTIMES,
     DOMAIN,
     ENTRY_VERSION,
     LEGACY_SLOTS,
+    PANEL_PLATFORMS,
     PLATFORMS,
     SERVICE_PLAY_QUEUE_ITEM,
     SERVICE_REFRESH,
+    panel_entity_unique_id,
     slot_unique_id,
 )
 from .coordinator import PlaylistCoordinator, QueueCoordinator
@@ -47,6 +54,7 @@ from .profiles import (
     panel_profile,
 )
 from .pairing import PairingStore
+from .panel_state import PanelSettings, PanelState
 from .provision import PanelProvisionView
 from .proxy import controller_device_info, panel_device_info
 from .slots import (
@@ -55,10 +63,21 @@ from .slots import (
     resolve_slots,
     stored_slots,
 )
+from .status import (
+    PanelStatusView,
+    async_register_panel,
+    async_unregister_panel,
+)
 from .tokens import async_revoke_panel_token
 from .transformations import SlotConfig, migrate_v1_section
 
 _LOGGER = logging.getLogger(__name__)
+
+
+# How often the panel's own entities are re-evaluated. Nothing changes on
+# this tick; it exists so that a tablet which stopped reporting becomes
+# unavailable on its own rather than at the next unrelated update.
+PANEL_PRESENCE_INTERVAL = timedelta(seconds=30)
 
 
 @dataclass(slots=True)
@@ -67,9 +86,15 @@ class PanelRuntime:
 
     client: ClientConfiguration
     device_info: DeviceInfo
+    state: PanelState
+    panel_id: str
+    cancel_presence: Callable[[], None] | None = None
 
     async def async_shutdown(self) -> None:
-        """A panel owns no timers of its own."""
+        """Stop the presence timer; a panel owns nothing else."""
+        if self.cancel_presence is not None:
+            self.cancel_presence()
+            self.cancel_presence = None
 
 
 @dataclass(slots=True)
@@ -198,11 +223,14 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
     data = hass.data.setdefault(DOMAIN, {})
     data.setdefault(DATA_RUNTIMES, {})
     data.setdefault(DATA_CONTROLLER_ENTITIES, {})
+    data.setdefault(DATA_PANELS, {})
     pairings = data.setdefault(DATA_PROVISIONING, PairingStore())
 
     # Unauthenticated by necessity: a panel asking for its first token has no
     # credentials to present. See pairing.py for what guards it instead.
     hass.http.register_view(PanelProvisionView(hass, pairings))
+    # Authenticated, and only for the panel's own user. See status.py.
+    hass.http.register_view(PanelStatusView(hass))
 
     async def async_handle_refresh(call: ServiceCall) -> None:
         runtimes: dict[str, MediaControllerRuntime] = hass.data[DOMAIN][
@@ -387,21 +415,81 @@ async def _async_setup_panel(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
 
     profile = panel_profile(entry.data.get(CONF_PROFILE))
+    state = PanelState(
+        PanelSettings.from_stored(entry.data.get(CONF_PANEL_SETTINGS))
+    )
     client = ClientConfiguration(
         hass,
         entry.entry_id,
         profile,
         resolve_slots(hass, profile, _entry_slots(entry)),
         _async_controller_entities(hass, controller_entry),
+        state,
     )
+    panel_id = entry.data.get(CONF_PANEL_ID, "")
     runtime = PanelRuntime(
-        client, panel_device_info(entry, controller_entry, profile)
+        client,
+        panel_device_info(entry, controller_entry, profile),
+        state,
+        panel_id,
     )
-    _async_remove_orphaned_entities(hass, entry, client)
+    _async_remove_orphaned_entities(
+        hass, entry, client, _panel_own_entities(entry)
+    )
+
+    # The panel's own user is what the status endpoint checks a report
+    # against, so a panel paired before that field existed simply never
+    # reports and its diagnostic entities stay unavailable.
+    async_register_panel(
+        hass,
+        panel_id,
+        state,
+        entry.data.get(CONF_USER_ID, ""),
+        entry.entry_id,
+    )
+
+    @callback
+    def _async_presence_tick(_now: Any) -> None:
+        """Re-evaluate availability, so a silent panel stops looking present."""
+        state.notify()
+
+    runtime.cancel_presence = async_track_time_interval(
+        hass, _async_presence_tick, PANEL_PRESENCE_INTERVAL
+    )
 
     entry.runtime_data = runtime
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    await hass.config_entries.async_forward_entry_setups(entry, PANEL_PLATFORMS)
     return True
+
+
+# The entities a panel device owns beyond its slot proxies and config sensor.
+# Each is (platform domain, unique-ID suffix); the suffix is also the entity
+# translation key.
+PANEL_OWN_ENTITIES: tuple[tuple[str, str], ...] = (
+    ("sensor", "battery"),
+    ("sensor", "uptime"),
+    ("sensor", "last_report"),
+    ("sensor", "wifi_signal"),
+    ("sensor", "temperature"),
+    ("binary_sensor", "connected"),
+    ("binary_sensor", "charging"),
+    ("switch", "screen"),
+    ("button", "restart"),
+    ("select", "page"),
+    ("number", "poll_interval"),
+    ("number", "playlist_poll_interval"),
+    ("number", "screen_off"),
+    ("number", "screen_brightness"),
+)
+
+
+@callback
+def _panel_own_entities(entry: ConfigEntry) -> set[tuple[str, str]]:
+    """Return the registry keys of the entities a panel owns itself."""
+    return {
+        (domain, panel_entity_unique_id(entry.entry_id, key))
+        for domain, key in PANEL_OWN_ENTITIES
+    }
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
@@ -422,10 +510,15 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry and all entry-owned resources."""
-    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    platforms = PANEL_PLATFORMS if is_panel_entry(entry) else PLATFORMS
+    unload_ok = await hass.config_entries.async_unload_platforms(
+        entry, platforms
+    )
     if not unload_ok:
         return False
     runtime = entry.runtime_data
+    if isinstance(runtime, PanelRuntime):
+        async_unregister_panel(hass, runtime.panel_id)
     await runtime.async_shutdown()
     hass.data[DOMAIN][DATA_RUNTIMES].pop(entry.entry_id, None)
     hass.data[DOMAIN][DATA_CONTROLLER_ENTITIES].pop(entry.entry_id, None)

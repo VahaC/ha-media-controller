@@ -236,23 +236,32 @@ everything is in attributes, like the existing queue and playlist sensors.
       "controls": ["toggle"]
     }
   ],
-  "poll_interval_ms": 1000,
-  "playlist_poll_interval_ms": 60000,
-  "screen_off_seconds": 30,
-  "revision": 7
+  "revision": 7,
+  "settings": {
+    "poll_interval_ms": 1000,
+    "playlist_poll_interval_ms": 60000,
+    "screen_off_seconds": 30
+  },
+  "commands": {
+    "display": {"state": "off", "at": 1756800000000},
+    "restart": {"at": 1756800000200},
+    "page": {"value": "room", "at": 1756800000300}
+  }
 }
 ```
 
 - Empty slots are **omitted**, not sent as nulls. A client renders what it
   receives, in `slot` order.
-- `revision` is a checksum of the rest of the payload, not a counter: it
-  changes whenever the configuration changes and is stable across restarts
-  without extra stored state. A client that sees an unchanged revision skips
-  re-layout.
-- The panel-local settings (`poll_interval_ms`, `screen_off_seconds`, the
-  camera block) appear only on `panel` config sensors, and only once the
-  corresponding settings entities exist — see
-  [ROADMAP.md](ROADMAP.md) item 1, phase 2.
+- `revision` is a checksum of the **layout** — everything above it — and not
+  a counter: it changes whenever the layout changes and is stable across
+  restarts without extra stored state. A client that sees an unchanged
+  revision skips re-layout. `settings` and `commands` are deliberately outside
+  it, because they are applied without rebuilding anything.
+- `settings` and `commands` appear only on `panel` config sensors. The ESP32
+  applies nothing at runtime, so it is sent neither. The camera block stays on
+  the tablet: it is read by a daemon that never talks to Home Assistant. See
+  [CONTRACT.md](CONTRACT.md) for both blocks and for the endpoint a panel
+  reports its battery and display state to.
 
 Real attributes, not an encoded JSON string. The queue sensor's string form is
 kept for the queue only; see [CONTRACT.md](CONTRACT.md).

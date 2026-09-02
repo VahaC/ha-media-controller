@@ -240,6 +240,10 @@ class ClientConfigPayload:
     player_entity: str = ""
     queue_entity: str = ""
     playlists_entity: str = ""
+    # Panels only. A client that owns no runtime settings — the ESP32 — gets
+    # neither key at all.
+    settings: Mapping[str, Any] | None = None
+    commands: Mapping[str, Any] | None = None
 
     def as_attributes(self) -> dict[str, Any]:
         """Return the Home Assistant attributes of a config sensor.
@@ -257,7 +261,14 @@ class ClientConfigPayload:
             "playlists": self.playlists_entity,
             "slots": [slot.as_dict() for slot in self.slots],
         }
+        # The revision covers the layout and nothing else. A client rebuilds
+        # its interface when it changes, and settings and commands must never
+        # cause that: they are applied while the panel keeps running.
         payload["revision"] = self.revision(payload)
+        if self.settings is not None:
+            payload["settings"] = dict(self.settings)
+        if self.commands is not None:
+            payload["commands"] = dict(self.commands)
         return payload
 
     @staticmethod

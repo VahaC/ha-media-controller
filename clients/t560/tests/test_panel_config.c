@@ -180,6 +180,141 @@ static void test_invalid_json_is_reported(void)
     panel_layout_clear(&layout);
 }
 
+/* Settings and commands are optional. A payload from an integration that
+ * predates them, or one whose blocks are the wrong shape, must leave the
+ * panel on its config.ini fallback rather than fail. */
+static void test_payload_without_settings_or_commands(void)
+{
+    PanelLayout layout = {0};
+    gchar *failure = NULL;
+
+    g_assert_true(parse(FULL_ATTRIBUTES, &layout, &failure));
+    g_assert_false(layout.settings.present);
+    g_assert_cmpint(layout.settings.screen_off_seconds, ==, -1);
+    g_assert_null(layout.commands.display_state);
+    g_assert_cmpint((gint)layout.commands.display_at, ==, 0);
+    g_assert_cmpint((gint)layout.commands.restart_at, ==, 0);
+    g_assert_null(layout.commands.page);
+
+    panel_layout_clear(&layout);
+}
+
+static void test_settings_are_read(void)
+{
+    PanelLayout layout = {0};
+    gchar *failure = NULL;
+
+    g_assert_true(parse(
+        "\"player\":\"media_player.a\",\"queue\":\"sensor.q\","
+        "\"playlists\":\"sensor.p\","
+        "\"settings\":{\"poll_interval_ms\":2500,"
+        "\"playlist_poll_interval_ms\":120000,"
+        "\"screen_off_seconds\":90}",
+        &layout, &failure));
+    g_assert_true(layout.settings.present);
+    g_assert_cmpuint(layout.settings.poll_interval_ms, ==, 2500);
+    g_assert_cmpuint(layout.settings.playlist_poll_interval_ms, ==, 120000);
+    g_assert_cmpint(layout.settings.screen_off_seconds, ==, 90);
+
+    panel_layout_clear(&layout);
+}
+
+/* Home Assistant clamps before it sends, so these bounds only guard against a
+ * payload that did not come from it. */
+static void test_settings_are_clamped(void)
+{
+    PanelLayout layout = {0};
+    gchar *failure = NULL;
+
+    g_assert_true(parse(
+        "\"player\":\"media_player.a\",\"queue\":\"sensor.q\","
+        "\"playlists\":\"sensor.p\","
+        "\"settings\":{\"poll_interval_ms\":1,"
+        "\"playlist_poll_interval_ms\":999999999,"
+        "\"screen_off_seconds\":0}",
+        &layout, &failure));
+    g_assert_cmpuint(layout.settings.poll_interval_ms, ==, 500);
+    g_assert_cmpuint(layout.settings.playlist_poll_interval_ms, ==, 3600000);
+    /* Zero is a value, not a missing setting: it disables the screen off. */
+    g_assert_cmpint(layout.settings.screen_off_seconds, ==, 0);
+
+    panel_layout_clear(&layout);
+}
+
+static void test_commands_are_read(void)
+{
+    PanelLayout layout = {0};
+    gchar *failure = NULL;
+
+    g_assert_true(parse(
+        "\"player\":\"media_player.a\",\"queue\":\"sensor.q\","
+        "\"playlists\":\"sensor.p\","
+        "\"commands\":{"
+        "\"display\":{\"state\":\"off\",\"at\":1756800000000},"
+        "\"brightness\":{\"value\":60,\"at\":1756800000100},"
+        "\"restart\":{\"at\":1756800000200},"
+        "\"page\":{\"value\":\"room\",\"at\":1756800000300}}",
+        &layout, &failure));
+    g_assert_cmpstr(layout.commands.display_state, ==, "off");
+    g_assert_cmpstr(layout.commands.page, ==, "room");
+    g_assert_true(layout.commands.page_at ==
+                  G_GINT64_CONSTANT(1756800000300));
+    g_assert_true(layout.commands.display_at == G_GINT64_CONSTANT(1756800000000));
+    g_assert_cmpint(layout.commands.brightness, ==, 60);
+    g_assert_true(layout.commands.brightness_at ==
+                  G_GINT64_CONSTANT(1756800000100));
+    g_assert_true(layout.commands.restart_at ==
+                  G_GINT64_CONSTANT(1756800000200));
+
+    panel_layout_clear(&layout);
+}
+
+/* A command without a moment cannot be ordered against the last one applied,
+ * and one this build does not know must not stop the rest being read. */
+static void test_malformed_commands_are_ignored(void)
+{
+    PanelLayout layout = {0};
+    gchar *failure = NULL;
+
+    g_assert_true(parse(
+        "\"player\":\"media_player.a\",\"queue\":\"sensor.q\","
+        "\"playlists\":\"sensor.p\","
+        "\"commands\":{"
+        "\"display\":{\"state\":\"dim\",\"at\":1756800000000},"
+        "\"brightness\":{\"value\":60},"
+        "\"reboot\":{\"at\":1756800000200},"
+        "\"page\":{\"value\":\"\",\"at\":1756800000400},"
+        "\"restart\":{\"at\":1756800000300}}",
+        &layout, &failure));
+    g_assert_null(layout.commands.display_state);
+    g_assert_null(layout.commands.page);
+    g_assert_cmpint((gint)layout.commands.page_at, ==, 0);
+    g_assert_cmpint((gint)layout.commands.display_at, ==, 0);
+    g_assert_cmpint((gint)layout.commands.brightness_at, ==, 0);
+    g_assert_true(layout.commands.restart_at ==
+                  G_GINT64_CONSTANT(1756800000300));
+
+    panel_layout_clear(&layout);
+}
+
+/* The blocks are objects. A producer that sent something else must read as
+ * "absent" rather than abort the panel. */
+static void test_wrongly_typed_blocks_are_ignored(void)
+{
+    PanelLayout layout = {0};
+    gchar *failure = NULL;
+
+    g_assert_true(parse(
+        "\"player\":\"media_player.a\",\"queue\":\"sensor.q\","
+        "\"playlists\":\"sensor.p\","
+        "\"settings\":[1,2],\"commands\":\"none\"",
+        &layout, &failure));
+    g_assert_false(layout.settings.present);
+    g_assert_null(layout.commands.display_state);
+
+    panel_layout_clear(&layout);
+}
+
 void panel_config_tests_register(void)
 {
     g_test_add_func("/config/full-payload", test_full_payload);
@@ -195,4 +330,13 @@ void panel_config_tests_register(void)
     g_test_add_func("/config/kelvin-bounds",
                     test_broken_kelvin_bounds_fall_back);
     g_test_add_func("/config/invalid-json", test_invalid_json_is_reported);
+    g_test_add_func("/config/no-settings-or-commands",
+                    test_payload_without_settings_or_commands);
+    g_test_add_func("/config/settings", test_settings_are_read);
+    g_test_add_func("/config/settings-clamped", test_settings_are_clamped);
+    g_test_add_func("/config/commands", test_commands_are_read);
+    g_test_add_func("/config/commands-malformed",
+                    test_malformed_commands_are_ignored);
+    g_test_add_func("/config/blocks-wrong-type",
+                    test_wrongly_typed_blocks_are_ignored);
 }

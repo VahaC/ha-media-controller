@@ -8,11 +8,15 @@ Treat this file as the change-control surface: a change to anything below
 affects released devices in the field. A change to code that is not described
 here affects one component only.
 
-Contract version: **2** (matches integration `0.8.x`).
+Contract version: **3** (matches integration `0.10.x`).
 
-Version 2 is purely additive. It adds the config sensor and lets proxy lights
-forward colour temperature; it removes nothing and renames no entity a version 1
-client already reads, so a client written against version 1 keeps working.
+Every version so far has been purely additive. Version 2 added the config
+sensor and let proxy lights forward colour temperature. Version 3 adds two
+optional blocks to the config sensor — `settings` and `commands` — the entities
+a panel device owns itself, and one endpoint a panel reports its own hardware
+state to. Nothing is removed and no entity a version 1 or 2 client reads is
+renamed, so an older client keeps working: it simply ignores the new blocks and
+never reports.
 
 ## Producer
 
@@ -30,6 +34,29 @@ hardcode them.
 | `sensor.<client>_config` | sensor | Room-control layout of one client |
 | `light.<client>_slot_<n>` | light | Room light proxy in slot n |
 | `switch.<client>_slot_<n>` | switch | Room switch proxy in slot n |
+
+A **panel** device carries these as well. They describe the tablet itself, so
+the ESP32 controller has none of them:
+
+| Entity | Platform | Purpose |
+| --- | --- | --- |
+| `sensor.<panel>_battery` | sensor | Reported charge, percent |
+| `sensor.<panel>_uptime` | sensor | When the application last started |
+| `sensor.<panel>_last_report` | sensor | When the tablet was last heard from |
+| `sensor.<panel>_wifi_signal` | sensor | Reported signal strength, dBm |
+| `sensor.<panel>_temperature` | sensor | Reported tablet temperature, °C |
+| `binary_sensor.<panel>_charging` | binary_sensor | Reported charger state |
+| `binary_sensor.<panel>_connected` | binary_sensor | Whether reports arrive |
+| `select.<panel>_page` | select | The page the panel is showing |
+| `switch.<panel>_screen` | switch | Backlight on or off |
+| `number.<panel>_screen_brightness` | number | Backlight level, percent |
+| `number.<panel>_poll_interval` | number | `poll_interval_ms`, in seconds |
+| `number.<panel>_playlist_poll_interval` | number | `playlist_poll_interval_ms`, in seconds |
+| `number.<panel>_screen_off` | number | `screen_off_seconds` |
+| `button.<panel>_restart` | button | Restart the panel application |
+
+The three interval numbers are shown in seconds and stored on the config entry
+in the units the payload uses. `screen_off` accepts 0, meaning never.
 
 `<client>` is the controller itself for the ESP32 slots, and the panel device
 for every other client.
@@ -104,7 +131,18 @@ list is capped at `DEFAULT_PLAYLIST_LIMIT` (500), fetched in pages of 100.
       "max_kelvin": 6535
     }
   ],
-  "revision": 2098342174
+  "revision": 2098342174,
+  "settings": {
+    "poll_interval_ms": 1000,
+    "playlist_poll_interval_ms": 60000,
+    "screen_off_seconds": 30
+  },
+  "commands": {
+    "display": {"state": "off", "at": 1756800000000},
+    "brightness": {"value": 60, "at": 1756800000100},
+    "restart": {"at": 1756800000200},
+    "page": {"value": "room", "at": 1756800000300}
+  }
 }
 ```
 
@@ -129,6 +167,62 @@ Real attributes, not an encoded string. Rules a client must follow:
   Home Assistant is unreachable at boot. A client that cannot store a cache —
   the ESP32 — must keep working from its compile-time defaults instead, and
   must not treat a missing config sensor as fatal.
+- `settings` and `commands` are **optional and only sent to panels**. Both are
+  absent for the ESP32 controller, which applies nothing at runtime. A client
+  that does not understand them ignores them.
+
+### Panel settings
+
+`settings` is a desired configuration, not an event: the newest payload simply
+wins, and a client adopts it without acknowledging it. It is what used to be
+edited in `config.ini` over SSH.
+
+| Key | Unit | Range |
+| --- | --- | --- |
+| `poll_interval_ms` | milliseconds | 500 – 30000 |
+| `playlist_poll_interval_ms` | milliseconds | 10000 – 3600000 |
+| `screen_off_seconds` | seconds | 0, or 5 – 3600 |
+
+Home Assistant clamps every value before it sends one; a client clamps again
+rather than trusting the payload. `screen_off_seconds` is 0 for never.
+
+`config.ini` on the tablet keeps the same keys, and they are a **fallback, not
+an override**: they decide only until the panel has read a payload carrying
+`settings`, and again if the cache is lost.
+
+### Panel commands
+
+`commands` carries moments rather than messages, because nothing can be pushed
+to a client that serves nothing. Every entry has an `at` field: milliseconds
+since the epoch, on the Home Assistant clock.
+
+A client keeps the newest `at` it has acted on for each command and applies one
+only when the payload's `at` is **greater**. That is what makes a poll a safe
+transport: a command is applied exactly once however often it is read, a client
+that was asleep still sees the last one, and a restart command does not run
+again on every boot.
+
+| Command | Fields | Meaning |
+| --- | --- | --- |
+| `display` | `state` (`on`/`off`), `at` | Turn the backlight on or off |
+| `brightness` | `value` (1 – 100), `at` | Set the backlight level |
+| `restart` | `at` | Restart the client application |
+| `page` | `value`, `at` | Show one of the client's pages |
+
+Rules:
+
+- a command that has never been issued is **omitted**, not sent as a zero;
+- an unknown command name must be ignored, not treated as an error;
+- an entry without a usable `at` must be ignored: it cannot be ordered;
+- **on the first payload after starting, a client adopts every `at` without
+  acting on it.** A command issued while the client was down has already been
+  overtaken by events, and a restart that has happened must not happen again on
+  every boot;
+- `state` is `on` or `off`. Any other value is ignored.
+- `page` names a client page. **Which pages exist is the client's business**,
+  so a client ignores a name it does not have rather than guessing at one.
+  The pages of the T560 panel are `player`, `queue`, `playlists`, and `room`;
+  Home Assistant offers exactly those and refuses any other before sending.
 
 How much of the payload a client uses depends on what it can change at
 runtime. The T560 panel builds its whole room page from it. The ESP32 takes
@@ -150,6 +244,54 @@ Proxy lights mirror the colour modes of their target: `onoff`, `brightness`, or
 `color_temp_kelvin` on turn-on. Colour, effects, and every other light feature
 are **not** forwarded. A client must not address the target entity directly to
 work around that; the slot mechanism is the only supported path.
+
+## Panel status endpoint
+
+`POST /api/media_controller/panel_status`
+
+Home Assistant cannot ask a tablet anything, so a panel pushes what only it
+knows. It reports on a change and at least once a minute; the entities above go
+unavailable when nothing has arrived for three minutes.
+
+The request is authenticated with the panel's own access token — the one it was
+handed during pairing. Home Assistant accepts it only when the caller is the
+Home Assistant user created for **that** panel, so one panel cannot write
+another's battery level.
+
+```json
+{
+  "panel_id": "t560_1a2b3c4d",
+  "version": "0.3.1",
+  "page": "player",
+  "uptime_seconds": 4210,
+  "wifi_dbm": -53,
+  "temperature_c": 31.5,
+  "battery": {"available": true, "percent": 82, "charging": false},
+  "display": {"available": true, "on": true, "brightness": 57}
+}
+```
+
+- `available` is what makes a field believable. A tablet with no battery, or
+  one whose display state is unknown, sends `false` and the matching entities
+  stay unavailable rather than reporting zero.
+- `percent` and `brightness` are 0 – 100; anything else is discarded. Use -1
+  for a backlight that exists but cannot be written by this session.
+- Booleans must be real JSON booleans; `1` is not `true`.
+- `version` sets the software version on the panel's Home Assistant device.
+- `page` is the page the client is showing, from the same closed list the
+  `page` command takes. A name Home Assistant does not offer is dropped, so
+  the select entity never holds an option it does not have.
+- `uptime_seconds` is how long the **application** has been running, not the
+  tablet. Home Assistant turns it into the moment it started, and republishes
+  that only when it moves by more than 15 seconds — otherwise rounding alone
+  would keep nudging it.
+- `wifi_dbm` (-120 – 0) and `temperature_c` (-50 – 150) are optional. A panel
+  omits either where the hardware has none, and the matching sensor stays
+  unavailable. Neither is worth a report of its own: send them with whatever
+  report is already going.
+
+Answers: `200` with `{"status": "ok"}`; `400` for an unusable body; `403` when
+the token belongs to another account; `404` when no loaded panel has that ID.
 
 ## Services
 
@@ -204,4 +346,8 @@ Tests that protect the contract:
 - `tests/test_migration.py` — the version 1 slots keep their numbers;
 - `clients/t560/tests/test_panel_config.c` — payload parsing on the client
   side, including an unknown control name;
-- `tests/test_pairing.py` — the rules that guard the provisioning endpoint.
+- `tests/test_pairing.py` — the rules that guard the provisioning endpoint;
+- `tests/test_panel_state.py` — the settings, the command channel, and the
+  validation of a status report;
+- `clients/t560/tests/test_power_button.py` — the tablet side of the settings
+  and of the display request.

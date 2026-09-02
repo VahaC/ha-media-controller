@@ -23,6 +23,7 @@ from .profiles import (
     limit_controls,
     normalize_capabilities,
 )
+from .panel_state import PanelState
 from .transformations import (
     ClientConfigPayload,
     SlotConfig,
@@ -199,24 +200,39 @@ class ClientConfiguration:
         profile: ClientProfile,
         slots: Iterable[SlotConfig],
         controller: ControllerEntities,
+        panel: PanelState | None = None,
     ) -> None:
-        """Initialize one client's configuration."""
+        """Initialize one client's configuration.
+
+        `panel` is the settings and command channel of a panel device. The
+        ESP32 controller has none: it applies nothing at runtime, so sending
+        it settings it cannot act on would only mislead a reader of the
+        payload.
+        """
         self.hass = hass
         self.owner_id = owner_id
         self.profile = profile
         self.slots: list[SlotConfig] = list(slots)
         self.controller = controller
+        self.panel = panel
         self._proxy_entity_ids: dict[int, str] = {}
         self._listeners: list[Callable[[], None]] = []
 
     @callback
     def async_add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
-        """Subscribe to proxy and controller entity ID changes."""
+        """Subscribe to proxy, controller, and panel changes."""
         self._listeners.append(listener)
         remove_controller = self.controller.async_add_listener(listener)
+        remove_panel = (
+            self.panel.add_config_listener(listener)
+            if self.panel is not None
+            else None
+        )
 
         def remove() -> None:
             remove_controller()
+            if remove_panel is not None:
+                remove_panel()
             if listener in self._listeners:
                 self._listeners.remove(listener)
 
@@ -242,7 +258,10 @@ class ClientConfiguration:
 
     def payload(self) -> ClientConfigPayload:
         """Build what this client reads from its config sensor."""
+        panel = self.panel.as_payload() if self.panel is not None else {}
         return ClientConfigPayload(
+            settings=panel.get("settings"),
+            commands=panel.get("commands"),
             profile=self.profile.slug,
             slot_count=self.profile.slot_count,
             player_entity=self.controller.player_entity,

@@ -1,4 +1,5 @@
 import importlib.util
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -11,11 +12,14 @@ SPEC.loader.exec_module(POWER_BUTTON)
 
 
 class ScreenOffSecondsTest(unittest.TestCase):
+    """config.ini is the fallback a tablet uses before it reaches Home
+    Assistant, so it keeps its own rules."""
+
     def read(self, contents):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.ini"
             path.write_text(contents, encoding="utf-8")
-            return POWER_BUTTON.screen_off_seconds(str(path))
+            return POWER_BUTTON.config_screen_off(str(path))
 
     def test_reads_the_configured_timeout(self):
         self.assertEqual(self.read("[panel]\nscreen_off_seconds=45\n"), 45)
@@ -44,9 +48,136 @@ class ScreenOffSecondsTest(unittest.TestCase):
             POWER_BUTTON.DEFAULT_SCREEN_OFF_SECONDS,
         )
         self.assertEqual(
-            POWER_BUTTON.screen_off_seconds("/nonexistent/config.ini"),
+            POWER_BUTTON.config_screen_off("/nonexistent/config.ini"),
             POWER_BUTTON.DEFAULT_SCREEN_OFF_SECONDS,
         )
+
+
+class HomeAssistantScreenOffTest(unittest.TestCase):
+    """The timeout Home Assistant owns is read out of the panel's own cache,
+    so the two processes cannot hold different ideas of it."""
+
+    def read(self, contents):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "layout.json"
+            path.write_text(contents, encoding="utf-8")
+            return POWER_BUTTON.home_assistant_screen_off(str(path))
+
+    def payload(self, settings):
+        return json.dumps({"attributes": {"settings": settings}})
+
+    def test_reads_the_setting(self):
+        self.assertEqual(
+            self.read(self.payload({"screen_off_seconds": 90})), 90
+        )
+
+    def test_zero_disables_automatic_screen_off(self):
+        self.assertEqual(
+            self.read(self.payload({"screen_off_seconds": 0})), 0
+        )
+
+    def test_clamps_out_of_range_values(self):
+        self.assertEqual(
+            self.read(self.payload({"screen_off_seconds": 2})),
+            POWER_BUTTON.MIN_SCREEN_OFF_SECONDS,
+        )
+
+    def test_no_setting_means_config_ini_decides(self):
+        self.assertIsNone(self.read(self.payload({})))
+        self.assertIsNone(self.read(json.dumps({"attributes": {}})))
+        self.assertIsNone(self.read("{}"))
+
+    def test_an_unusable_cache_means_config_ini_decides(self):
+        self.assertIsNone(self.read("not json"))
+        self.assertIsNone(self.read("[]"))
+        self.assertIsNone(
+            self.read(self.payload({"screen_off_seconds": "soon"}))
+        )
+        self.assertIsNone(
+            self.read(self.payload({"screen_off_seconds": True}))
+        )
+        self.assertIsNone(
+            POWER_BUTTON.home_assistant_screen_off("/nonexistent/layout.json")
+        )
+
+
+class DisplayRequestTest(unittest.TestCase):
+    """What the panel asks for is read once and then forgotten, so a request
+    that cannot be carried out is not retried forever."""
+
+    def take(self, contents):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "display-request.ini"
+            if contents is not None:
+                path.write_text(contents, encoding="utf-8")
+            original = POWER_BUTTON.DISPLAY_REQUEST
+            POWER_BUTTON.DISPLAY_REQUEST = str(path)
+            try:
+                return POWER_BUTTON.take_display_request(), path.exists()
+            finally:
+                POWER_BUTTON.DISPLAY_REQUEST = original
+
+    def test_reads_both_requests(self):
+        result, remains = self.take(
+            "[display]\nstate=off\nbrightness=40\n"
+        )
+        self.assertEqual(result, ("off", 40))
+        self.assertFalse(remains)
+
+    def test_missing_file_is_not_a_request(self):
+        self.assertEqual(self.take(None), ((None, None), False))
+
+    def test_an_unknown_state_is_ignored(self):
+        result, _ = self.take("[display]\nstate=dim\n")
+        self.assertEqual(result, (None, None))
+
+    def test_an_unusable_brightness_is_ignored(self):
+        result, _ = self.take("[display]\nstate=on\nbrightness=bright\n")
+        self.assertEqual(result, ("on", None))
+
+
+class BacklightTest(unittest.TestCase):
+    """A backlight this session cannot write must read as absent, so Home
+    Assistant shows the control as unavailable instead of doing nothing."""
+
+    def device(self, directory, brightness, maximum):
+        path = Path(directory) / "panel"
+        path.mkdir()
+        (path / "brightness").write_text(f"{brightness}\n", encoding="utf-8")
+        (path / "max_brightness").write_text(f"{maximum}\n", encoding="utf-8")
+        return path
+
+    def test_percent_is_scaled_from_the_kernel_maximum(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.device(directory, 128, 255)
+            self.assertEqual(
+                POWER_BUTTON.read_backlight_percent(str(path)), 50
+            )
+
+    def test_no_device_reads_as_no_backlight(self):
+        self.assertEqual(POWER_BUTTON.read_backlight_percent(None), -1)
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertIsNone(POWER_BUTTON.backlight_device(directory))
+        self.assertIsNone(POWER_BUTTON.backlight_device("/nonexistent"))
+
+    def test_writing_never_reaches_zero(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.device(directory, 255, 255)
+            self.assertTrue(
+                POWER_BUTTON.write_backlight_percent(str(path), 1)
+            )
+            raw = (path / "brightness").read_text(encoding="utf-8").strip()
+            self.assertEqual(raw, "3")
+
+    def test_a_maximum_of_zero_is_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.device(directory, 0, 0)
+            self.assertFalse(
+                POWER_BUTTON.write_backlight_percent(str(path), 50)
+            )
+            self.assertEqual(
+                POWER_BUTTON.read_backlight_percent(str(path)), -1
+            )
 
 
 class MotionWakeGraceSecondsTest(unittest.TestCase):

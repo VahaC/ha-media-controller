@@ -5,10 +5,20 @@
 The handler also owns DPMS for the motion detector: SIGUSR2 from
 t560-motion-detector.py turns the display on and postpones the automatic
 screen off while the camera keeps seeing movement.
+
+It is the only owner of the backlight, which is why Home Assistant reaches
+the display through it rather than around it. Two processes forcing DPMS
+would race over the pointer grab that stops a wake-up tap from reaching the
+interface, so t560-panel asks by writing a request file and this handler acts
+on it, deletes it, and publishes what the display is actually doing in a
+state file the panel reports back. The screen-off timeout arrives the same
+way: Home Assistant owns it, the panel caches the payload that carries it,
+and this handler re-reads that cache whenever it changes.
 """
 
 import configparser
 import ctypes
+import json
 import os
 import select
 import signal
@@ -38,6 +48,17 @@ LONG_PRESS_SECONDS = 1.5
 POLL_SECONDS = 0.5
 TOUCH_GRAB_SECONDS = 3.0
 CONFIG_FILE = "~/.config/t560-music-panel/config.ini"
+# Written by t560-panel on every change of the Home Assistant configuration.
+# It is the raw state document of the panel's config sensor, so the settings
+# Home Assistant owns are under attributes.settings.
+CACHE_DIR = "~/.cache/t560-music-panel"
+LAYOUT_CACHE = f"{CACHE_DIR}/layout.json"
+DISPLAY_REQUEST = f"{CACHE_DIR}/display-request.ini"
+DISPLAY_STATE = f"{CACHE_DIR}/display-state.ini"
+# The panel treats a state file older than three minutes as absent, which is
+# how a handler that died stops being believed.
+STATE_REWRITE_SECONDS = 30
+BACKLIGHT_ROOT = "/sys/class/backlight"
 DEFAULT_SCREEN_OFF_SECONDS = 30
 MIN_SCREEN_OFF_SECONDS = 5
 MAX_SCREEN_OFF_SECONDS = 3600
@@ -105,8 +126,43 @@ def log(message):
     print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {message}", flush=True)
 
 
-def screen_off_seconds(path=CONFIG_FILE):
-    """Return the inactivity timeout in seconds; 0 disables automatic off."""
+def clamp_screen_off(seconds):
+    """Return a screen-off timeout inside the range this handler accepts."""
+    if seconds <= 0:
+        return 0
+    return min(max(seconds, MIN_SCREEN_OFF_SECONDS), MAX_SCREEN_OFF_SECONDS)
+
+
+def home_assistant_screen_off(path=LAYOUT_CACHE):
+    """Return the timeout Home Assistant set, or None when it set none.
+
+    The cache is the panel's, not this handler's: it is the last configuration
+    payload the panel accepted. Reading it rather than keeping a second copy
+    means the two processes can never disagree about what Home Assistant said.
+    """
+    try:
+        with open(os.path.expanduser(path), encoding="utf-8") as handle:
+            document = json.load(handle)
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+
+    if not isinstance(document, dict):
+        return None
+    attributes = document.get("attributes")
+    if not isinstance(attributes, dict):
+        return None
+    settings = attributes.get("settings")
+    if not isinstance(settings, dict):
+        return None
+
+    value = settings.get("screen_off_seconds")
+    if not isinstance(value, int) or isinstance(value, bool):
+        return None
+    return clamp_screen_off(value)
+
+
+def config_screen_off(path=CONFIG_FILE):
+    """Return the inactivity timeout from config.ini; 0 disables it."""
     parser = configparser.ConfigParser()
     try:
         parser.read(os.path.expanduser(path), encoding="utf-8")
@@ -124,9 +180,152 @@ def screen_off_seconds(path=CONFIG_FILE):
         log(f"WARNING: screen_off_seconds is not an integer: {value.strip()!r}")
         return DEFAULT_SCREEN_OFF_SECONDS
 
-    if seconds <= 0:
+    return clamp_screen_off(seconds)
+
+
+def screen_off_seconds():
+    """Return the timeout in force: Home Assistant first, config.ini after.
+
+    config.ini is not an override but a fallback. It is what a tablet uses
+    before it has ever reached Home Assistant, and what it falls back to if
+    the cache is lost.
+    """
+    from_home_assistant = home_assistant_screen_off()
+    if from_home_assistant is not None:
+        return from_home_assistant
+    return config_screen_off()
+
+
+def layout_cache_stamp(path=LAYOUT_CACHE):
+    """Return the modification time of the panel's configuration cache.
+
+    The panel rewrites it only when the payload actually changed, so a new
+    timestamp is a reliable signal that a setting may have moved.
+    """
+    try:
+        return os.stat(os.path.expanduser(path)).st_mtime
+    except OSError:
+        return None
+
+
+def backlight_device(root=BACKLIGHT_ROOT):
+    """Return the backlight this session may write, or None.
+
+    Writing the kernel's brightness file usually needs a udev rule granting
+    the session user access. Without one the tablet simply reports no
+    controllable backlight, and the control in Home Assistant stays
+    unavailable rather than silently doing nothing.
+    """
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        return None
+
+    for name in names:
+        directory = os.path.join(root, name)
+        brightness = os.path.join(directory, "brightness")
+        maximum = os.path.join(directory, "max_brightness")
+        if os.access(brightness, os.W_OK) and os.access(maximum, os.R_OK):
+            return directory
+    return None
+
+
+def read_backlight_max(directory):
+    """Return the raw value that means full brightness, or 0."""
+    try:
+        with open(os.path.join(directory, "max_brightness"),
+                  encoding="utf-8") as handle:
+            return max(int(handle.read().strip()), 0)
+    except (OSError, ValueError):
         return 0
-    return min(max(seconds, MIN_SCREEN_OFF_SECONDS), MAX_SCREEN_OFF_SECONDS)
+
+
+def read_backlight_percent(directory):
+    """Return the current backlight level in percent, or -1."""
+    if directory is None:
+        return -1
+    maximum = read_backlight_max(directory)
+    if maximum <= 0:
+        return -1
+    try:
+        with open(os.path.join(directory, "brightness"),
+                  encoding="utf-8") as handle:
+            raw = int(handle.read().strip())
+    except (OSError, ValueError):
+        return -1
+    return min(max(round(raw * 100 / maximum), 0), 100)
+
+
+def write_backlight_percent(directory, percent):
+    """Set the backlight level; return whether the kernel accepted it."""
+    if directory is None:
+        return False
+    maximum = read_backlight_max(directory)
+    if maximum <= 0:
+        return False
+
+    percent = min(max(int(percent), 1), 100)
+    # Never round down to zero: a backlight at zero is a display that looks
+    # broken and cannot be turned back up from the tablet.
+    raw = max(round(maximum * percent / 100), 1)
+    try:
+        with open(os.path.join(directory, "brightness"), "w",
+                  encoding="utf-8") as handle:
+            handle.write(f"{raw}\n")
+    except OSError as error:
+        log(f"WARNING: could not set the backlight: {error}")
+        return False
+    return True
+
+
+def write_display_state(on, brightness):
+    """Publish what the display is doing, for the panel to report onward."""
+    path = os.path.expanduser(DISPLAY_STATE)
+    temporary = f"{path}.new"
+    state = "true" if on else "false"
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(temporary, "w", encoding="utf-8") as handle:
+            handle.write("[display]\n")
+            handle.write(f"on={state}\n")
+            handle.write(f"brightness={brightness}\n")
+        os.replace(temporary, path)
+    except OSError as error:
+        log(f"WARNING: could not publish the display state: {error}")
+
+
+def take_display_request():
+    """Return what the panel asked for, and forget it.
+
+    The request is deleted before it is acted on: one that cannot be carried
+    out must not be retried forever, and the state file is what tells Home
+    Assistant what really happened.
+    """
+    path = os.path.expanduser(DISPLAY_REQUEST)
+    parser = configparser.ConfigParser()
+    try:
+        found = parser.read(path, encoding="utf-8")
+    except (OSError, UnicodeDecodeError, configparser.Error) as error:
+        log(f"WARNING: could not read the display request: {error}")
+        found = [path]
+        parser = configparser.ConfigParser()
+    if not found:
+        return None, None
+
+    state = parser.get("display", "state", fallback=None)
+    brightness = parser.get("display", "brightness", fallback=None)
+    try:
+        os.unlink(path)
+    except OSError as error:
+        log(f"WARNING: could not clear the display request: {error}")
+
+    if state not in ("on", "off"):
+        state = None
+    try:
+        brightness = int(brightness) if brightness is not None else None
+    except ValueError:
+        brightness = None
+    return state, brightness
 
 
 def motion_wake_grace_seconds(path=CONFIG_FILE):
@@ -373,6 +572,25 @@ def toggle_desktop():
     log("home: toggled application and desktop")
 
 
+def apply_screen_off(seconds, idle_detection):
+    """Put a screen-off timeout into force at the X server.
+
+    This handler drives DPMS itself whenever the idle timer is readable,
+    which is what lets camera motion postpone the timeout. Without libXss the
+    X server applies the timeout on its own instead.
+    """
+    run_xset(["dpms", "0", "0", str(0 if idle_detection else seconds)])
+
+
+def describe_auto_off(seconds, idle_detection):
+    """Return how the current screen-off timeout is being applied."""
+    if seconds == 0:
+        return "disabled"
+    if idle_detection:
+        return f"{seconds}s idle timer"
+    return f"{seconds}s X server timeout"
+
+
 def main():
     global display, root
 
@@ -400,11 +618,11 @@ def main():
     auto_off_seconds = screen_off_seconds()
     motion_grace = motion_wake_grace_seconds()
     idle_detection = auto_off_seconds > 0 and enable_idle_detection()
-
-    # This handler drives DPMS itself whenever the idle timer is readable.
-    # Otherwise the X server applies the inactivity timeout on its own.
-    server_off_timeout = 0 if idle_detection else auto_off_seconds
-    run_xset(["dpms", "0", "0", str(server_off_timeout)])
+    apply_screen_off(auto_off_seconds, idle_detection)
+    # Home Assistant owns the timeout; the panel caches the payload carrying
+    # it, and a new timestamp on that cache is the signal to re-read.
+    settings_stamp = layout_cache_stamp()
+    backlight = backlight_device()
     xext.DPMSEnable(display)
     x11.XSelectInput(display, root, KEY_PRESS_MASK | KEY_RELEASE_MASK)
     x11.XGrabKey(
@@ -442,16 +660,16 @@ def main():
     # The camera daemon reports motion with SIGUSR2.
     signal.signal(signal.SIGUSR2, lambda _signum, _frame: None)
 
-    if auto_off_seconds == 0:
-        auto_off_state = "disabled"
-    elif idle_detection:
-        auto_off_state = f"{auto_off_seconds}s idle timer"
-    else:
-        auto_off_state = f"{auto_off_seconds}s X server timeout"
+    # Impossible values, so that the first poll always publishes a state.
+    published_on = None
+    published_brightness = None
+    published_at = 0.0
+    auto_off_state = describe_auto_off(auto_off_seconds, idle_detection)
     log(
         f"started: keycode={keycode}, monitor_on={monitor_on}, "
         f"auto screen off={auto_off_state}, "
-        f"motion wake grace={motion_grace}s"
+        f"motion wake grace={motion_grace}s, "
+        f"backlight={backlight or 'none writable'}"
     )
 
     while True:
@@ -558,6 +776,38 @@ def main():
             log("long press: opened power menu")
 
         if now >= next_poll:
+            stamp = layout_cache_stamp()
+            if stamp != settings_stamp:
+                settings_stamp = stamp
+                requested = screen_off_seconds()
+                if requested != auto_off_seconds:
+                    auto_off_seconds = requested
+                    if auto_off_seconds > 0 and not idle_detection:
+                        idle_detection = enable_idle_detection()
+                    apply_screen_off(auto_off_seconds, idle_detection)
+                    log("auto screen off: " + describe_auto_off(
+                        auto_off_seconds, idle_detection))
+
+            # What Home Assistant asked for, through the panel. It is applied
+            # here rather than in the panel process so that the pointer grab
+            # below still belongs to a single owner.
+            state_request, brightness_request = take_display_request()
+            if brightness_request is not None:
+                if write_backlight_percent(backlight, brightness_request):
+                    log(f"home assistant: backlight {brightness_request}%")
+            if state_request == "on" and not monitor_on:
+                wake_display()
+                if not idle_detection:
+                    # The server timeout has already elapsed; without this
+                    # reset it would blank the display again at once.
+                    reset_idle_timer()
+                monitor_on = True
+                log("home assistant: backlight on")
+            elif state_request == "off" and monitor_on:
+                blank_display(manual=True)
+                monitor_on = False
+                log("home assistant: backlight off")
+
             if not pressed:
                 actual_on = dpms_level() == DPMS_MODE_ON
                 if actual_on != monitor_on:
@@ -573,7 +823,7 @@ def main():
                         note_display_off(manual=True)
                         log("backlight turned off externally")
 
-                if monitor_on and idle_detection:
+                if monitor_on and idle_detection and auto_off_seconds > 0:
                     idle = idle_seconds()
                     motion_recent = (last_motion is not None
                                      and now - last_motion < auto_off_seconds)
@@ -596,6 +846,18 @@ def main():
                       now - wake_touch_started >= TOUCH_GRAB_SECONDS):
                     wake_touch = False
                     ungrab_pointer()
+
+            # The panel reads this and reports it to Home Assistant. It is
+            # rewritten on every change and regularly otherwise, because the
+            # panel treats a stale file as a handler that is no longer there.
+            brightness = read_backlight_percent(backlight)
+            if (monitor_on != published_on
+                    or brightness != published_brightness
+                    or now - published_at >= STATE_REWRITE_SECONDS):
+                write_display_state(monitor_on, brightness)
+                published_on = monitor_on
+                published_brightness = brightness
+                published_at = now
             next_poll = now + POLL_SECONDS
 
 

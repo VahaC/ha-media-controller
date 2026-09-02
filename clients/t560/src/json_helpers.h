@@ -10,6 +10,7 @@ gboolean json_object_number(JsonObject *object, const gchar *member,
 gboolean json_object_boolean(JsonObject *object, const gchar *member,
                              gboolean fallback);
 JsonObject *json_state_attributes(JsonObject *state);
+JsonObject *json_optional_object(JsonObject *object, const gchar *member);
 JsonArray *json_optional_array(JsonObject *object, const gchar *member);
 gchar *json_builder_to_string(JsonBuilder *builder);
 void json_copy_string_array(GPtrArray *target, JsonArray *source);

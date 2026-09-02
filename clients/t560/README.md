@@ -10,7 +10,10 @@ repository; the other is the [ESP32-S3 controller](../../docs/ESP32_CONTROLLER.m
 Both read the same [contract](../../docs/CONTRACT.md).
 
 The application does not use WebKit, a browser, HTML/JavaScript, text fields,
-or an on-screen keyboard. All settings are edited over SSH.
+or an on-screen keyboard. Nothing is configured on the tablet: the room
+controls, the poll intervals, the screen timeout, the backlight, and a restart
+of the application are all reached from Home Assistant, and the only file that
+is ever written by hand is an optional set of fallbacks.
 
 ## Implemented features
 
@@ -47,8 +50,28 @@ or an on-screen keyboard. All settings are edited over SSH.
 - A short Power press turns the display off; any key or touchscreen input wakes it.
 - The tap that wakes the display only wakes it: the button handler holds a
   pointer grab while the display is off, so no control is pressed by mistake.
-- The display turns off automatically after a configurable inactivity timeout
-  (`screen_off_seconds`, 30 seconds by default).
+- The display turns off automatically after an inactivity timeout, set in
+  Home Assistant and 30 seconds by default. Zero keeps the display on until
+  the Power button is pressed.
+- The poll interval, the playlist refresh interval, and that timeout are
+  number entities on the panel's Home Assistant device. A change is applied
+  within a poll cycle and restarts nothing.
+- The backlight is a switch in Home Assistant, and its level a slider where
+  the tablet grants write access to the kernel backlight. Pressing the Power
+  button on the tablet is visible there, and the other way round.
+- A button in Home Assistant restarts the panel application; the watchdog
+  brings it back within about two seconds.
+- Which page the panel is on is visible in Home Assistant as a select, and
+  setting it sends the panel to that page. Pressing a navigation button on
+  the tablet updates it within a second.
+- Battery charge and charger state are reported to Home Assistant on a change
+  and at least once a minute, as a battery sensor and a charging sensor on the
+  panel device, alongside a connectivity sensor that says whether the tablet
+  is reporting at all.
+- The same report carries how long the application has been running, the
+  Wi-Fi signal read from `/proc/net/wireless`, and the tablet temperature read
+  from `/sys/class/thermal`. All three are diagnostic sensors, and each is
+  unavailable where the tablet has nothing to read.
 - Camera motion detection: movement turns the display on while it is off, and
   postpones the automatic screen off while it continues. It is off by default
   because the built-in camera of this tablet cannot stream to userspace; see
@@ -62,18 +85,26 @@ or an on-screen keyboard. All settings are edited over SSH.
 ## Tablet configuration files
 
 ```text
-~/.config/t560-music-panel/panel-id     (written on the first run)
-~/.config/t560-music-panel/token        (written when pairing succeeds)
-~/.config/t560-music-panel/config.ini   (optional)
+~/.config/t560-music-panel/panel-id          (written on the first run)
+~/.config/t560-music-panel/token             (written when pairing succeeds)
+~/.config/t560-music-panel/config.ini        (optional)
 ~/.cache/t560-music-panel/layout.json
 ~/.cache/t560-music-panel/discovered.ini
+~/.cache/t560-music-panel/display-state.ini  (written by the button handler)
+~/.cache/t560-music-panel/display-request.ini
 ```
 
 **Only the `token` file is required.** `config.ini` is optional: Home
 Assistant is found over mDNS, and the panel identifies itself by a
 per-device ID derived from its hardware address on the first run. The file
-exists to override one of those, or to hold the tablet-local settings the
-Power button handler and the motion detector read — `[panel]` and `[camera]`.
+exists to override one of those, or to hold the settings the motion detector
+reads — the `[camera]` section.
+
+The `[panel]` keys — `poll_interval_ms`, `playlist_poll_interval_ms`, and
+`screen_off_seconds` — are **owned by Home Assistant** and edited there as
+number entities on the panel device. What is left in `config.ini` is the
+fallback the tablet uses before it has ever reached Home Assistant, and again
+if the cache is lost. Nothing on the tablet has to be edited to change them.
 
 Everything else — which entities this panel controls, their labels, and which
 controls each tile offers — is configured in Home Assistant and read from the
@@ -100,7 +131,32 @@ placeholder screen.
 
 A layout change in Home Assistant restarts the panel the same way a
 `config.ini` change does: the watchdog brings it back within about two
-seconds, reading the fresh cache. The tablet does not reboot.
+seconds, reading the fresh cache. The tablet does not reboot. A **settings**
+change does not restart anything: the panel adopts a new poll interval on the
+spot, and the Power button handler notices the new screen timeout in the cache
+within half a second.
+
+### The display, and who owns it
+
+`t560-power-button.py` is the only owner of the backlight. It drives DPMS, it
+holds the pointer grab that keeps a wake-up tap out of the interface, and it
+applies the inactivity timeout — so Home Assistant reaches the display through
+it rather than around it. Two processes forcing DPMS would race over that grab.
+
+The panel writes `display-request.ini` when Home Assistant asks for the display
+or the backlight level to change; the handler acts on it, deletes it, and
+publishes what the display is really doing in `display-state.ini`. The panel
+reads that file and reports it onward, together with the battery, on a change
+and at least once a minute. Files rather than signals, because the handler
+already wakes twice a second and busybox cannot send a real-time signal by
+name.
+
+Setting the backlight **level** needs write access to
+`/sys/class/backlight/<device>/brightness`, which the session user does not
+have by default. Grant it with a udev rule or by adding the user to the group
+that owns the file; without it the tablet reports no controllable backlight and
+the brightness control in Home Assistant stays unavailable. Turning the display
+on and off works either way.
 
 The Media Controller integration in
 [custom_components/media_controller/](../../custom_components/media_controller)
@@ -116,17 +172,22 @@ The application is split into focused C modules with explicit interfaces:
 - `application` owns the application lifecycle and coordinates UI events with
   Home Assistant state;
 - `app_config` validates and owns configuration data;
-- `panel_config` reads the layout Home Assistant publishes and caches it;
+- `panel_config` reads the layout, the settings, and the commands Home
+  Assistant publishes, and caches the payload;
 - `home_assistant_client` encapsulates authenticated asynchronous HTTP I/O;
 - `panel_ui` builds and updates GTK widgets without knowing API details;
 - `json_helpers` contains reusable, unit-tested JSON accessors;
 - `system_status` reads the battery charge and charging state from
-  `/sys/class/power_supply`;
+  `/sys/class/power_supply`, and the Wi-Fi signal and tablet temperature from
+  `/proc/net/wireless` and `/sys/class/thermal`;
+- `panel_display` asks the Power button handler to change the backlight, and
+  reads back what it did;
 - `main` is the minimal process entry point.
 
 Two Python helpers run beside the application. `t560-power-button.py` owns
-DPMS: it handles the Power and Home buttons, the inactivity timeout, and the
-motion events. `t560-motion-detector.py` captures camera frames and reports
+DPMS and the backlight: it handles the Power and Home buttons, the inactivity
+timeout Home Assistant sets, the motion events, and the display requests the
+panel forwards. `t560-motion-detector.py` captures camera frames and reports
 motion to that handler with `SIGUSR2`.
 
 The Makefile tracks header dependencies automatically. Run `make test` for the

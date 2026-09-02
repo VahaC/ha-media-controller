@@ -27,4 +27,6 @@ def exclude_attributes(hass: HomeAssistant) -> set[str]:
         "player",
         "queue",
         "playlists",
+        "settings",
+        "commands",
     }
