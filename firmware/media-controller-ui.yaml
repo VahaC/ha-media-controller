@@ -1882,6 +1882,8 @@ lvgl:
     # PAGE 1 — Player
     # ════════════════════════════════════════
     - id: page_player
+      on_load:
+        - lambda: id(current_page) = "player";
       on_swipe_left:
         - script.execute: nav_to_switches_move_left
       on_swipe_right:
@@ -2221,6 +2223,8 @@ lvgl:
     - id: page_player_minimal
       bg_color: 0x05060c
       bg_opa: COVER
+      on_load:
+        - lambda: id(current_page) = "player";
       on_swipe_left:
         - script.execute: nav_to_switches_move_left
       on_swipe_right:
@@ -2624,6 +2628,8 @@ lvgl:
     - id: page_player_cover
       bg_color: 0x05060c
       bg_opa: COVER
+      on_load:
+        - lambda: id(current_page) = "player";
       on_swipe_left:
         - script.execute: nav_to_switches_move_left
       on_swipe_right:
@@ -2989,6 +2995,8 @@ lvgl:
     # PAGE 2 — Playlists
     # ════════════════════════════════════════
     - id: page_playlists
+      on_load:
+        - lambda: id(current_page) = "playlists";
       widgets:
         - label:
             text: "Playlists"
@@ -3069,6 +3077,7 @@ lvgl:
     # ════════════════════════════════════════
     - id: page_queue
       on_load:
+        - lambda: id(current_page) = "queue";
         - script.execute: refresh_queue
       widgets:
         - label:
@@ -3140,6 +3149,7 @@ lvgl:
     # ════════════════════════════════════════
     - id: page_switches
       on_load:
+        - lambda: id(current_page) = "room";
         - lambda: id(switches_swipe_active) = false;
       on_swipe_right:
         - lambda: id(switches_swipe_active) = true;

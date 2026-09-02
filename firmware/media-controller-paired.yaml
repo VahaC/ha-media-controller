@@ -414,6 +414,11 @@ globals:
     restore_value: false
     initial_value: "0"
 
+  - id: last_report_page
+    type: std::string
+    restore_value: false
+    initial_value: '""'
+
   # -- The position Home Assistant last reported, as opposed to the one the
   # -- interface advances locally every second. Home Assistant's number does
   # -- not move on its own, so publishing it back on every poll would undo
@@ -1389,6 +1394,7 @@ script:
                            (int) (id(backlight).remote_values.get_brightness()
                                   * 100.0f));
                   json += buf;
+                  id(last_report_page) = id(current_page);
                   return json;
                 capture_response: false
 
@@ -1446,7 +1452,8 @@ interval:
             id(poll_playlists)->execute();
           }
 
-          if (id(last_report_ms) == 0 || now - id(last_report_ms) >= 60000) {
+          if (id(last_report_page) != id(current_page) ||
+              id(last_report_ms) == 0 || now - id(last_report_ms) >= 60000) {
             id(last_report_ms) = now;
             id(report_status)->execute();
           }
