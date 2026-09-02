@@ -1298,22 +1298,30 @@ script:
           condition:
             lambda: return id(want_page) == "player";
           then:
-            - script.execute: show_home_page
+            - script.execute:
+                id: show_panel_page
+                page: !lambda return id(want_page);
       - if:
           condition:
             lambda: return id(want_page) == "queue";
           then:
-            - lvgl.page.show: page_queue
+            - script.execute:
+                id: show_panel_page
+                page: !lambda return id(want_page);
       - if:
           condition:
             lambda: return id(want_page) == "playlists";
           then:
-            - lvgl.page.show: page_playlists
+            - script.execute:
+                id: show_panel_page
+                page: !lambda return id(want_page);
       - if:
           condition:
             lambda: return id(want_page) == "room";
           then:
-            - lvgl.page.show: page_switches
+            - script.execute:
+                id: show_panel_page
+                page: !lambda return id(want_page);
       - if:
           condition:
             lambda: return id(want_restart);

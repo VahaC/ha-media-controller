@@ -222,6 +222,11 @@ to step the volume the same way the other layouts do. It shares its pre-sized
 album art source with `Minimal Ring`, so adding it cost no extra image buffer and
 no extra download.
 
+The integration's **Page** select can switch the device between `player`,
+`queue`, `playlists`, and `room` from Home Assistant. The `player` page uses
+whichever **Screen Style** is selected. The command is read through the config
+sensor's `commands` attribute and does not require a reflash.
+
 Both layouts are live at all times: player state is written to every layout, so
 switching is instant and the newly shown one is already up to date. Swiping left
 or right from either one still opens Room Controls, and Room Controls returns to

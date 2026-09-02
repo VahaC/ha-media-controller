@@ -520,6 +520,31 @@ script:
                 else:
                   - lvgl.page.show: page_player
 
+  - id: show_panel_page
+    parameters:
+      page: string
+    then:
+      - if:
+          condition:
+            lambda: return page == "player";
+          then:
+            - script.execute: show_home_page
+      - if:
+          condition:
+            lambda: return page == "queue";
+          then:
+            - lvgl.page.show: page_queue
+      - if:
+          condition:
+            lambda: return page == "playlists";
+          then:
+            - lvgl.page.show: page_playlists
+      - if:
+          condition:
+            lambda: return page == "room";
+          then:
+            - lvgl.page.show: page_switches
+
   # -- Swipe navigation entry points. Every page-to-page swipe goes through one
   # -- of these so the debounce applies uniformly in both directions. --
   - id: nav_to_switches_move_left

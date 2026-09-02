@@ -374,6 +374,26 @@ sensor:
         - script.execute: ui_sync_progress
 
 text_sensor:
+  # -- Page commands are exposed as the config sensor's JSON attribute by the
+  # -- integration. Native API delivers the changed attribute as text. --
+  - platform: homeassistant
+    id: panel_commands
+    entity_id: ${config_entity}
+    attribute: commands
+    on_value:
+      then:
+        - script.execute:
+            id: show_panel_page
+            page: !lambda |-
+              size_t page_pos = x.find("\"page\":");
+              if (page_pos == std::string::npos) return std::string("");
+              size_t value_pos = x.find("\"value\":\"", page_pos);
+              if (value_pos == std::string::npos) return std::string("");
+              value_pos += 9;
+              size_t end = x.find('"', value_pos);
+              if (end == std::string::npos) return std::string("");
+              return x.substr(value_pos, end - value_pos);
+
   # -- Track title --
   - platform: homeassistant
     id: media_title
