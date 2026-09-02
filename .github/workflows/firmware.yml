@@ -24,14 +24,31 @@ jobs:
       - name: Install ESPHome
         run: pip install esphome
       - name: Validate the maintained packages
-        # Each maintained file carries its own substitution defaults and no
-        # !secret lookups, so both validate standalone. Image assets are
-        # fetched from asset_base_url during validation. Both are checked
-        # because they share media-controller-ui.yaml: a change to the
-        # interface ships to both firmwares at once.
+        # The classic package is standalone. The paired package intentionally
+        # receives Wi-Fi from the importing device YAML, so validate it through
+        # a complete local device wrapper instead of pretending the package is
+        # a complete device configuration. Image assets are fetched from
+        # asset_base_url during validation.
         run: |
           esphome config firmware/media-controller.yaml
-          esphome config firmware/media-controller-paired.yaml
+          trap 'rm -f firmware/.ci-paired.yaml' EXIT
+          printf '%s\n' \
+            'packages:' \
+            '  paired: !include media-controller-paired.yaml' \
+            '' \
+            'wifi:' \
+            '  ssid: ci-validation-network' \
+            '  password: ci-validation-password' \
+            '' \
+            'api:' \
+            '  encryption:' \
+            '    key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' \
+            '' \
+            'ota:' \
+            '  - platform: esphome' \
+            '    password: ci-validation-password' \
+            > firmware/.ci-paired.yaml
+          esphome config firmware/.ci-paired.yaml
 
       - name: Check the interface package names no transport
         # The two firmwares can only share an interface for as long as the
