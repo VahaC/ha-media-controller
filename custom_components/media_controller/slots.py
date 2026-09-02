@@ -11,7 +11,6 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
 from typing import Any
 
-from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import HomeAssistant, callback
 
 from .const import slot_entity_key, slot_label_key
@@ -54,7 +53,7 @@ def _resolve_capabilities(
     renders correctly while the light it points at is unavailable.
     """
     state = hass.states.get(slot.target_entity_id)
-    if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+    if state is None:
         return slot
 
     capabilities = normalize_capabilities(slot.domain, state.attributes)
@@ -245,25 +244,6 @@ class ClientConfiguration:
         if self._proxy_entity_ids.get(index) == entity_id:
             return
         self._proxy_entity_ids[index] = entity_id
-        for listener in list(self._listeners):
-            listener()
-
-    @callback
-    def async_refresh_target_capabilities(self, entity_id: str) -> None:
-        """Refresh capabilities without replacing the proxy entities."""
-        refreshed: list[SlotConfig] = []
-        changed = False
-        for slot in self.slots:
-            updated = (
-                _resolve_capabilities(self.hass, slot, self.profile)
-                if slot.target_entity_id == entity_id
-                else slot
-            )
-            refreshed.append(updated)
-            changed = changed or updated != slot
-        if not changed:
-            return
-        self.slots = refreshed
         for listener in list(self._listeners):
             listener()
 

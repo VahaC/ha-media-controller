@@ -18,9 +18,8 @@ from homeassistant.const import (
     SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
     UnitOfTemperature,
 )
-from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
-from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -170,21 +169,6 @@ class ClientConfigSensor(SensorEntity):
         self.async_on_remove(
             self._client.async_add_listener(self.async_write_ha_state)
         )
-        target_entities = {slot.target_entity_id for slot in self._client.slots}
-        if target_entities:
-            self.async_on_remove(
-                async_track_state_change_event(
-                    self.hass, list(target_entities),
-                    self._async_target_state_changed,
-                )
-            )
-
-    @callback
-    def _async_target_state_changed(self, event: Event) -> None:
-        """Republish capabilities when a target changes its attributes."""
-        entity_id = event.data.get("entity_id")
-        if entity_id is not None:
-            self._client.async_refresh_target_capabilities(entity_id)
 
     @property
     def native_value(self) -> str:
