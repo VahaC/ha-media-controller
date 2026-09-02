@@ -29,7 +29,7 @@ substitutions:
   # if .local names are unreliable on your network.
   ha_url: "http://homeassistant.local:8123"
 
-  firmware_version: "0.1.0"
+  firmware_version: "0.1.1"
   asset_base_url: "https://raw.githubusercontent.com/VahaC/ha-media-controller/main/firmware/assets"
 
 # The interface — display, touchscreen, LVGL pages, theme — is shared with
@@ -388,6 +388,14 @@ globals:
 
   - id: last_pairing_poll_ms
     type: uint32_t
+    restore_value: false
+    initial_value: "0"
+
+  # -- The last answer the provisioning endpoint gave. Two jobs: it keeps the
+  # -- log to one line per change instead of one per poll, and it decides how
+  # -- often to ask again. --
+  - id: last_pairing_status
+    type: int
     restore_value: false
     initial_value: "0"
 
@@ -844,10 +852,17 @@ script:
                     id(pairing_hint) = "Home Assistant returned an error";
                   }
                   if (code != 200) {
-                    ESP_LOGD("pair", "Provisioning HTTP %d", code);
+                    // -- One line per change, not one per poll. Home Assistant
+                    //    answers 404 for as long as nobody has started adding
+                    //    this device, which can be days. --
+                    if (code != id(last_pairing_status)) {
+                      ESP_LOGI("pair", "Provisioning HTTP %d", code);
+                    }
+                    id(last_pairing_status) = code;
                     id(ui_sync_pairing)->execute();
                     return;
                   }
+                  id(last_pairing_status) = code;
 
                   std::string token = id(json_field)(body, "token");
                   std::string entity = id(json_field)(body, "config_entity");
@@ -1356,8 +1371,20 @@ interval:
           uint32_t now = millis();
 
           if (id(ha_token).empty()) {
+            // -- 404 means Home Assistant has never heard of this device, and
+            //    that can last for days: an unopened box on a shelf must not
+            //    poll every three seconds, because each request blocks the
+            //    main loop and ESPHome logs every non-2xx answer as an error.
+            //    Any other answer means somebody is adding it right now, so
+            //    the fast rate comes straight back. The first two minutes are
+            //    always fast, for the common case of flashing a device and
+            //    adding it immediately. --
+            uint32_t wait = 3000;
+            if (id(last_pairing_status) == 404 && now > 120000) {
+              wait = 15000;
+            }
             if (id(last_pairing_poll_ms) == 0 ||
-                now - id(last_pairing_poll_ms) >= 3000) {
+                now - id(last_pairing_poll_ms) >= wait) {
               id(last_pairing_poll_ms) = now;
               id(poll_pairing)->execute();
             }

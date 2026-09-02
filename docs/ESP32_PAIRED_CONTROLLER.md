@@ -118,6 +118,10 @@ A ready-made copy of the block above is in
 2. Home Assistant discovers it. **Settings → Devices & Services** shows a new
    *ESP32-S3 controller (paired)* card; if it does not appear, add
    **Media Controller** by hand and choose that device type.
+
+   A panel plays from a controller, so one has to exist. If none does, the card
+   still appears and the form says so when you submit the code — it is not a
+   reason for the device to stay hidden.
 3. Type the six digits from the screen.
 4. Choose which controller it plays from, then fill the four room slots. Any of
    them may be a light or a switch. Leave one empty to hide its tile.
@@ -140,6 +144,20 @@ device shows a fresh one after a restart.
 If the token is ever rejected — you removed the device in Home Assistant, or
 revoked its user — the firmware notices the first refused request, forgets the
 token and returns to a pairing code on its own.
+
+### `HTTP Request failed ... Code: 404` in the log
+
+Expected, and not a fault. `404` is how the provisioning endpoint says *no
+panel with this ID exists yet*; there is no other answer it could give before
+the device has been added. ESPHome logs every non-2xx response as an error and
+briefly flags the `http_request` component, and neither can be switched off
+from YAML.
+
+What the firmware does instead is stop asking so often: after two minutes of
+nothing but `404` the poll drops from three seconds to fifteen, and any other
+answer puts it straight back to three. The status is logged once per change
+rather than once per poll. An unopened device on a shelf therefore stays quiet,
+and one being added is still responsive.
 
 ## What it does at runtime
 

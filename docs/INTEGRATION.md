@@ -67,6 +67,12 @@ Finishing the form is what releases the access token: the panel collects it on
 its next poll, a few seconds later, and switches into normal operation. Nothing
 is typed on the panel, and nothing but the token is configured there.
 
+A panel plays from a controller, so at least one controller entry has to exist
+before step 2 can be answered. If none does, the discovery card still appears
+and the code form says what is missing when you submit — a device that is
+announcing itself correctly is never hidden because of what Home Assistant is
+missing at the other end.
+
 A panel that cannot announce itself is added with *Add device* → *Panel*, where
 the panel ID has to match the one the device uses. A tablet derives that ID from
 its own hardware on first run and writes it to

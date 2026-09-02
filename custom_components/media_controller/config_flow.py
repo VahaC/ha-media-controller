@@ -108,7 +108,7 @@ def _pairing_errors(error: str | None) -> dict[str, str]:
     """Place a pairing failure on the field the person can act on."""
     if error is None:
         return {}
-    if error == "token_failed":
+    if error in ("token_failed", "no_controller"):
         return {"base": error}
     return {CONF_PAIRING_CODE: error}
 
@@ -330,11 +330,16 @@ class MediaControllerConfigFlow(
         self,
         user_input: dict[str, Any] | None = None,
     ) -> ConfigFlowResult:
-        """Add a panel by hand, for a device that cannot announce itself."""
-        if not controller_entries(self.hass):
-            return self.async_abort(reason="no_controller")
+        """Add a panel by hand, for a device that cannot announce itself.
 
-        if user_input is not None:
+        The controller check is on submission here too, for the same reason as
+        in async_step_pair: a form the person can act on beats a dialog that
+        closes itself.
+        """
+        errors: dict[str, str] = {}
+        if user_input is not None and not controller_entries(self.hass):
+            errors["base"] = "no_controller"
+        elif user_input is not None:
             self._profile = panel_profile(user_input[CONF_PROFILE])
             self._panel_id = user_input[CONF_PANEL_ID].strip().lower()
             self._panel_name = (
@@ -369,6 +374,7 @@ class MediaControllerConfigFlow(
                     vol.Optional(CONF_NAME): selector.TextSelector(),
                 }
             ),
+            errors=errors,
         )
 
     # ------------------------------------------------------------------- pairing
@@ -379,18 +385,25 @@ class MediaControllerConfigFlow(
     ) -> ConfigFlowResult:
         """Ask for the code the panel is showing, before anything else.
 
-        The panel shows it; nothing is typed on the tablet, and the token
-        never travels over SSH.
-        """
-        if not controller_entries(self.hass):
-            return self.async_abort(reason="no_controller")
+        The panel shows it; nothing is typed on the panel, and the token never
+        travels over SSH.
 
+        A missing controller is reported here as a form error rather than an
+        abort, and only once the code has been submitted. Aborting instead
+        would be invisible: this step is what `async_step_zeroconf` returns, so
+        an abort becomes the *result of the discovery* and Home Assistant never
+        offers the device at all. A panel that is announcing itself correctly
+        must always produce a card.
+        """
         if user_input is not None:
-            self._pair_error = self._arm_pairing(
-                str(user_input[CONF_PAIRING_CODE]).strip()
-            )
-            if self._pair_error is None:
-                return await self.async_step_pair_wait()
+            if not controller_entries(self.hass):
+                self._pair_error = "no_controller"
+            else:
+                self._pair_error = self._arm_pairing(
+                    str(user_input[CONF_PAIRING_CODE]).strip()
+                )
+                if self._pair_error is None:
+                    return await self.async_step_pair_wait()
 
         return self.async_show_form(
             step_id="pair",

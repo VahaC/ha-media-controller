@@ -80,7 +80,8 @@
       "invalid_code": "The pairing code is six digits.",
       "token_failed": "Home Assistant could not create an access token for this panel. Check the log.",
       "code_mismatch": "The panel is showing a different code. Read the six digits off the panel's screen again.",
-      "pairing_timeout": "The panel did not answer. Check that it is on, on the same network, and still showing a pairing code."
+      "pairing_timeout": "The panel did not answer. Check that it is on, on the same network, and still showing a pairing code.",
+      "no_controller": "Add a media controller first: this panel has to play from one. Add device → Media controller, then come back here — the panel keeps showing its code."
     },
     "abort": {
       "already_configured": "This device is already configured.",
