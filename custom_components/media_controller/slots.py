@@ -12,8 +12,7 @@ from dataclasses import replace
 from typing import Any
 
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
-from homeassistant.core import Event, HomeAssistant, callback
-from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.core import HomeAssistant, callback
 
 from .const import slot_entity_key, slot_label_key
 from .profiles import (
@@ -219,37 +218,6 @@ class ClientConfiguration:
         self.panel = panel
         self._proxy_entity_ids: dict[int, str] = {}
         self._listeners: list[Callable[[], None]] = []
-        self._remove_target_listeners = [
-            async_track_state_change_event(
-                hass, [slot.target_entity_id], self._async_target_changed
-            )
-            for slot in self.slots
-        ]
-
-    @callback
-    def _async_target_changed(self, event: Event) -> None:
-        """Refresh capabilities when a target publishes new attributes."""
-        entity_id = event.data.get("entity_id")
-        changed = False
-        refreshed: list[SlotConfig] = []
-        for slot in self.slots:
-            if slot.target_entity_id != entity_id:
-                refreshed.append(slot)
-                continue
-            updated = _resolve_capabilities(self.hass, slot, self.profile)
-            refreshed.append(updated)
-            changed = changed or updated != slot
-        if not changed:
-            return
-        self.slots = refreshed
-        for listener in list(self._listeners):
-            listener()
-
-    async def async_shutdown(self) -> None:
-        """Remove target listeners owned by this client configuration."""
-        for remove in self._remove_target_listeners:
-            remove()
-        self._remove_target_listeners.clear()
 
     @callback
     def async_add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
@@ -277,6 +245,25 @@ class ClientConfiguration:
         if self._proxy_entity_ids.get(index) == entity_id:
             return
         self._proxy_entity_ids[index] = entity_id
+        for listener in list(self._listeners):
+            listener()
+
+    @callback
+    def async_refresh_target_capabilities(self, entity_id: str) -> None:
+        """Refresh capabilities without replacing the proxy entities."""
+        refreshed: list[SlotConfig] = []
+        changed = False
+        for slot in self.slots:
+            updated = (
+                _resolve_capabilities(self.hass, slot, self.profile)
+                if slot.target_entity_id == entity_id
+                else slot
+            )
+            refreshed.append(updated)
+            changed = changed or updated != slot
+        if not changed:
+            return
+        self.slots = refreshed
         for listener in list(self._listeners):
             listener()
 

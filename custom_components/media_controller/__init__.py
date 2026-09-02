@@ -100,7 +100,6 @@ class PanelRuntime:
         if self.cancel_presence is not None:
             self.cancel_presence()
             self.cancel_presence = None
-        await self.client.async_shutdown()
 
 
 @dataclass(slots=True)
@@ -117,7 +116,6 @@ class MediaControllerRuntime:
         """Stop entry-owned listeners and timers."""
         await self.queue.async_shutdown()
         await self.playlists.async_shutdown()
-        await self.client.async_shutdown()
 
 
 def _configured_value(entry: ConfigEntry, key: str) -> Any:
