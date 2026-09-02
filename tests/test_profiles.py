@@ -88,6 +88,39 @@ class CapabilityTests(unittest.TestCase):
         )
         self.assertEqual(capabilities["controls"], ("toggle", "brightness"))
 
+    def test_light_group_brightness_attribute_is_a_fallback(self) -> None:
+        capabilities = profiles.normalize_capabilities(
+            "light", {"brightness": 180}
+        )
+        self.assertEqual(capabilities["controls"], ("toggle", "brightness"))
+
+    def test_light_group_colour_temperature_attribute_is_a_fallback(self) -> None:
+        capabilities = profiles.normalize_capabilities(
+            "light", {"color_temp_kelvin": 3000}
+        )
+        self.assertEqual(
+            capabilities["controls"], ("toggle", "brightness", "color_temp")
+        )
+
+    def test_removed_mired_attribute_does_not_add_colour_temperature(self) -> None:
+        capabilities = profiles.normalize_capabilities(
+            "light", {"color_temp": 333}
+        )
+        self.assertEqual(capabilities["controls"], ("toggle",))
+
+    def test_light_group_attributes_override_onoff_only_modes(self) -> None:
+        capabilities = profiles.normalize_capabilities(
+            "light",
+            {
+                "supported_color_modes": ["onoff"],
+                "brightness": 180,
+                "color_temp_kelvin": 3000,
+            },
+        )
+        self.assertEqual(
+            capabilities["controls"], ("toggle", "brightness", "color_temp")
+        )
+
 
 class ProfileTests(unittest.TestCase):
     """Verify the per-slot constraints of each client."""

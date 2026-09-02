@@ -650,9 +650,6 @@ static void update_room(PanelApplication *application, guint index,
     if (json_object_number(attributes, "color_temp_kelvin", &value) &&
         value > 0.0) {
         color_temperature = (gint)(value + 0.5);
-    } else if (json_object_number(attributes, "color_temp", &value) &&
-               value > 0.0) {
-        color_temperature = (gint)(1000000.0 / value + 0.5);
     }
     if (json_object_number(attributes, "min_color_temp_kelvin", &value) &&
         value > 0.0)

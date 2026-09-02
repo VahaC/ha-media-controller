@@ -195,6 +195,19 @@ def normalize_capabilities(
         modes = (modes,)
     mode_set = {str(mode) for mode in modes}
 
+    # Some light groups expose the effective state attributes without a
+    # complete supported_color_modes list. Preserve their adjustment controls
+    # instead of reducing an otherwise dimmable group to toggle-only.
+    if "brightness" in safe_attributes and not (
+        mode_set - MODES_WITHOUT_BRIGHTNESS
+    ):
+        mode_set.add("brightness")
+    if (
+        "color_temp_kelvin" in safe_attributes
+        and COLOR_TEMP_MODE not in mode_set
+    ):
+        mode_set.add(COLOR_TEMP_MODE)
+
     controls = [CONTROL_TOGGLE]
     if mode_set - MODES_WITHOUT_BRIGHTNESS:
         controls.append(CONTROL_BRIGHTNESS)

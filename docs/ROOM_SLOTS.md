@@ -247,6 +247,13 @@ so a slot renders correctly even while its target is unavailable.
 Every mode except `onoff` and `unknown` implies brightness in Home Assistant,
 so brightness is derived from the set difference, not from an allow-list.
 
+Some Home Assistant light groups expose their effective `brightness` or
+`color_temp_kelvin` state attributes without a complete
+`supported_color_modes` value. The integration uses those attributes as a
+fallback when the slot is configured or the integration is reloaded. It does
+not refresh the config sensor on every light state change, so the independent
+toggle control is not coupled to capability discovery.
+
 ## Entities
 
 ### Slot proxies
