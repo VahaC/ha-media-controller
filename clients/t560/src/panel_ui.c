@@ -279,6 +279,20 @@ static void toggle_css_class(GtkWidget *widget, const gchar *name,
         gtk_style_context_remove_class(style, name);
 }
 
+/* A tooltip is a pointer artefact, and this panel is only ever touched: the
+ * pointer stays where the finger left it, so the tooltip opens after the tap
+ * rather than before it and then stays over the key until the next tap lands
+ * elsewhere. On the tablet it paints as a black rectangle across the legend
+ * of the key that was just pressed. The text a key would have explained
+ * stays with it as its accessible name, which draws nothing. */
+static void describe_button(GtkWidget *button, const gchar *text)
+{
+    AtkObject *accessible = gtk_widget_get_accessible(button);
+
+    if (accessible != NULL)
+        atk_object_set_name(accessible, text);
+}
+
 static GtkWidget *new_label(const gchar *text, const gchar *css_class)
 {
     GtkWidget *label = gtk_label_new(text);
@@ -758,9 +772,9 @@ static GtkWidget *player_page(PanelUi *ui)
     GtkWidget *next = new_icon_button(
         "media-skip-forward-symbolic", NULL, "transport-button",
         108, 86, 38, GTK_ORIENTATION_VERTICAL, NULL, NULL);
-    gtk_widget_set_tooltip_text(previous, "Previous track");
-    gtk_widget_set_tooltip_text(layout->play, "Play or pause");
-    gtk_widget_set_tooltip_text(next, "Next track");
+    describe_button(previous, "Previous track");
+    describe_button(layout->play, "Play or pause");
+    describe_button(next, "Next track");
     g_object_set_data(G_OBJECT(previous), "service", "media_previous_track");
     g_object_set_data(G_OBJECT(layout->play), "service", "media_play_pause");
     g_object_set_data(G_OBJECT(next), "service", "media_next_track");
@@ -790,8 +804,8 @@ static GtkWidget *player_page(PanelUi *ui)
     GtkWidget *up = new_icon_button(
         "audio-volume-high-symbolic", NULL, "volume-button", 86, 62, 28,
         GTK_ORIENTATION_VERTICAL, NULL, NULL);
-    gtk_widget_set_tooltip_text(down, "Volume down");
-    gtk_widget_set_tooltip_text(up, "Volume up");
+    describe_button(down, "Volume down");
+    describe_button(up, "Volume up");
     g_object_set_data(G_OBJECT(down), "service", "volume_down");
     g_object_set_data(G_OBJECT(up), "service", "volume_up");
     g_signal_connect(down, "clicked", G_CALLBACK(player_clicked), ui);
@@ -1202,13 +1216,13 @@ static GtkWidget *new_deck_lamp_key(const gchar *text, gint width,
 
 static GtkWidget *deck_transport_key(PanelUi *ui, const gchar *icon,
                                      const gchar *text, const gchar *service,
-                                     const gchar *tooltip, gint width,
+                                     const gchar *description, gint width,
                                      GtkWidget **icon_out)
 {
     GtkWidget *button = new_icon_button(icon, text, "deck-key", width, 118,
                                         30, GTK_ORIENTATION_VERTICAL,
                                         icon_out, NULL);
-    gtk_widget_set_tooltip_text(button, tooltip);
+    describe_button(button, description);
     g_object_set_data(G_OBJECT(button), "service", (gpointer)service);
     g_signal_connect(button, "clicked", G_CALLBACK(player_clicked), ui);
     return button;
@@ -1396,8 +1410,8 @@ static GtkWidget *deck_page(PanelUi *ui)
     layout->shuffle = new_deck_lamp_key("SHUFFLE", 186, 78, NULL);
     layout->repeat = new_deck_lamp_key("REPEAT OFF", 186, 78,
                                        &layout->repeat_label);
-    gtk_widget_set_tooltip_text(down, "Volume down");
-    gtk_widget_set_tooltip_text(up, "Volume up");
+    describe_button(down, "Volume down");
+    describe_button(up, "Volume up");
     g_object_set_data(G_OBJECT(down), "service", "volume_down");
     g_object_set_data(G_OBJECT(up), "service", "volume_up");
     g_signal_connect(down, "clicked", G_CALLBACK(player_clicked), ui);
