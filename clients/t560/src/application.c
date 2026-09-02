@@ -1391,6 +1391,7 @@ static void start_panel(PanelApplication *application)
     application->ui = panel_ui_new(application->config, handle_ui_event,
                                    application);
     set_window_content(application, panel_ui_build(application->ui));
+    panel_ui_set_skin(application->ui, application->config->player_skin);
     start_header_updates(application);
     start_config_monitor(application);
 }

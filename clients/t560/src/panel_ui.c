@@ -2776,12 +2776,10 @@ void panel_ui_show_page(PanelUi *ui, const gchar *page, const gchar *title)
 
 void panel_ui_set_skin(PanelUi *ui, PanelPlayerSkin skin)
 {
-    if (skin >= PANEL_PLAYER_SKIN_COUNT || ui->skin == skin)
+    if (skin >= PANEL_PLAYER_SKIN_COUNT)
         return;
 
     ui->skin = skin;
-    /* Before the widget tree exists this is all there is to do: panel_ui_build
-     * reads the skin back when it runs. */
     if (ui->root == NULL)
         return;
 
