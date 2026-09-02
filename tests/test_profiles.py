@@ -108,6 +108,24 @@ class CapabilityTests(unittest.TestCase):
         )
         self.assertEqual(capabilities["controls"], ("toggle",))
 
+    def test_capability_signature_ignores_power_state_attributes(self) -> None:
+        self.assertEqual(
+            profiles.capability_signature(
+                {"supported_color_modes": ["brightness"], "brightness": 180}
+            ),
+            profiles.capability_signature(
+                {"supported_color_modes": ["brightness"], "brightness": 100}
+            ),
+        )
+
+    def test_capability_signature_detects_new_group_capabilities(self) -> None:
+        self.assertNotEqual(
+            profiles.capability_signature({"supported_color_modes": ["onoff"]}),
+            profiles.capability_signature(
+                {"supported_color_modes": ["brightness", "color_temp"]}
+            ),
+        )
+
     def test_light_group_attributes_override_onoff_only_modes(self) -> None:
         capabilities = profiles.normalize_capabilities(
             "light",

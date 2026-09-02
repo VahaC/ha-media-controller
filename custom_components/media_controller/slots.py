@@ -20,6 +20,7 @@ from .profiles import (
     CAP_MIN_KELVIN,
     CONTROL_TOGGLE,
     ClientProfile,
+    capability_signature,
     limit_controls,
     normalize_capabilities,
 )
@@ -244,6 +245,25 @@ class ClientConfiguration:
         if self._proxy_entity_ids.get(index) == entity_id:
             return
         self._proxy_entity_ids[index] = entity_id
+        for listener in list(self._listeners):
+            listener()
+
+    @callback
+    def async_refresh_target_capabilities(self, entity_id: str) -> None:
+        """Refresh one target's capabilities without recreating its proxy."""
+        refreshed: list[SlotConfig] = []
+        changed = False
+        for slot in self.slots:
+            updated = (
+                _resolve_capabilities(self.hass, slot, self.profile)
+                if slot.target_entity_id == entity_id
+                else slot
+            )
+            refreshed.append(updated)
+            changed = changed or updated != slot
+        if not changed:
+            return
+        self.slots = refreshed
         for listener in list(self._listeners):
             listener()
 

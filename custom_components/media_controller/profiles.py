@@ -22,6 +22,13 @@ CONTROL_ORDER = (CONTROL_TOGGLE, CONTROL_BRIGHTNESS, CONTROL_COLOR_TEMP)
 CAP_CONTROLS = "controls"
 CAP_MIN_KELVIN = "min_kelvin"
 CAP_MAX_KELVIN = "max_kelvin"
+CAPABILITY_ATTRIBUTES = (
+    "supported_color_modes",
+    "brightness",
+    "color_temp_kelvin",
+    "min_color_temp_kelvin",
+    "max_color_temp_kelvin",
+)
 
 LIGHT_DOMAIN = "light"
 SWITCH_DOMAIN = "switch"
@@ -224,6 +231,22 @@ def normalize_capabilities(
 
     capabilities[CAP_CONTROLS] = order_controls(controls)
     return capabilities
+
+
+def capability_signature(attributes: Mapping[str, Any] | None) -> tuple[Any, ...]:
+    """Return the state portion that can change a light's controls."""
+    safe_attributes = attributes or {}
+    modes = safe_attributes.get("supported_color_modes") or ()
+    if isinstance(modes, str):
+        modes = (modes,)
+    return tuple(
+        tuple(str(mode) for mode in modes)
+        if key == "supported_color_modes"
+        else key in safe_attributes
+        if key in ("brightness", "color_temp_kelvin")
+        else safe_attributes.get(key)
+        for key in CAPABILITY_ATTRIBUTES
+    )
 
 
 def _kelvin(value: Any, fallback: int) -> int:

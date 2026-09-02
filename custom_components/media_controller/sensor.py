@@ -18,15 +18,17 @@ from homeassistant.const import (
     SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
     UnitOfTemperature,
 )
-from homeassistant.core import HomeAssistant
+from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import MediaControllerRuntime
 from .coordinator import PlaylistCoordinator, QueueCoordinator
 from .panel_entity import PanelEntity, PanelReadingEntity
 from .proxy import controller_device_info
+from .profiles import capability_signature
 from .slots import ClientConfiguration, ControllerEntities
 from .transformations import PlaylistPayload, QueuePayload
 
@@ -169,6 +171,30 @@ class ClientConfigSensor(SensorEntity):
         self.async_on_remove(
             self._client.async_add_listener(self.async_write_ha_state)
         )
+        target_entities = {slot.target_entity_id for slot in self._client.slots}
+        if target_entities:
+            self.async_on_remove(
+                async_track_state_change_event(
+                    self.hass,
+                    list(target_entities),
+                    self._async_target_state_changed,
+                )
+            )
+
+    @callback
+    def _async_target_state_changed(self, event: Event) -> None:
+        """Refresh only when target capabilities, not power state, change."""
+        old_state = event.data.get("old_state")
+        new_state = event.data.get("new_state")
+        if capability_signature(
+            old_state.attributes if old_state is not None else None
+        ) == capability_signature(
+            new_state.attributes if new_state is not None else None
+        ):
+            return
+        entity_id = event.data.get("entity_id")
+        if entity_id is not None:
+            self._client.async_refresh_target_capabilities(entity_id)
 
     @property
     def native_value(self) -> str:

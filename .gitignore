@@ -12,6 +12,7 @@ __pycache__/
 .venv/
 
 # Editor and OS files
+.vs/
 .claude/
 .vscode/
 .idea/
@@ -24,3 +25,4 @@ AGENTS.md
 # Client build output (see clients/t560/.gitignore for the full list)
 clients/t560/t560-panel
 clients/t560/build/
+/.vs
