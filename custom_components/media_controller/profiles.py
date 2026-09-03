@@ -33,6 +33,12 @@ CAPABILITY_ATTRIBUTES = (
 LIGHT_DOMAIN = "light"
 SWITCH_DOMAIN = "switch"
 
+# The domains a client can draw a card for today. Every other domain a user
+# may put in the registry — media_player, climate, cover, weather — is carried
+# with an empty control list until its card exists, and a client ignores an
+# element whose domain it cannot draw. See docs/CONTRACT.md, Registry entries.
+CARD_DOMAINS = (LIGHT_DOMAIN, SWITCH_DOMAIN)
+
 # Every Home Assistant colour mode except these carries a brightness channel,
 # so brightness is derived from the set difference rather than an allow-list
 # that would need editing whenever a new colour mode is added.
@@ -72,6 +78,10 @@ class ClientProfile:
 
     slug: str
     name: str
+    # Fixed, numbered room slots backed by proxy entities. Only the classic
+    # ESP32 firmware has any: it resolves entity IDs and service domains while
+    # compiling, so a proxy is the only thing it can be flashed against. Every
+    # panel has an empty tuple here and an `entity_limit` instead.
     slots: tuple[SlotSpec, ...]
     # The layouts this client draws, in the client's own vocabulary and in the
     # order it offers them; the first is what it falls back to. The names
@@ -88,11 +98,30 @@ class ClientProfile:
     # `panel_contract_outdated_<update_kind>` and
     # `panel_never_reported_<update_kind>` translations.
     update_kind: str = UPDATE_KIND_FIRMWARE
+    # How many registry elements this client accepts in total, across every
+    # group. Zero means it has no registry at all and reads `slots` instead.
+    #
+    # The two panels differ because the limits answer different questions: the
+    # tablet's registry is read by an application with a filesystem and never
+    # travels into a firmware image, while the ESP32's is held by a device
+    # whose config sensor it parses with no JSON library and bounded memory.
+    entity_limit: int = 0
+    # What this client can draw for a registry element at all, intersected
+    # with what the target entity actually supports. It is the registry's
+    # equivalent of SlotSpec.controls: the paired ESP32 has four buttons and a
+    # brightness long-press and no control to set a colour temperature with,
+    # so it is told about neither.
+    controls: tuple[str, ...] = CONTROL_ORDER
 
     @property
     def slot_count(self) -> int:
         """Return how many room controls this client drives."""
         return len(self.slots)
+
+    @property
+    def has_registry(self) -> bool:
+        """Return whether this client reads `entities` rather than `slots`."""
+        return self.entity_limit > 0
 
     def knows_skin(self, skin: str) -> bool:
         """Return whether this client draws the named layout."""
@@ -129,46 +158,43 @@ SKIN_CLASSIC = "classic"
 SKIN_MINIMAL_RING = "minimal_ring"
 SKIN_COVER_CARD = "cover_card"
 
+# The tablet reads a registry rather than slots, and its limit is generous:
+# the payload is parsed by a GTK application with json-glib and cached to a
+# file, and nothing about it is ever compiled into an image.
 T560 = ClientProfile(
     slug="t560",
     name="T560 panel",
     skins=(SKIN_MODERN, SKIN_CASSETTE),
     update_kind=UPDATE_KIND_TABLET,
-    slots=tuple(
-        SlotSpec(
-            index,
-            (LIGHT_DOMAIN, SWITCH_DOMAIN),
-            (CONTROL_TOGGLE, CONTROL_BRIGHTNESS, CONTROL_COLOR_TEMP),
-        )
-        for index in range(1, 7)
-    ),
+    slots=(),
+    entity_limit=100,
+    controls=(CONTROL_TOGGLE, CONTROL_BRIGHTNESS, CONTROL_COLOR_TEMP),
 )
 
 # The same hardware as ESP32_S3, running the paired firmware instead. It is a
 # separate profile rather than a widening of ESP32_S3 because the two differ
-# in what a slot may hold, and ESP32_S3 describes devices already in the field
-# whose buttons carry a compile-time domain.
+# in what they read at all: ESP32_S3 describes devices already in the field
+# whose buttons carry a compile-time entity ID and service domain, and this
+# one resolves both at runtime from what Home Assistant sends it.
 #
-# Here the domain arrives with the slot at runtime, so any of the four may be
-# a light or a switch. Colour temperature is still absent: the firmware has
-# four buttons and a brightness long-press, and no control to set it with.
+# That is why it has a registry and the classic firmware cannot. The limit is
+# lower than the tablet's because the payload is parsed on the device itself,
+# by brace depth and with no JSON library. Colour temperature is still absent:
+# the firmware has buttons and a brightness long-press, and no control to set
+# a colour temperature with.
 ESP32_S3_PANEL = ClientProfile(
     slug="esp32_s3_panel",
     name="ESP32-S3 panel",
     skins=(SKIN_CLASSIC, SKIN_MINIMAL_RING, SKIN_COVER_CARD),
     update_kind=UPDATE_KIND_FIRMWARE,
-    slots=tuple(
-        SlotSpec(
-            index,
-            (LIGHT_DOMAIN, SWITCH_DOMAIN),
-            (CONTROL_TOGGLE, CONTROL_BRIGHTNESS),
-        )
-        for index in range(1, 5)
-    ),
+    slots=(),
+    entity_limit=64,
+    controls=(CONTROL_TOGGLE, CONTROL_BRIGHTNESS),
 )
 
 # The controller config entry always carries the ESP32 slots; every other
-# client is a panel subentry. Only panels are offered in the subentry flow.
+# client is a panel entry with a registry. Only panels are offered in the
+# panel flow.
 CONTROLLER_PROFILE = ESP32_S3
 PANEL_PROFILES: tuple[ClientProfile, ...] = (T560, ESP32_S3_PANEL)
 PROFILES: dict[str, ClientProfile] = {
@@ -192,13 +218,18 @@ def order_controls(controls: Iterable[str]) -> tuple[str, ...]:
 
 def limit_controls(
     controls: Iterable[str],
-    spec: SlotSpec | None,
+    ceiling: SlotSpec | ClientProfile | None,
 ) -> tuple[str, ...]:
-    """Intersect what the target supports with what the client can draw."""
+    """Intersect what the target supports with what the client can draw.
+
+    The ceiling is a slot specification for the classic ESP32, whose buttons
+    each carry their own compile-time action, and the client profile for a
+    registry element, where every element of one client is drawn the same way.
+    """
     ordered = order_controls(controls)
-    if spec is None:
+    if ceiling is None:
         return ordered
-    return tuple(control for control in ordered if control in spec.controls)
+    return tuple(control for control in ordered if control in ceiling.controls)
 
 
 def normalize_capabilities(
@@ -209,9 +240,16 @@ def normalize_capabilities(
 
     Clients render from the result and never parse `supported_color_modes`
     themselves; the ESP32 could not, and the panel must not duplicate the rule.
+
+    A domain no client can draw a card for yet returns no controls at all,
+    rather than a toggle nothing would render. The element still travels in
+    the payload carrying its domain, so a client that learns the card later
+    finds it already there.
     """
-    if domain != LIGHT_DOMAIN:
+    if domain == SWITCH_DOMAIN:
         return {CAP_CONTROLS: (CONTROL_TOGGLE,)}
+    if domain != LIGHT_DOMAIN:
+        return {CAP_CONTROLS: ()}
 
     safe_attributes = attributes or {}
     modes = safe_attributes.get("supported_color_modes") or ()

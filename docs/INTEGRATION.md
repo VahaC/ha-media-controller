@@ -66,13 +66,17 @@ The integration creates:
 
 - a bounded queue sensor;
 - a playlists sensor;
-- a config sensor per client, carrying the slot layout;
-- one proxy entity per configured slot.
+- a config sensor per client, carrying its room-control layout;
+- one proxy entity per configured slot of a classic-firmware ESP32.
 
 The proxy entities make room mappings changeable through Options Flow without
 reflashing the ESP32. A proxy whose source is unavailable is itself
 unavailable; the other controller functions continue working. Clearing a slot
 removes its proxy.
+
+**Panels have no proxies.** They read entity IDs at runtime, so they are
+handed the real entity and call its own services. See
+[Room entities](#room-entities) below.
 
 ### Panels
 
@@ -91,7 +95,8 @@ discovered device: press *Configure* and the form asks, in this order:
    showing a code from an earlier attempt. Nothing is stored and nothing else
    is asked until it has answered, and a wrong code can simply be retyped.
 2. **which media player source it plays from**;
-3. **its room-control slots.**
+3. **its room entities**, in a menu of groups it can add to and remove from
+   freely.
 
 Finishing the form is what releases the access token: the panel collects it on
 its next poll, a few seconds later, and switches into normal operation. Nothing
@@ -100,7 +105,7 @@ is typed on the panel, and nothing but the token is configured there.
 Step 2 has nothing to offer in an installation with no source yet, so it asks
 for the Music Assistant player instead and creates one. Adding the first panel
 is therefore still one sitting: the code, then what it plays from, then its
-room controls.
+room entities.
 
 A panel that cannot announce itself is added with *Add device* → *Panel*, where
 the panel ID has to match the one the device uses. A tablet derives that ID from
@@ -110,19 +115,32 @@ without separators, which its log prints at boot. Either way two devices never
 claim the same Home Assistant device.
 
 Each panel is its own config entry and its own Home Assistant device, with its
-own slot proxies and its own config sensor, linked to the source it reads.
-*Configure* on a panel device reopens the source choice and the slots, so
-moving a panel to another Music Assistant player is a remapping like any other:
-the device keeps its token, its device, and its entity IDs.
+own config sensor, linked to the source it reads. *Configure* on a panel device
+offers a menu of the source choice and the room entities, so moving a panel to
+another Music Assistant player is a remapping like any other: the device keeps
+its token, its device, and its entity IDs.
 
-How many slots a panel has, and what each may hold, comes from its type: six for
-a tablet, four for a paired ESP32, and only the tablet offers colour
-temperature. See [ROOM_SLOTS.md](ROOM_SLOTS.md).
+### Room entities
+
+A panel's room controls are a list with no fixed length. *Configure* → *Room
+entities* shows the six groups — Lights, Switches, Media players, Climate,
+Covers, Weather — with a running count of what is configured. Opening a group
+shows one selector holding everything in it: adding an entity to that selector
+adds a tile, clearing one removes it, and there is no numbered slot to run out
+of. A label may be typed for each; leave it empty and the entity's own name is
+used.
+
+Only the group's size ceiling comes from the device type: 100 entities for a
+tablet, 64 for a paired ESP32. Only the tablet offers colour temperature.
+Media players, climate, covers and weather can be added now, but no client
+draws a card for them yet and they are ignored until one does. See
+[ROOM_SLOTS.md](ROOM_SLOTS.md).
 
 The room controls of an ESP32 running the **classic** firmware are the exception
-to all of this. They live on the source entry itself, behind *Configure* →
-*Room controls (classic-firmware ESP32 only)*, because that firmware resolves
-their entity IDs at compile time and they already exist there.
+to all of this. They are still four numbered slots, they live on the source
+entry itself, behind *Configure* → *Room controls (classic-firmware ESP32
+only)*, and they are backed by proxy entities, because that firmware resolves
+both the entity ID and the service domain at compile time.
 
 ### Panel settings, battery, and display
 
@@ -248,14 +266,18 @@ timeout of `0` at the other end keeps the panel lit all day. A panel that was
 asleep when the automation ran picks the values up on its next poll, because
 these are settings rather than commands.
 
-### Slot capabilities
+### Capabilities
 
-The integration reads what the entity in a slot actually supports and publishes
-a plain control list — `toggle`, `brightness`, `color_temp` — in the config
-sensor. Clients draw from that list and never inspect `supported_color_modes`
-themselves. The list is also limited by what the client can draw: a
-colour-temperature lamp in an ESP32 slot is toggled and dimmed, and offers its
-full control set on the T560.
+The integration reads what the entity behind a slot or a room entity actually
+supports and publishes a plain control list — `toggle`, `brightness`,
+`color_temp` — in the config sensor. Clients draw from that list and never
+inspect `supported_color_modes` themselves. The list is also limited by what
+the client can draw: a colour-temperature lamp in an ESP32 slot is toggled and
+dimmed, and offers its full control set on the T560.
+
+That is true of a panel's room entities as well, and it is what makes it safe
+for a panel to address the real entity rather than a proxy: the client still
+renders a plain list, and still works out nothing for itself.
 
 Entity IDs are assigned by Home Assistant's entity registry. Open the new
 controller device and copy its actual entity IDs for the firmware substitutions.

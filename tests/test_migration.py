@@ -26,6 +26,14 @@ transformations = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = transformations
 SPEC.loader.exec_module(transformations)
 
+REGISTRY_SPEC = importlib.util.spec_from_file_location(
+    "media_controller_registry_migration", MODULE_PATH.with_name("registry.py")
+)
+assert REGISTRY_SPEC is not None and REGISTRY_SPEC.loader is not None
+registry = importlib.util.module_from_spec(REGISTRY_SPEC)
+sys.modules[REGISTRY_SPEC.name] = registry
+REGISTRY_SPEC.loader.exec_module(registry)
+
 # Mirrors const.LEGACY_SLOTS. Duplicated deliberately: if the production tuple
 # is ever reordered, this test must fail rather than follow it.
 LEGACY_SLOTS = (
@@ -131,6 +139,59 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(slots[0].target_entity_id, "light.ceiling")
         self.assertEqual(slots[0].domain, "light")
         self.assertEqual(slots[0].label, "")
+
+
+class PanelSlotsAreNotMigratedTests(unittest.TestCase):
+    """Contract version 6 replaces a panel's slots without migrating them.
+
+    A slot is a numbered position that a proxy entity stood in, and other
+    things in Home Assistant may name that proxy. Turning it into a registry
+    element would delete the proxy underneath them silently, so the room
+    controls are chosen again instead. Nothing here converts anything: this
+    protects the fact that nothing does.
+    """
+
+    PANEL_ENTRY = {
+        "entry_type": "panel",
+        "profile": "t560",
+        "panel_id": "t560_1a2b3c4d",
+        SLOTS_KEY: [
+            {
+                "slot": 1,
+                "entity": "light.desk_lamp",
+                "domain": "light",
+                "label": "DESK LAMP",
+                "controls": ["toggle", "brightness"],
+            }
+        ],
+    }
+
+    def test_no_migration_turns_slots_into_registry_elements(self) -> None:
+        self.assertFalse(
+            hasattr(transformations, "migrate_slots_to_entities"),
+            "A slots-to-registry migration was added; see ROOM_SLOTS.md, "
+            "'Slots to registry: deliberately not migrated'.",
+        )
+
+    def test_a_version_5_panel_entry_carries_no_registry(self) -> None:
+        self.assertEqual(registry.stored_entries(self.PANEL_ENTRY, "entities"), [])
+        self.assertEqual(
+            registry.stored_retired_rids(self.PANEL_ENTRY, "retired_rids"), []
+        )
+
+    def test_its_stored_slots_are_left_where_they_are(self) -> None:
+        """Unread, but not deleted: nothing rewrites a panel entry on load."""
+        slots = transformations.stored_slots(self.PANEL_ENTRY, SLOTS_KEY)
+        self.assertEqual(len(slots), 1)
+        self.assertEqual(slots[0].target_entity_id, "light.desk_lamp")
+
+    def test_the_v1_migration_is_the_controller_s_alone(self) -> None:
+        # It is keyed on the four classic-firmware substitution names, none
+        # of which a panel entry has ever carried, so it passes a panel's
+        # stored slots through without touching them.
+        self.assertEqual(
+            migrate(self.PANEL_ENTRY)[SLOTS_KEY], self.PANEL_ENTRY[SLOTS_KEY]
+        )
 
 
 class TitleMigrationTests(unittest.TestCase):

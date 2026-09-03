@@ -167,7 +167,7 @@ class ClientConfigTests(unittest.TestCase):
 
     def _payload(self):
         return transformations.ClientConfigPayload(
-            profile="t560",
+            profile="esp32_s3",
             slot_count=6,
             player_entity="media_player.kitchen",
             queue_entity="sensor.controller_queue",
@@ -207,7 +207,7 @@ class ClientConfigTests(unittest.TestCase):
     def test_revision_changes_with_a_controller_entity(self) -> None:
         before = self._payload().as_attributes()["revision"]
         moved = transformations.ClientConfigPayload(
-            profile="t560",
+            profile="esp32_s3",
             slot_count=6,
             player_entity="media_player.bedroom",
             queue_entity="sensor.controller_queue",
@@ -228,7 +228,7 @@ class ClientConfigTests(unittest.TestCase):
         """It is not layout, and must not restart a panel to redraw one."""
         before = self._payload().as_attributes()["revision"]
         after = transformations.ClientConfigPayload(
-            profile="t560",
+            profile="esp32_s3",
             slot_count=6,
             player_entity="media_player.kitchen",
             queue_entity="sensor.controller_queue",
@@ -244,10 +244,15 @@ class ClientConfigTests(unittest.TestCase):
         self.assertNotIn("min_kelvin", slots[1])
         self.assertNotIn("max_kelvin", slots[1])
 
-    def test_empty_configuration_is_valid(self) -> None:
-        attributes = transformations.ClientConfigPayload().as_attributes()
+    def test_a_controller_with_no_slots_configured_still_sends_the_block(
+        self,
+    ) -> None:
+        attributes = transformations.ClientConfigPayload(
+            profile="esp32_s3", slot_count=4, slots=()
+        ).as_attributes()
         self.assertEqual(attributes["slots"], [])
-        self.assertEqual(attributes["slot_count"], 0)
+        self.assertEqual(attributes["slot_count"], 4)
+        self.assertNotIn("entities", attributes)
 
     def test_revision_is_stable_for_equal_configuration(self) -> None:
         first = self._payload().as_attributes()["revision"]
@@ -257,7 +262,7 @@ class ClientConfigTests(unittest.TestCase):
     def test_revision_changes_with_the_configuration(self) -> None:
         before = self._payload().as_attributes()["revision"]
         after = transformations.ClientConfigPayload(
-            profile="t560",
+            profile="esp32_s3",
             slot_count=6,
             slots=(
                 transformations.SlotPayload(
@@ -271,6 +276,164 @@ class ClientConfigTests(unittest.TestCase):
             ),
         ).as_attributes()["revision"]
         self.assertNotEqual(before, after)
+
+
+class RegistryPayloadTests(unittest.TestCase):
+    """Verify the `entities` block, and who is sent which block at all."""
+
+    def _panel(self, **overrides):
+        """Build the payload a panel reads."""
+        defaults = dict(
+            profile="t560",
+            entity_limit=100,
+            player_entity="media_player.kitchen",
+            queue_entity="sensor.controller_queue",
+            playlists_entity="sensor.controller_playlists",
+            contract_version=6,
+            entities=(
+                transformations.EntityPayload(
+                    rid="a3f1c92d",
+                    entity="light.desk_lamp",
+                    name="Настільна лампа",
+                    domain="light",
+                    controls=("toggle", "brightness", "color_temp"),
+                    min_kelvin=2200,
+                    max_kelvin=6500,
+                ),
+                transformations.EntityPayload(
+                    rid="7c04b1e9",
+                    entity="switch.fan",
+                    name="FAN",
+                    domain="switch",
+                    controls=("toggle",),
+                ),
+            ),
+        )
+        defaults.update(overrides)
+        return transformations.ClientConfigPayload(**defaults)
+
+    def _controller(self, **overrides):
+        """Build the payload the classic ESP32 firmware reads."""
+        defaults = dict(
+            profile="esp32_s3",
+            slot_count=4,
+            player_entity="media_player.kitchen",
+            queue_entity="sensor.controller_queue",
+            playlists_entity="sensor.controller_playlists",
+            contract_version=6,
+            slots=(
+                transformations.SlotPayload(
+                    slot=1,
+                    entity="light.controller_slot_1",
+                    label="DESK LAMP",
+                    controls=("toggle", "brightness"),
+                ),
+            ),
+        )
+        defaults.update(overrides)
+        return transformations.ClientConfigPayload(**defaults)
+
+    def test_a_panel_is_sent_entities_and_no_slots(self) -> None:
+        attributes = self._panel().as_attributes()
+        self.assertIn("entities", attributes)
+        self.assertIn("entity_limit", attributes)
+        self.assertNotIn("slots", attributes)
+        self.assertNotIn("slot_count", attributes)
+
+    def test_the_classic_esp32_is_sent_slots_and_no_entities(self) -> None:
+        attributes = self._controller().as_attributes()
+        self.assertIn("slots", attributes)
+        self.assertIn("slot_count", attributes)
+        self.assertNotIn("entities", attributes)
+        self.assertNotIn("entity_limit", attributes)
+
+    def test_the_classic_esp32_payload_is_otherwise_unchanged(self) -> None:
+        """Version 6 must be invisible to a device already in the field."""
+        attributes = self._controller().as_attributes()
+        self.assertEqual(
+            attributes["slots"],
+            [
+                {
+                    "slot": 1,
+                    "entity": "light.controller_slot_1",
+                    "label": "DESK LAMP",
+                    "controls": ["toggle", "brightness"],
+                }
+            ],
+        )
+        self.assertEqual(attributes["slot_count"], 4)
+
+    def test_an_element_carries_its_identity_and_its_domain(self) -> None:
+        element = self._panel().as_attributes()["entities"][0]
+        self.assertEqual(element["rid"], "a3f1c92d")
+        self.assertEqual(element["domain"], "light")
+        # The real entity, never a proxy: a panel has none.
+        self.assertEqual(element["entity"], "light.desk_lamp")
+
+    def test_a_cyrillic_name_survives(self) -> None:
+        element = self._panel().as_attributes()["entities"][0]
+        self.assertEqual(element["name"], "Настільна лампа")
+
+    def test_kelvin_bounds_only_where_they_apply(self) -> None:
+        elements = self._panel().as_attributes()["entities"]
+        self.assertEqual(elements[0]["min_kelvin"], 2200)
+        self.assertNotIn("min_kelvin", elements[1])
+        self.assertNotIn("max_kelvin", elements[1])
+
+    def test_an_empty_registry_is_valid(self) -> None:
+        attributes = self._panel(entities=()).as_attributes()
+        self.assertEqual(attributes["entities"], [])
+        self.assertEqual(attributes["entity_limit"], 100)
+
+    def test_a_domain_with_no_card_yet_travels_with_no_controls(self) -> None:
+        attributes = self._panel(
+            entities=(
+                transformations.EntityPayload(
+                    rid="11112222",
+                    entity="weather.home",
+                    name="Home",
+                    domain="weather",
+                ),
+            )
+        ).as_attributes()
+        self.assertEqual(attributes["entities"][0]["controls"], [])
+        self.assertEqual(attributes["entities"][0]["domain"], "weather")
+
+    def test_the_registry_is_part_of_the_revision(self) -> None:
+        """It is layout, so a change to it must trigger a re-layout."""
+        before = self._panel().as_attributes()["revision"]
+        after = self._panel(
+            entities=self._panel().entities[:1]
+        ).as_attributes()["revision"]
+        self.assertNotEqual(before, after)
+
+    def test_a_renamed_element_changes_the_revision(self) -> None:
+        before = self._panel().as_attributes()["revision"]
+        renamed = list(self._panel().entities)
+        renamed[0] = transformations.EntityPayload(
+            rid=renamed[0].rid,
+            entity=renamed[0].entity,
+            name="Desk lamp",
+            domain=renamed[0].domain,
+            controls=renamed[0].controls,
+            min_kelvin=renamed[0].min_kelvin,
+            max_kelvin=renamed[0].max_kelvin,
+        )
+        after = self._panel(entities=tuple(renamed)).as_attributes()[
+            "revision"
+        ]
+        self.assertNotEqual(before, after)
+
+    def test_the_revision_is_stable_for_an_equal_registry(self) -> None:
+        self.assertEqual(
+            self._panel().as_attributes()["revision"],
+            self._panel().as_attributes()["revision"],
+        )
+
+    def test_the_contract_version_stays_outside_the_revision(self) -> None:
+        before = self._panel().as_attributes()["revision"]
+        after = self._panel(contract_version=99).as_attributes()["revision"]
+        self.assertEqual(before, after)
 
 
 if __name__ == "__main__":

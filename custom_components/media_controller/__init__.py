@@ -24,6 +24,7 @@ from .const import (
     ATTR_ENTRY_ID,
     ATTR_QUEUE_ITEM_ID,
     CONF_CONTROLLER_ENTRY_ID,
+    CONF_ENTITIES,
     CONF_PANEL_ID,
     CONF_PANEL_SETTINGS,
     CONF_PLAYER_ENTITY,
@@ -63,10 +64,13 @@ from .pairing import PairingStore
 from .panel_state import PanelSettings, PanelState
 from .provision import PanelProvisionView
 from .proxy import controller_device_info, panel_device_info
+from .registry import RegistryEntry
 from .slots import (
     ClientConfiguration,
     ControllerEntities,
+    resolve_entries,
     resolve_slots,
+    stored_entries,
     stored_slots,
 )
 from .status import (
@@ -103,12 +107,16 @@ class PanelRuntime:
     # ago and has not had time to; see compatibility.py.
     loaded_at: float = 0.0
     cancel_presence: Callable[[], None] | None = None
+    cancel_registry: Callable[[], None] | None = None
 
     async def async_shutdown(self) -> None:
-        """Stop the presence timer; a panel owns nothing else."""
+        """Stop the timers and listeners a panel owns."""
         if self.cancel_presence is not None:
             self.cancel_presence()
             self.cancel_presence = None
+        if self.cancel_registry is not None:
+            self.cancel_registry()
+            self.cancel_registry = None
 
 
 @dataclass(slots=True)
@@ -137,6 +145,13 @@ def _entry_slots(entry: ConfigEntry) -> list[SlotConfig]:
     if CONF_SLOTS in entry.options:
         return stored_slots(entry.options, CONF_SLOTS)
     return stored_slots(entry.data, CONF_SLOTS)
+
+
+def _entry_registry(entry: ConfigEntry) -> list[RegistryEntry]:
+    """Return the registry of a panel entry, options overriding data."""
+    if CONF_ENTITIES in entry.options:
+        return stored_entries(entry.options, CONF_ENTITIES)
+    return stored_entries(entry.data, CONF_ENTITIES)
 
 
 @callback
@@ -465,13 +480,18 @@ async def _async_setup_panel(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     state = PanelState(
         PanelSettings.from_stored(entry.data.get(CONF_PANEL_SETTINGS))
     )
+    # A panel has no slots as of contract version 6. Any that a version 5
+    # entry still carries are deliberately not read: the room controls are
+    # chosen again as registry elements, and the proxies the slots created are
+    # removed below with every other orphan.
     client = ClientConfiguration(
         hass,
         entry.entry_id,
         profile,
-        resolve_slots(hass, profile, _entry_slots(entry)),
+        (),
         _async_controller_entities(hass, controller_entry),
         state,
+        resolve_entries(hass, profile, _entry_registry(entry)),
     )
     panel_id = entry.data.get(CONF_PANEL_ID, "")
     runtime = PanelRuntime(
@@ -509,6 +529,24 @@ async def _async_setup_panel(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     runtime.cancel_presence = async_track_time_interval(
         hass, _async_presence_tick, PANEL_PRESENCE_INTERVAL
+    )
+
+    @callback
+    def _async_entity_registry_updated(event: Any) -> None:
+        """Follow a registry element's target when its entity ID is renamed.
+
+        A `rid` is what a panel keys its own grid on precisely because entity
+        IDs move, but the payload still has to carry the entity ID the target
+        has now, and the panel should not have to wait for a reload to be told.
+        """
+        if event.data.get("action") != "update":
+            return
+        if "entity_id" not in (event.data.get("changes") or {}):
+            return
+        client.async_refresh_registry_targets()
+
+    runtime.cancel_registry = hass.bus.async_listen(
+        er.EVENT_ENTITY_REGISTRY_UPDATED, _async_entity_registry_updated
     )
 
     entry.runtime_data = runtime

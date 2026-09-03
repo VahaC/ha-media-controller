@@ -32,6 +32,20 @@ class CapabilityTests(unittest.TestCase):
         self.assertEqual(capabilities["controls"], ("toggle",))
         self.assertNotIn("min_kelvin", capabilities)
 
+    def test_a_domain_with_no_card_yet_gets_no_controls(self) -> None:
+        # The registry accepts these groups so that they are already there
+        # when a card is written; until then a client ignores the element
+        # rather than drawing a toggle nothing would honour.
+        for domain in ("media_player", "climate", "cover", "weather"):
+            with self.subTest(domain=domain):
+                self.assertEqual(
+                    profiles.normalize_capabilities(domain, {})["controls"],
+                    (),
+                )
+
+    def test_the_two_drawable_domains_are_named(self) -> None:
+        self.assertEqual(profiles.CARD_DOMAINS, ("light", "switch"))
+
     def test_onoff_light_has_no_brightness(self) -> None:
         capabilities = profiles.normalize_capabilities(
             "light", {"supported_color_modes": ["onoff"]}
@@ -163,23 +177,26 @@ class ProfileTests(unittest.TestCase):
         )
         self.assertEqual(controls, ("toggle", "brightness"))
 
-    def test_paired_esp32_slot_takes_either_domain(self) -> None:
-        # The paired firmware learns a slot's domain at runtime, so nothing
-        # ties button 1 to a light or button 3 to a switch any more.
-        self.assertEqual(profiles.ESP32_S3_PANEL.slot_count, 4)
-        for index in range(1, 5):
-            self.assertEqual(
-                profiles.ESP32_S3_PANEL.spec(index).domains,
-                ("light", "switch"),
-            )
+    def test_a_panel_has_no_slots_at_all(self) -> None:
+        # Contract version 6: a panel reads an unbounded registry instead,
+        # and its proxies are gone with its slots.
+        for profile in profiles.PANEL_PROFILES:
+            with self.subTest(profile=profile.slug):
+                self.assertEqual(profile.slots, ())
+                self.assertEqual(profile.slot_count, 0)
+                self.assertIsNone(profile.spec(1))
 
-    def test_paired_esp32_dims_every_slot_but_drops_colour_temp(self) -> None:
-        for index in range(1, 5):
-            controls = profiles.limit_controls(
-                ("toggle", "brightness", "color_temp"),
-                profiles.ESP32_S3_PANEL.spec(index),
-            )
-            self.assertEqual(controls, ("toggle", "brightness"))
+    def test_paired_esp32_dims_every_registry_element_but_drops_colour_temp(
+        self,
+    ) -> None:
+        # The firmware has buttons and a brightness long-press, and no
+        # control to set a colour temperature with. The ceiling is the
+        # profile's now that there are no per-slot specifications.
+        controls = profiles.limit_controls(
+            ("toggle", "brightness", "color_temp"),
+            profiles.ESP32_S3_PANEL,
+        )
+        self.assertEqual(controls, ("toggle", "brightness"))
 
     def test_paired_esp32_is_a_panel_and_the_classic_one_is_not(self) -> None:
         self.assertIn(profiles.ESP32_S3_PANEL, profiles.PANEL_PROFILES)
@@ -191,11 +208,24 @@ class ProfileTests(unittest.TestCase):
         )
 
     def test_t560_keeps_the_full_control_set(self) -> None:
-        self.assertEqual(profiles.T560.slot_count, 6)
+        self.assertEqual(profiles.T560.entity_limit, 100)
         controls = profiles.limit_controls(
-            ("toggle", "brightness", "color_temp"), profiles.T560.spec(6)
+            ("toggle", "brightness", "color_temp"), profiles.T560
         )
         self.assertEqual(controls, ("toggle", "brightness", "color_temp"))
+
+    def test_only_a_panel_has_a_registry(self) -> None:
+        self.assertFalse(profiles.ESP32_S3.has_registry)
+        self.assertEqual(profiles.ESP32_S3.entity_limit, 0)
+        for profile in profiles.PANEL_PROFILES:
+            with self.subTest(profile=profile.slug):
+                self.assertTrue(profile.has_registry)
+
+    def test_the_two_panel_limits_differ(self) -> None:
+        # A tablet caches the payload to a file; an ESP32 parses it on the
+        # device with no JSON library. The numbers answer different questions.
+        self.assertEqual(profiles.T560.entity_limit, 100)
+        self.assertEqual(profiles.ESP32_S3_PANEL.entity_limit, 64)
 
     def test_controls_are_ordered_canonically(self) -> None:
         self.assertEqual(

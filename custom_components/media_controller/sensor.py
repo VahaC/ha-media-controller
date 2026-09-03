@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from datetime import datetime, timezone
@@ -164,22 +165,50 @@ class ClientConfigSensor(SensorEntity):
         self._client = client
         self._attr_unique_id = f"{client.owner_id}_config"
         self._attr_device_info = device_info
+        self._tracked: set[str] = set()
+        self._untrack: Callable[[], None] | None = None
 
     async def async_added_to_hass(self) -> None:
-        """Re-publish whenever a slot proxy reports its entity ID."""
+        """Re-publish whenever a proxy or a registry element changes."""
         await super().async_added_to_hass()
         self.async_on_remove(
-            self._client.async_add_listener(self.async_write_ha_state)
+            self._client.async_add_listener(self._async_client_changed)
         )
-        target_entities = {slot.target_entity_id for slot in self._client.slots}
-        if target_entities:
-            self.async_on_remove(
-                async_track_state_change_event(
-                    self.hass,
-                    list(target_entities),
-                    self._async_target_state_changed,
-                )
+        self.async_on_remove(self._async_stop_tracking)
+        self._async_track_targets()
+
+    @callback
+    def _async_client_changed(self) -> None:
+        """Follow the client's targets, then publish the new payload.
+
+        A registry element that followed its entity through a rename points at
+        a different entity ID than the one being watched, so the subscription
+        is rebuilt before the payload is written.
+        """
+        self._async_track_targets()
+        self.async_write_ha_state()
+
+    @callback
+    def _async_track_targets(self) -> None:
+        """Watch exactly the entities whose capabilities this payload uses."""
+        targets = self._client.target_entity_ids
+        if targets == self._tracked:
+            return
+        self._async_stop_tracking()
+        self._tracked = targets
+        if targets:
+            self._untrack = async_track_state_change_event(
+                self.hass,
+                list(targets),
+                self._async_target_state_changed,
             )
+
+    @callback
+    def _async_stop_tracking(self) -> None:
+        """Drop the current state subscription, if there is one."""
+        if self._untrack is not None:
+            self._untrack()
+            self._untrack = None
 
     @callback
     def _async_target_state_changed(self, event: Event) -> None:

@@ -1,17 +1,23 @@
-"""Tests for the rule that decides one panel is running a stale build."""
+"""Tests for the rule that decides one panel is running a stale build.
+
+Also for the thing that rule is worthless without: the number itself agreeing
+across the three places that hold it — this document's own constant, the
+tablet's, and `docs/CONTRACT.md`. A constant that has drifted from the
+document is worse than no constant at all, because both halves compare
+against it.
+"""
 
 from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import re
 import sys
 import unittest
 
+REPO = Path(__file__).parents[1]
 MODULE_PATH = (
-    Path(__file__).parents[1]
-    / "custom_components"
-    / "media_controller"
-    / "contract.py"
+    REPO / "custom_components" / "media_controller" / "contract.py"
 )
 SPEC = importlib.util.spec_from_file_location(
     "media_controller_contract", MODULE_PATH
@@ -39,6 +45,32 @@ def verdict(
         heard_before=heard_before,
         seconds_since_load=seconds_since_load,
     )
+
+
+class VersionAgreementTests(unittest.TestCase):
+    """The three copies of the contract version must be the same number."""
+
+    def test_the_document_names_the_version_this_build_implements(
+        self,
+    ) -> None:
+        text = (REPO / "docs" / "CONTRACT.md").read_text(encoding="utf-8")
+        match = re.search(r"^Contract version: \*\*(\d+)\*\*", text, re.M)
+        self.assertIsNotNone(match, "docs/CONTRACT.md names no version")
+        self.assertEqual(int(match.group(1)), CURRENT)
+
+    def test_the_tablet_speaks_the_same_version(self) -> None:
+        header = (
+            REPO / "clients" / "t560" / "src" / "app_config.h"
+        ).read_text(encoding="utf-8")
+        match = re.search(
+            r"^#define T560_PANEL_CONTRACT_VERSION (\d+)", header, re.M
+        )
+        self.assertIsNotNone(match, "app_config.h names no contract version")
+        self.assertEqual(int(match.group(1)), CURRENT)
+
+    def test_version_6_is_where_the_registry_arrived(self) -> None:
+        """Guards against the number moving without the document moving."""
+        self.assertGreaterEqual(CURRENT, 6)
 
 
 class ReadTests(unittest.TestCase):

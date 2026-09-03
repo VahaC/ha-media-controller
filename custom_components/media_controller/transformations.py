@@ -8,7 +8,7 @@ can all be tested without a Home Assistant runtime.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import json
 from typing import Any
 import zlib
@@ -244,12 +244,54 @@ class SlotPayload:
 
 
 @dataclass(frozen=True, slots=True)
+class EntityPayload:
+    """One registry element as a panel reads it.
+
+    Unlike a slot this names the real entity: a panel learns entity IDs at
+    runtime and needs no proxy, and an unbounded registry behind proxies would
+    create an unbounded number of extra entities in Home Assistant.
+    """
+
+    rid: str
+    entity: str
+    name: str
+    domain: str
+    controls: tuple[str, ...] = ()
+    min_kelvin: int | None = None
+    max_kelvin: int | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return the client-facing registry object."""
+        payload: dict[str, Any] = {
+            "rid": self.rid,
+            "entity": self.entity,
+            "name": self.name,
+            "domain": self.domain,
+            "controls": list(self.controls),
+        }
+        if self.min_kelvin is not None:
+            payload["min_kelvin"] = self.min_kelvin
+        if self.max_kelvin is not None:
+            payload["max_kelvin"] = self.max_kelvin
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
 class ClientConfigPayload:
-    """Everything one client device needs to draw its room controls."""
+    """Everything one client device needs to draw its room controls.
+
+    A client reads either `slots` or `entities`, never both, and is sent only
+    the one it reads. `slots` is the classic ESP32 firmware's four numbered
+    proxy positions; `entities` is a panel's unbounded registry. `None` means
+    "this client has no such block" and the key is left out of the payload
+    entirely, which is how a client tells the two kinds apart.
+    """
 
     profile: str = ""
-    slot_count: int = 0
-    slots: tuple[SlotPayload, ...] = field(default_factory=tuple)
+    slot_count: int | None = None
+    slots: tuple[SlotPayload, ...] | None = None
+    entity_limit: int | None = None
+    entities: tuple[EntityPayload, ...] | None = None
     player_entity: str = ""
     queue_entity: str = ""
     playlists_entity: str = ""
@@ -271,17 +313,27 @@ class ClientConfigPayload:
         renders what it receives, in `slot` order. The three controller
         entities are included so that a client needs no entity ID of its own:
         a URL, a token, and its panel ID are enough to bootstrap.
+
+        A block this client does not read is left out altogether, so a panel
+        never sees `slots` and the classic ESP32 never sees `entities`.
         """
         payload: dict[str, Any] = {
             "profile": self.profile,
-            "slot_count": self.slot_count,
             "player": self.player_entity,
             "queue": self.queue_entity,
             "playlists": self.playlists_entity,
-            "slots": [slot.as_dict() for slot in self.slots],
         }
-        # The revision covers the layout and nothing else. A client rebuilds
-        # its interface when it changes, and settings and commands must never
+        if self.slots is not None:
+            payload["slot_count"] = self.slot_count or 0
+            payload["slots"] = [slot.as_dict() for slot in self.slots]
+        if self.entities is not None:
+            payload["entity_limit"] = self.entity_limit or 0
+            payload["entities"] = [
+                entity.as_dict() for entity in self.entities
+            ]
+        # The revision covers the layout and nothing else — the registry
+        # included, because the registry is layout. A client rebuilds its
+        # interface when it changes, and settings and commands must never
         # cause that: they are applied while the panel keeps running.
         payload["revision"] = self.revision(payload)
         # Deliberately after the revision, and so not part of it. The contract

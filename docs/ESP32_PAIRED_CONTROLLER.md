@@ -219,6 +219,18 @@ Two contract features are deliberately not wired up:
 
 ## Room slots
 
+> **This firmware has not caught up with contract version 6.** As of that
+> version a panel is no longer sent a `slots` block at all: its room controls
+> are an unbounded registry in `entities`, keyed by `rid`, naming real
+> entities rather than proxies. This firmware still parses `slots`, so it
+> receives nothing it recognises and shows no room controls. Home Assistant
+> raises a repair issue naming the device; see
+> [CONTRACT.md](CONTRACT.md#version-compatibility) and
+> [ROOM_SLOTS.md](ROOM_SLOTS.md#the-registry-contract-version-6). Teaching the
+> brace-depth parser to walk `entities` instead is the next phase of that work
+> and has not been done. Everything below describes what this build does
+> today.
+
 Four, the number of buttons on the room page. Unlike the classic firmware, none
 of them is tied to a domain: the entity arrives with the payload and the
 firmware reads the domain off it, so a switch in slot 1 and a light in slot 4

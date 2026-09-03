@@ -115,7 +115,7 @@ compile but has not run on the physical device. The payload-size, memory,
 reconnect and album-art testing this item always called for is now the hardware
 checklist at the end of its document.
 
-## 4. One interface, two transports
+## 4. One interface, two transports — and now two capability sets
 
 The two firmwares share
 [media-controller-ui.yaml](../firmware/media-controller-ui.yaml), and the seam
@@ -134,3 +134,41 @@ What is still only a convention is the rest of the seam — the `cmd_` names, th
 three payload-to-widget scripts, and the thirteen state ids. Renaming one of
 them breaks the other firmware in a way nothing catches until it is compiled,
 which is why both firmwares are validated on every change to `firmware/**`.
+
+### The two firmwares no longer differ only in transport
+
+Until contract version 6 the difference between them was exactly one thing:
+where the token and the entity IDs come from. Everything drawn was the same,
+which is what made one shared interface package possible in the first place.
+
+Version 6 ends that. The classic firmware reads `slots`; the paired one is a
+panel and reads `entities`, an unbounded registry keyed by `rid`. The classic
+firmware **cannot** be given the registry, and this is a property of the
+hardware binding rather than a decision that could be revisited:
+
+- its four buttons resolve `${light1_entity}` and the service domain
+  (`light.toggle` versus `switch.toggle`) while compiling, so it cannot act on
+  an entity it learned at runtime;
+- the four buttons have absolute LVGL geometry and compile-time icon assets,
+  so there is no place to put a fifth;
+- it has no cache, so there is nothing for a user-arranged layout to live in
+  across a reboot.
+
+The consequence for the roadmap is that **the on-device grid — the phase
+`rid` exists for, in which the user arranges tiles on the panel itself and the
+arrangement is stored against those `rid`s — is a paired-firmware feature
+only**. Planning it as something both firmwares eventually get would be
+planning something that cannot be built.
+
+That does not break the shared interface package, and it must not be allowed
+to. The room page is already built by `apply_slots`, one of the three
+payload-to-widget scripts named in the header, and the seam holds precisely
+because the interface does not know where its payload came from. The registry
+work replaces what that script is given, on one firmware, and adds a second
+script beside it rather than teaching the interface which firmware it is
+running on.
+
+The order is: the tablet first, because it has a filesystem, a real JSON
+parser and a screen with room for a hundred tiles; the paired firmware second;
+the on-device grid last, on the paired firmware alone. See
+[ROOM_SLOTS.md](ROOM_SLOTS.md#the-registry-contract-version-6).

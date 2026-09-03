@@ -8,7 +8,7 @@ Treat this file as the change-control surface: a change to anything below
 affects released devices in the field. A change to code that is not described
 here affects one component only.
 
-Contract version: **5** (matches integration `1.2.x`).
+Contract version: **6** (matches integration `1.2.x`).
 
 Every version so far has been purely additive. Version 2 added the config
 sensor and let proxy lights forward colour temperature. Version 3 added two
@@ -34,11 +34,28 @@ where its own user looks — instead of silently dropping half of what the other
 sends. See **Version compatibility** below. The classic ESP32 firmware neither
 sends nor reads the field and is untouched by it.
 
-Nothing is removed and no entity any earlier client reads is renamed, so an
-older client keeps working: it simply ignores what it does not understand.
-Both new fields are optional in exactly that sense — every build from before
-version 5 omits them, and an absent value means "older" rather than an
-error.
+Up to and including version 5 nothing was removed and no entity any earlier
+client read was renamed, so an older client kept working: it simply ignored
+what it did not understand. The two fields version 5 added are optional in
+exactly that sense — every build from before it omits them, and an absent
+value means "older" rather than an error.
+
+Version 6 is the first version that **takes something away**, and only from
+panels. A panel's four-to-six fixed room slots are replaced by an unbounded
+registry of entities, carried in a new optional `entities` block. With the
+slots go the proxy entities a panel owned — `light.<panel>_slot_<n>` and
+`switch.<panel>_slot_<n>` are deleted from Home Assistant, because a registry
+with no upper bound would otherwise create an unbounded number of them and
+neither panel needs one: both learn entity IDs at runtime. A panel is
+therefore no longer sent `slots` at all, and its room controls have to be
+chosen again. See **Registry entries** and **What version 6 breaks** below.
+
+The classic ESP32 controller is untouched by all of it. It still receives
+`slots`, still addresses proxies, and still behaves exactly as it did under
+version 5: it resolves both entity IDs and service domains while compiling, so
+proxies are the only way it can follow a change made in the Home Assistant UI,
+and a registry it cannot read would be of no use to it. It is sent no
+`entities` block, exactly as it is sent no `settings` and no `commands`.
 
 ## Producer
 
@@ -54,8 +71,13 @@ hardcode them.
 | `sensor.<controller>_queue` | sensor | Bounded queue window |
 | `sensor.<controller>_playlists` | sensor | Library playlists |
 | `sensor.<client>_config` | sensor | Room-control layout of one client |
-| `light.<client>_slot_<n>` | light | Room light proxy in slot n |
-| `switch.<client>_slot_<n>` | switch | Room switch proxy in slot n |
+| `light.<controller>_slot_<n>` | light | Room light proxy in slot n |
+| `switch.<controller>_slot_<n>` | switch | Room switch proxy in slot n |
+
+The two proxy rows exist **only for a controller entry**, which is to say only
+for an ESP32 running the classic firmware. As of version 6 a panel has no
+slots and no proxies; it is handed the real entity IDs in the `entities` block
+and addresses them directly.
 
 A **panel** device carries these as well. The classic ESP32 controller has none
 of them, because it is a controller rather than a panel; the paired ESP32
@@ -88,17 +110,16 @@ options are that client's own names — see **Panel settings** below. A client
 that draws one interface gets no such entity.
 
 `<client>` is the controller itself for the slots of an ESP32 running the
-classic firmware, and the panel device for every other client — the tablet and
-the paired ESP32 firmware alike.
+classic firmware, and the panel device for the config sensor of every other
+client — the tablet and the paired ESP32 firmware alike.
 
 **Two entity ID spellings are valid and both are permanent.** An installation
 created before integration `0.8.2` keeps `light.<controller>_light_1`,
 `light.<controller>_light_2`, `switch.<controller>_fan`, and
 `switch.<controller>_ac` for slots 1 to 4, because the migration preserves the
 registry rows so that flashed devices need no reflash. An installation created
-after it uses `_slot_1` to `_slot_4`. No client may assume either spelling; the
-classic ESP32 firmware reads them from substitutions and every other client —
-the tablet and the paired ESP32 firmware — from the config sensor.
+after it uses `_slot_1` to `_slot_4`. The classic ESP32 firmware reads them
+from substitutions and must assume neither spelling.
 
 The state of every sensor above is the constant string `ok`. All data is in
 the attributes, because a Home Assistant state is limited to 255 characters.
@@ -144,25 +165,29 @@ list is capped at `DEFAULT_PLAYLIST_LIMIT` (500), fetched in pages of 100.
 
 ### Config sensor attributes
 
+One client kind reads `slots` and the other reads `entities`, and neither
+receives the block it does not read. The panel payload is:
+
 ```json
 {
   "profile": "t560",
-  "slot_count": 6,
+  "entity_limit": 100,
   "player": "media_player.kitchen",
   "queue": "sensor.controller_queue",
   "playlists": "sensor.controller_playlists",
-  "slots": [
+  "entities": [
     {
-      "slot": 1,
-      "entity": "light.controller_slot_1",
-      "label": "DESK LAMP",
+      "rid": "a3f1c92d",
+      "entity": "light.desk_lamp",
+      "name": "Desk lamp",
+      "domain": "light",
       "controls": ["toggle", "brightness", "color_temp"],
-      "min_kelvin": 2000,
-      "max_kelvin": 6535
+      "min_kelvin": 2200,
+      "max_kelvin": 6500
     }
   ],
   "revision": 2098342174,
-  "contract_version": 4,
+  "contract_version": 6,
   "settings": {
     "poll_interval_ms": 1000,
     "playlist_poll_interval_ms": 60000,
@@ -178,26 +203,59 @@ list is capped at `DEFAULT_PLAYLIST_LIMIT` (500), fetched in pages of 100.
 }
 ```
 
+The classic ESP32 controller reads the same payload with `slots` and
+`slot_count` where a panel has `entities` and `entity_limit`, and with neither
+`settings` nor `commands`:
+
+```json
+{
+  "profile": "esp32_s3",
+  "slot_count": 4,
+  "player": "media_player.kitchen",
+  "queue": "sensor.controller_queue",
+  "playlists": "sensor.controller_playlists",
+  "slots": [
+    {
+      "slot": 1,
+      "entity": "light.controller_slot_1",
+      "label": "DESK LAMP",
+      "controls": ["toggle", "brightness"],
+      "min_kelvin": 2000,
+      "max_kelvin": 6535
+    }
+  ],
+  "revision": 2098342174,
+  "contract_version": 6
+}
+```
+
 Real attributes, not an encoded string. Rules a client must follow:
 
 - `player`, `queue`, and `playlists` are the controller entities this client
   reads. They are here so that a client needs no entity ID of its own: a URL,
   a token, and its own identifier are enough to bootstrap. A payload in which
   any of them is empty is not yet usable and must be retried, not cached.
-- `entity` is always the **proxy**, never the entity the user selected.
+- `slots` and `slot_count` are sent **only to the classic ESP32 controller**,
+  and `entities` and `entity_limit` **only to panels**. A client reads the
+  block it knows and ignores the other, exactly as it ignores `settings` and
+  `commands` it has no use for. Neither block is ever sent to both.
+- In `slots`, `entity` is always the **proxy**, never the entity the user
+  selected. In `entities` it is always the **real entity**, because panels
+  have no proxies; see **Registry entries** below.
 - Unconfigured slots are **omitted**. Render what arrives, in `slot` order, and
   handle an empty `slots` list.
-- `controls` is a closed list: `toggle`, `brightness`, `color_temp`. An
-  unknown value must be ignored, not treated as an error, so that a future
-  control can be added without breaking released clients.
+- `controls` is a closed list in both blocks: `toggle`, `brightness`,
+  `color_temp`. An unknown value must be ignored, not treated as an error, so
+  that a future control can be added without breaking released clients.
 - `min_kelvin` and `max_kelvin` are present only when `controls` contains
   `color_temp`.
 - `revision` is a checksum of the rest of the payload, not a counter. Equal
   values mean an unchanged configuration; any change produces a different
   value. A client uses it to skip a re-layout, never to order versions.
-  `contract_version` is deliberately outside it: the protocol number is not
-  layout, and folding it in would restart every panel in a house to redraw a
-  room page that did not move.
+  `entities` is inside it, because the registry is layout. `contract_version`
+  is deliberately outside it: the protocol number is not layout, and folding
+  it in would restart every panel in a house to redraw a room page that did
+  not move.
 - `contract_version` is the version of this document the integration
   implements. It is sent to every client, panel or not, so that a client can
   see whether the other half of the contract is behind it. An absent value
@@ -218,6 +276,101 @@ Real attributes, not an encoded string. Rules a client must follow:
   Timeout* number. It does apply `player_skin`: the *Screen Style* select on
   its ESPHome device stays the value's owner and its local fallback, the way
   `config.ini` is the tablet's, and a named skin writes to it.
+
+### Registry entries
+
+`entities` is a panel's room controls. It replaces `slots` for panels and is
+sent to nothing else. Where a slot list was a fixed number of numbered
+positions, this is an ordinary list: a user adds as many entities as the
+client profile allows, in any of the groups below, and removes them again.
+
+```json
+{
+  "rid": "a3f1c92d",
+  "entity": "light.desk_lamp",
+  "name": "Настільна лампа",
+  "domain": "light",
+  "controls": ["toggle", "brightness", "color_temp"],
+  "min_kelvin": 2200,
+  "max_kelvin": 6500
+}
+```
+
+- `rid` is **eight lowercase hex characters** and is the identity of the
+  registry element, not of the entity behind it. It is minted when the element
+  is created, never changes for as long as the element exists, and is never
+  reused after one is deleted. A device that lets a user arrange its own grid
+  stores `rid`, never `entity`: a Home Assistant entity ID is renamed by the
+  user at will, and a layout keyed on one would scatter the next time somebody
+  tidied their entity IDs. Two elements in one payload never share a `rid`.
+- `entity` is the **real entity**, addressed directly with the ordinary Home
+  Assistant service calls for its domain. There is no proxy. Both panels learn
+  entity IDs at runtime and never needed one, and a registry with no upper
+  bound would otherwise create an unbounded number of extra entities in Home
+  Assistant. Entity IDs still come from the registry and are still
+  per-installation: never hardcode one.
+- `name` is what the tile says. It is the label the user typed, or the
+  entity's `friendly_name` when they typed none, and it is UTF-8: Cyrillic and
+  every other script survive intact.
+- `domain` is the Home Assistant domain of `entity`, repeated here so that a
+  client can pick a card without parsing the entity ID. It is one of the group
+  domains below. **A client that cannot draw a domain ignores that element**,
+  exactly as it ignores a control it does not know, so a group added later
+  cannot break a client already in the field.
+- `controls` is the same closed list as in `slots` — `toggle`, `brightness`,
+  `color_temp` — and is resolved by the integration from the target's
+  capabilities. A client renders from it and never parses
+  `supported_color_modes` itself. As of this version only `light` and `switch`
+  produce controls; every other group is carried with an empty list, because
+  the cards that would draw them are not written yet.
+- `min_kelvin` and `max_kelvin` appear only when `controls` contains
+  `color_temp`, as in `slots`.
+- The order of the list is the order to render in. It is the group order in
+  the table below, and within a group the order the user added them.
+
+`entity_limit` is how many elements the profile allows in total, across every
+group. It is per client, because the limits answer different questions: the
+tablet's registry never travels into a firmware image, and the ESP32's does.
+
+| Client | `entity_limit` |
+| --- | --- |
+| T560 panel | 100 |
+| ESP32-S3 panel | 64 |
+| ESP32-S3 controller | — (no registry; it reads `slots`) |
+
+The groups, in payload order:
+
+| Group | `domain` | Cards in this version |
+| --- | --- | --- |
+| Lights | `light` | yes |
+| Switches | `switch` | yes |
+| Media players | `media_player` | no |
+| Climate | `climate` | no |
+| Covers | `cover` | no |
+| Weather | `weather` | no |
+
+### What version 6 breaks
+
+Only panels, and only their room controls.
+
+- **A panel's slots are gone and are not migrated.** The room controls of a
+  T560 or a paired ESP32 have to be chosen again, in the panel's options. The
+  entry keeps its identity, its token, its pairing and every other entity it
+  owns; nothing has to be re-paired and nothing has to be reflashed to be
+  configured again.
+- **A panel's proxy entities are deleted.** `light.<panel>_slot_<n>` and
+  `switch.<panel>_slot_<n>` are removed from the entity registry the first
+  time the panel entry loads on this version. Anything that referenced one —
+  an automation, a script, a dashboard card — must be pointed at the real
+  entity instead, which is what the panel now addresses too.
+- **A panel is no longer sent `slots`.** A panel build older than version 6
+  reads a payload with no `slots` key and shows no room controls at all. Home
+  Assistant raises the repair issue described under **Version compatibility**,
+  and the remedy is the ordinary one for that panel: rebuild and deploy the
+  tablet application, or install the ESP32 again from ESPHome Device Builder.
+
+Nothing about the classic ESP32 controller changes. Its four slots, its four
+proxies and its payload are exactly what they were.
 
 ### Panel settings
 
@@ -302,12 +455,20 @@ Rules:
   Home Assistant offers exactly those and refuses any other before sending.
 
 How much of the payload a client uses depends on what it can change at
-runtime. The T560 panel builds its whole room page from it. The ESP32 takes
-only the labels and the visibility of its four buttons: everything else about
-those buttons, including the entity IDs and the service domains, is resolved
-while compiling and cannot follow a configuration change.
+runtime. The T560 panel builds its whole room page from `entities`. The
+classic ESP32 takes only the labels and the visibility of its four buttons
+from `slots`: everything else about those buttons, including the entity IDs
+and the service domains, is resolved while compiling and cannot follow a
+configuration change.
 
 ### Proxy entities
+
+Proxies belong to the classic ESP32 controller and to nothing else. They exist
+because that firmware resolves both the entity ID and the service domain of
+its four buttons while compiling, so a stable entity ID it can be flashed
+against is the only way it can follow a slot change made in the Home Assistant
+UI. Every other client learns entity IDs at runtime and addresses the real
+entity; as of version 6 that is what panels do, through `entities`.
 
 A proxy mirrors the state of the entity selected for its slot and forwards
 actions to it. A proxy whose source is missing is `unavailable`; the other
@@ -319,8 +480,10 @@ both the entity ID and the service domain of its four buttons at compile time.
 Proxy lights mirror the colour modes of their target: `onoff`, `brightness`, or
 `color_temp` with the target's Kelvin bounds. They forward `brightness` and
 `color_temp_kelvin` on turn-on. Colour, effects, and every other light feature
-are **not** forwarded. A client must not address the target entity directly to
-work around that; the slot mechanism is the only supported path.
+are **not** forwarded. The classic ESP32 firmware must not address the target
+entity directly to work around that; the slot mechanism is the only supported
+path for it. A panel addresses real entities by design and is not covered by
+this rule at all.
 
 ## Panel status endpoint
 
@@ -339,7 +502,7 @@ another's battery level.
 {
   "panel_id": "t560_1a2b3c4d",
   "version": "0.3.1",
-  "contract_version": 4,
+  "contract_version": 6,
   "page": "player",
   "uptime_seconds": 4210,
   "wifi_dbm": -53,
@@ -492,7 +655,10 @@ can consume.
 
 Tests that protect the contract:
 
-- `tests/test_transformations.py` — payload construction;
+- `tests/test_transformations.py` — payload construction, including which of
+  `slots` and `entities` each client kind is sent;
+- `tests/test_registry.py` — `rid` generation and stability, the per-profile
+  limits, an empty registry and one at its limit;
 - `tests/test_profiles.py` — which controls a client is told to draw;
 - `tests/test_migration.py` — the version 1 slots keep their numbers;
 - `clients/t560/tests/test_panel_config.c` — payload parsing on the client

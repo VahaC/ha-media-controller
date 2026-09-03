@@ -27,6 +27,7 @@ with the code it is showing.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterable, Mapping
 import logging
 import time
 from typing import Any
@@ -46,8 +47,11 @@ from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 
 from .const import (
     CONF_CONTROLLER_ENTRY_ID,
+    CONF_ENTITIES,
+    CONF_GROUP_ENTITIES,
     CONF_PAIRING_CODE,
     CONF_REFRESH_TOKEN_ID,
+    CONF_RETIRED_RIDS,
     CONF_USER_ID,
     DATA_PROVISIONING,
     CONF_ENTRY_TYPE,
@@ -65,6 +69,7 @@ from .const import (
     ZEROCONF_PROP_PANEL_ID,
     ZEROCONF_PROP_PROFILE,
     panel_unique_id,
+    registry_name_key,
     slot_entity_key,
     slot_label_key,
 )
@@ -84,9 +89,21 @@ from .profiles import (
     ClientProfile,
     panel_profile,
 )
+from .registry import (
+    GROUPS,
+    RegistryEntry,
+    RegistryGroup,
+    apply_names,
+    group_by_slug,
+    group_selection,
+    replace_group,
+    stored_retired_rids,
+)
 from .slots import (
     SlotConfig,
+    seed_registry_ids,
     slots_from_input,
+    stored_entries,
     stored_slots,
     suggested_slot_values,
 )
@@ -154,6 +171,248 @@ def _slot_fields(profile: ClientProfile) -> dict[Any, Any]:
             selector.TextSelector()
         )
     return fields
+
+
+# The registry menu's last option: it is not a group, it finishes the editing.
+REGISTRY_DONE_STEP = "entities_done"
+
+
+class RegistryFlowMixin:
+    """Editing a panel's entity registry, shared by both of its flows.
+
+    The registry is grouped by domain and has no fixed size, so it cannot be
+    one form of N slots. It is a menu of groups instead: opening a group shows
+    every entity currently in it, and the same control both adds and removes.
+
+    Two things follow from `rid` being the identity of an element rather than
+    of the entity behind it. Deselecting an entity **deletes** its element and
+    retires its rid, which is why `_retired` travels with the registry and is
+    stored beside it; and a label is edited by rid, so renaming an entity in
+    Home Assistant never detaches the label from the tile.
+    """
+
+    hass: Any
+    _profile: ClientProfile
+    _registry: list[RegistryEntry]
+    _retired: list[str]
+    _group: RegistryGroup = GROUPS[0]
+
+    async def _async_registry_done(self) -> ConfigFlowResult:
+        """Finish the flow with the registry as it now stands."""
+        raise NotImplementedError
+
+    # ------------------------------------------------------------ the menu
+
+    async def async_step_entities(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> ConfigFlowResult:
+        """Offer the groups, and the way out of the editor."""
+        return self.async_show_menu(
+            step_id="entities",
+            menu_options=[group.slug for group in GROUPS]
+            + [REGISTRY_DONE_STEP],
+            description_placeholders={
+                "profile": self._profile.name,
+                "summary": self._registry_summary(),
+            },
+        )
+
+    @callback
+    def _registry_summary(self) -> str:
+        """Describe what is in the registry, group by group."""
+        # Markdown, because that is how Home Assistant renders a step
+        # description: single newlines collapse, so these are list items.
+        lines = [
+            f"- {_group_title(group)}: "
+            f"{len(group_selection(self._registry, group.domain))}"
+            for group in GROUPS
+        ]
+        lines.append(
+            f"\nUsing {len(self._registry)} of "
+            f"{self._profile.entity_limit} places."
+        )
+        return "\n".join(lines)
+
+    # ----------------------------------------------------------- the groups
+
+    async def async_step_lights(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> ConfigFlowResult:
+        """Edit the lights group."""
+        return self._async_open_group("lights")
+
+    async def async_step_switches(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> ConfigFlowResult:
+        """Edit the switches group."""
+        return self._async_open_group("switches")
+
+    async def async_step_media_players(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> ConfigFlowResult:
+        """Edit the media players group."""
+        return self._async_open_group("media_players")
+
+    async def async_step_climate(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> ConfigFlowResult:
+        """Edit the climate group."""
+        return self._async_open_group("climate")
+
+    async def async_step_covers(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> ConfigFlowResult:
+        """Edit the covers group."""
+        return self._async_open_group("covers")
+
+    async def async_step_weather(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> ConfigFlowResult:
+        """Edit the weather group."""
+        return self._async_open_group("weather")
+
+    @callback
+    def _async_open_group(self, slug: str) -> ConfigFlowResult:
+        """Remember which group is being edited and show its form.
+
+        Every group renders the same step, so the six menu entries above cost
+        one form and one set of strings rather than six of each.
+        """
+        group = group_by_slug(slug)
+        if group is not None:
+            self._group = group
+        return self._async_group_form()
+
+    async def async_step_group(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> ConfigFlowResult:
+        """Apply one group's membership and labels, then return to the menu."""
+        if user_input is None:
+            return self._async_group_form()
+
+        registry, retired = replace_group(
+            self._registry,
+            self._group.domain,
+            user_input.get(CONF_GROUP_ENTITIES) or (),
+            retired=self._retired,
+        )
+        if len(registry) > self._profile.entity_limit:
+            return self._async_group_form(
+                user_input=user_input,
+                errors={CONF_GROUP_ENTITIES: "too_many_entities"},
+            )
+
+        self._registry = apply_names(registry, _submitted_names(user_input))
+        self._retired = self._retired + retired
+        return await self.async_step_entities()
+
+    @callback
+    def _async_group_form(
+        self,
+        user_input: dict[str, Any] | None = None,
+        errors: dict[str, str] | None = None,
+    ) -> ConfigFlowResult:
+        """Show the membership and the labels of the group being edited."""
+        current = [
+            entry
+            for entry in self._registry
+            if entry.domain == self._group.domain
+        ]
+        fields: dict[Any, Any] = {
+            vol.Optional(CONF_GROUP_ENTITIES): selector.EntitySelector(
+                selector.EntitySelectorConfig(
+                    domain=self._group.domain, multiple=True
+                )
+            )
+        }
+        for entry in current:
+            fields[vol.Optional(registry_name_key(entry.rid))] = (
+                selector.TextSelector()
+            )
+
+        suggested: dict[str, Any] = {
+            CONF_GROUP_ENTITIES: [
+                entry.target_entity_id for entry in current
+            ],
+            **{
+                registry_name_key(entry.rid): entry.name
+                for entry in current
+                if entry.name
+            },
+        }
+        return self.async_show_form(
+            step_id="group",
+            data_schema=self.add_suggested_values_to_schema(
+                vol.Schema(fields), user_input or suggested
+            ),
+            errors=errors or {},
+            description_placeholders={
+                "group": _group_title(self._group),
+                "profile": self._profile.name,
+                "entity_limit": str(self._profile.entity_limit),
+                "remaining": str(
+                    max(self._profile.entity_limit - len(self._registry), 0)
+                ),
+                "legend": _registry_legend(current),
+            },
+        )
+
+    async def async_step_entities_done(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> ConfigFlowResult:
+        """Leave the editor and let the flow that owns it store the result."""
+        return await self._async_registry_done()
+
+    @callback
+    def _stored_registry(self) -> list[dict[str, Any]]:
+        """Return the registry in its on-disk shape, ready to store.
+
+        The entity-registry row of every target is recorded here rather than
+        at load: a rename that happens in between is followed by that row, and
+        at load there would be nothing left to look it up by.
+        """
+        return [
+            entry.as_stored()
+            for entry in seed_registry_ids(self.hass, self._registry)
+        ]
+
+
+def _group_title(group: RegistryGroup) -> str:
+    """Return the heading one group is listed under."""
+    return group.slug.replace("_", " ").capitalize()
+
+
+def _submitted_names(user_input: Mapping[str, Any]) -> dict[str, str]:
+    """Read the label fields of one group form, keyed by rid."""
+    prefix = registry_name_key("")
+    return {
+        key[len(prefix):]: str(value or "")
+        for key, value in user_input.items()
+        if key.startswith(prefix)
+    }
+
+
+def _registry_legend(entries: Iterable[RegistryEntry]) -> str:
+    """Say which entity each label field belongs to.
+
+    The label fields are keyed by rid, because that is what survives an entity
+    being renamed, and Home Assistant shows a field key it has no translation
+    for verbatim. This is what makes those keys readable.
+    """
+    lines = [
+        f"- `{entry.rid}` — {entry.target_entity_id}"
+        for entry in entries
+    ]
+    return "\n".join(lines) if lines else "*Nothing in this group yet.*"
 
 
 def _player_schema() -> vol.Schema:
@@ -243,6 +502,7 @@ def _stored_controller(
 
 
 class MediaControllerConfigFlow(
+    RegistryFlowMixin,
     config_entries.ConfigFlow,
     domain=DOMAIN,
 ):
@@ -255,6 +515,10 @@ class MediaControllerConfigFlow(
     _panel_name: str = ""
     _panel_host: str = ""
     _controller_entry_id: str = ""
+
+    # A panel is created with an empty registry and fills it in the editor.
+    _registry: list[RegistryEntry] = []
+    _retired: list[str] = []
 
     # The pairing being negotiated, and its result.
     _pair_task: asyncio.Task[str | None] | None = None
@@ -346,6 +610,8 @@ class MediaControllerConfigFlow(
         self._profile = panel_profile(
             _text_property(properties, ZEROCONF_PROP_PROFILE)
         )
+        self._registry = []
+        self._retired = []
         self._panel_name = (
             _text_property(properties, ZEROCONF_PROP_NAME) or panel_id
         )
@@ -370,6 +636,8 @@ class MediaControllerConfigFlow(
         errors: dict[str, str] = {}
         if user_input is not None:
             self._profile = panel_profile(user_input[CONF_PROFILE])
+            self._registry = []
+            self._retired = []
             self._panel_id = user_input[CONF_PANEL_ID].strip().lower()
             self._panel_name = (
                 str(user_input.get(CONF_NAME) or "").strip() or self._panel_id
@@ -391,7 +659,8 @@ class MediaControllerConfigFlow(
                                     value=profile.slug,
                                     label=(
                                         f"{profile.name} "
-                                        f"({profile.slot_count} room controls)"
+                                        f"(up to {profile.entity_limit} "
+                                        f"room entities)"
                                     ),
                                 )
                                 for profile in PANEL_PROFILES
@@ -567,7 +836,7 @@ class MediaControllerConfigFlow(
 
         if user_input is not None:
             self._controller_entry_id = user_input[CONF_CONTROLLER_ENTRY_ID]
-            return await self.async_step_slots()
+            return await self.async_step_entities()
 
         default = controllers[0].entry_id
         return self.async_show_form(
@@ -582,7 +851,7 @@ class MediaControllerConfigFlow(
             description_placeholders={
                 "name": self._panel_name,
                 "profile": self._profile.name,
-                "slot_count": str(self._profile.slot_count),
+                "entity_limit": str(self._profile.entity_limit),
                 "host": self._panel_host or "unknown",
             },
         )
@@ -615,7 +884,7 @@ class MediaControllerConfigFlow(
                     errors["base"] = "controller_failed"
                 else:
                     self._controller_entry_id = entry_id
-                    return await self.async_step_slots()
+                    return await self.async_step_entities()
 
         return self.async_show_form(
             step_id="new_controller",
@@ -683,65 +952,45 @@ class MediaControllerConfigFlow(
             data=_stored_controller(player_entity, []),
         )
 
-    async def async_step_slots(
-        self,
-        user_input: dict[str, Any] | None = None,
-    ) -> ConfigFlowResult:
-        """Fill the room-control slots, and finish the panel.
+    async def _async_registry_done(self) -> ConfigFlowResult:
+        """Finish the panel once its room entities have been chosen.
 
-        Submitting this form is what releases the token: it is minted here and
-        the endpoint hands it over once the config sensor the panel has to
-        read exists too.
+        Leaving the registry editor is what releases the token: it is minted
+        here and the endpoint hands it over once the config sensor the panel
+        has to read exists too.
         """
-        errors: dict[str, str] = {}
-        if user_input is not None:
-            state = _pairings(self.hass).state(self._panel_id)
-            if state != STATE_CONFIRMED:
-                # The tablet stopped answering while the form was open, so
-                # the code has to be read off it again.
-                self._pair_error = (
-                    "code_mismatch"
-                    if state == STATE_REJECTED
-                    else "pairing_timeout"
-                )
-                return await self.async_step_pair()
-
-            slots = [
-                slot.as_stored()
-                for slot in slots_from_input(
-                    self.hass, self._profile, user_input
-                )
-            ]
-            error = await self._async_mint_token(
-                self._panel_name or self._panel_id
+        state = _pairings(self.hass).state(self._panel_id)
+        if state != STATE_CONFIRMED:
+            # The tablet stopped answering while the form was open, so the
+            # code has to be read off it again.
+            self._pair_error = (
+                "code_mismatch"
+                if state == STATE_REJECTED
+                else "pairing_timeout"
             )
-            if error is None:
-                return self.async_create_entry(
-                    title=self._panel_name or self._profile.name,
-                    data={
-                        CONF_ENTRY_TYPE: ENTRY_TYPE_PANEL,
-                        CONF_PROFILE: self._profile.slug,
-                        CONF_PANEL_ID: self._panel_id,
-                        CONF_NAME: self._panel_name,
-                        CONF_HOST: self._panel_host,
-                        CONF_CONTROLLER_ENTRY_ID: self._controller_entry_id,
-                        CONF_REFRESH_TOKEN_ID: self._refresh_token_id,
-                        CONF_USER_ID: self._user_id,
-                        CONF_SLOTS: slots,
-                    },
-                )
-            errors = _pairing_errors(error)
+            return await self.async_step_pair()
 
-        return self.async_show_form(
-            step_id="slots",
-            data_schema=self.add_suggested_values_to_schema(
-                vol.Schema(_slot_fields(self._profile)), user_input or {}
-            ),
-            errors=errors,
-            description_placeholders={
-                "name": self._panel_name,
-                "profile": self._profile.name,
-                "slot_count": str(self._profile.slot_count),
+        entities = self._stored_registry()
+        error = await self._async_mint_token(
+            self._panel_name or self._panel_id
+        )
+        if error is not None:
+            self._pair_error = error
+            return await self.async_step_pair()
+
+        return self.async_create_entry(
+            title=self._panel_name or self._profile.name,
+            data={
+                CONF_ENTRY_TYPE: ENTRY_TYPE_PANEL,
+                CONF_PROFILE: self._profile.slug,
+                CONF_PANEL_ID: self._panel_id,
+                CONF_NAME: self._panel_name,
+                CONF_HOST: self._panel_host,
+                CONF_CONTROLLER_ENTRY_ID: self._controller_entry_id,
+                CONF_REFRESH_TOKEN_ID: self._refresh_token_id,
+                CONF_USER_ID: self._user_id,
+                CONF_ENTITIES: entities,
+                CONF_RETIRED_RIDS: list(self._retired),
             },
         )
 
@@ -945,70 +1194,114 @@ class MediaControllerOptionsFlow(OptionsFlowWithReload):
         )
 
 
-class PanelOptionsFlow(OptionsFlowWithReload):
-    """Edit what one panel plays from and the room controls it draws.
+class PanelOptionsFlow(RegistryFlowMixin, OptionsFlowWithReload):
+    """Edit what one panel plays from and the room entities it draws.
 
-    The device type is not offered again: it decides how many proxies exist,
-    so changing it is a delete-and-add operation. The controller is offered,
-    because moving a panel to another player is a remapping like any other and
-    used to require deleting the panel and pairing the tablet again.
+    The device type is not offered again: it decides the size of the registry
+    and how the panel is updated, so changing it is a delete-and-add
+    operation. The controller is offered, because moving a panel to another
+    player is a remapping like any other and used to require deleting the
+    panel and pairing the tablet again.
+
+    The two are a menu rather than one form: a registry has no fixed size, so
+    it cannot share a form with a single dropdown. Options are stored whole,
+    so each branch writes both halves — the one it asked about and the one it
+    left alone.
     """
+
+    # Read once from the entry, by _async_load, and then edited in place by
+    # the mixin. Never mutated through these class attributes.
+    _registry: list[RegistryEntry] = []
+    _retired: list[str] = []
+    _loaded: bool = False
 
     async def async_step_init(
         self,
         user_input: dict[str, Any] | None = None,
     ) -> ConfigFlowResult:
-        """Options always start here; the panel form has its own step."""
-        return await self.async_step_slots(user_input)
+        """Offer the two things a panel has.
 
-    async def async_step_slots(
-        self,
-        user_input: dict[str, Any] | None = None,
-    ) -> ConfigFlowResult:
-        """Remap the panel's controller and slots, and reload automatically."""
-        entry = self.config_entry
-        profile = panel_profile(entry.data.get(CONF_PROFILE))
-        current = (
-            stored_slots(entry.options, CONF_SLOTS)
-            if CONF_SLOTS in entry.options
-            else stored_slots(entry.data, CONF_SLOTS)
+        The menu is rendered as `panel_init` rather than `init`: both options
+        flows of this domain start at `async_step_init`, and a shared step ID
+        would make them share a title and a description too.
+        """
+        self._async_load()
+        return self.async_show_menu(
+            step_id="panel_init",
+            menu_options=["controller_link", "entities"],
         )
-        controller_entry_id = entry.options.get(
+
+    @callback
+    def _async_load(self) -> None:
+        """Read the stored registry once, before anything edits it."""
+        if self._loaded:
+            return
+        entry = self.config_entry
+        self._profile = panel_profile(entry.data.get(CONF_PROFILE))
+        source = (
+            entry.options if CONF_ENTITIES in entry.options else entry.data
+        )
+        self._registry = stored_entries(source, CONF_ENTITIES)
+        self._retired = stored_retired_rids(source, CONF_RETIRED_RIDS)
+        self._loaded = True
+
+    @callback
+    def _controller_entry_id(self) -> str:
+        """Return the source this panel currently plays from."""
+        entry = self.config_entry
+        return entry.options.get(
             CONF_CONTROLLER_ENTRY_ID,
             entry.data.get(CONF_CONTROLLER_ENTRY_ID, ""),
         )
 
+    @callback
+    def _options(self, controller_entry_id: str) -> dict[str, Any]:
+        """Build the whole options mapping from both halves."""
+        return {
+            CONF_CONTROLLER_ENTRY_ID: controller_entry_id,
+            CONF_ENTITIES: self._stored_registry(),
+            CONF_RETIRED_RIDS: list(self._retired),
+        }
+
+    async def async_step_controller_link(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> ConfigFlowResult:
+        """Move a panel to another media player source."""
+        self._async_load()
         if user_input is not None:
-            slots = slots_from_input(self.hass, profile, user_input, current)
             return self.async_create_entry(
-                data={
-                    CONF_CONTROLLER_ENTRY_ID: user_input[
-                        CONF_CONTROLLER_ENTRY_ID
-                    ],
-                    CONF_SLOTS: [slot.as_stored() for slot in slots],
-                }
+                data=self._options(user_input[CONF_CONTROLLER_ENTRY_ID])
             )
 
-        suggested: dict[str, Any] = {
-            CONF_CONTROLLER_ENTRY_ID: controller_entry_id
-        }
-        suggested.update(suggested_slot_values(current))
         return self.async_show_form(
-            step_id="slots",
+            step_id="controller_link",
             data_schema=self.add_suggested_values_to_schema(
                 vol.Schema(
                     {
                         vol.Required(
                             CONF_CONTROLLER_ENTRY_ID
                         ): _controller_selector(self.hass),
-                        **_slot_fields(profile),
                     }
                 ),
-                suggested,
+                {CONF_CONTROLLER_ENTRY_ID: self._controller_entry_id()},
             ),
             description_placeholders={
-                "name": entry.title,
-                "profile": profile.name,
-                "slot_count": str(profile.slot_count),
+                "name": self.config_entry.title,
+                "profile": self._profile.name,
             },
+        )
+
+    async def async_step_entities(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> ConfigFlowResult:
+        """Open the registry editor on the stored registry."""
+        self._async_load()
+        return await super().async_step_entities(user_input)
+
+    async def _async_registry_done(self) -> ConfigFlowResult:
+        """Store the edited registry and reload the panel."""
+        return self.async_create_entry(
+            data=self._options(self._controller_entry_id())
         )

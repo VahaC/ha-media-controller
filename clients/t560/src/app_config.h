@@ -16,7 +16,7 @@
  * The panel sends it in every status report and reads the integration's own
  * out of the config sensor, so each half can tell that the other is behind.
  * Raise it in the same change that raises the number in that document. */
-#define T560_PANEL_CONTRACT_VERSION 5
+#define T560_PANEL_CONTRACT_VERSION 6
 
 /* Six is the number of tiles this panel draws. It is the T560 profile of the
  * Media Controller integration, which never sends more; a larger payload is

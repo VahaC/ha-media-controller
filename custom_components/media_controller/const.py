@@ -40,8 +40,16 @@ CONF_PLAYER_ENTITY = "player_entity"
 
 # Room-control slots. See docs/ROOM_SLOTS.md. The keys inside one stored slot
 # record belong to the on-disk format and live in transformations.py.
+# Only a controller entry carries these; a panel carries a registry instead.
 CONF_SLOTS = "slots"
 CONF_PROFILE = "profile"
+
+# A panel's entity registry. The keys inside one stored record belong to the
+# on-disk format and live in registry.py.
+CONF_ENTITIES = "entities"
+# The rids of registry elements that have been deleted. A device keys its own
+# grid layout on a rid, so one is never handed out a second time.
+CONF_RETIRED_RIDS = "retired_rids"
 
 # Panel entries.
 CONF_PANEL_ID = "panel_id"
@@ -113,6 +121,16 @@ def slot_entity_key(index: int) -> str:
 def slot_label_key(index: int) -> str:
     """Return the config-flow field name holding a slot label."""
     return f"slot_{index}_label"
+
+
+def registry_name_key(rid: str) -> str:
+    """Return the config-flow field name holding one element's label."""
+    return f"name_{rid}"
+
+
+# The multi-entity selector one registry group form is built around. Every
+# group uses the same field name: only one group is ever on screen at a time.
+CONF_GROUP_ENTITIES = "group_entities"
 
 
 def slot_translation_key(index: int) -> str:

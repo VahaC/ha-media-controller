@@ -36,41 +36,43 @@
       },
       "controller_link": {
         "title": "Media player source",
-        "description": "{name} is paired. It is a {profile} and drives up to {slot_count} room controls. Choose the media player source it plays from.",
+        "description": "{name} is paired. It is a {profile} and draws up to {entity_limit} room entities. Choose the media player source it plays from.",
         "data": {
           "controller_entry_id": "Media player source"
         }
       },
       "new_controller": {
         "title": "Choose what it plays from",
-        "description": "{name} is paired. A panel plays from a media player source and there is none yet, so pick the Music Assistant player and Home Assistant will create one. Nothing else is needed: room controls are the panel's own and are chosen on the next screen.",
+        "description": "{name} is paired. A panel plays from a media player source and there is none yet, so pick the Music Assistant player and Home Assistant will create one. Nothing else is needed: room entities are the panel's own and are chosen on the next screen.",
         "data": {
           "player_entity": "Music Assistant player"
         }
       },
-      "slots": {
-        "title": "Room controls",
-        "description": "{name} is paired and is a {profile} driving up to {slot_count} room controls. Leave a slot empty to hide that tile. Labels are optional and fall back to the entity name.",
-        "data": {
-          "slot_1_entity": "Slot 1",
-          "slot_1_label": "Slot 1 label",
-          "slot_2_entity": "Slot 2",
-          "slot_2_label": "Slot 2 label",
-          "slot_3_entity": "Slot 3",
-          "slot_3_label": "Slot 3 label",
-          "slot_4_entity": "Slot 4",
-          "slot_4_label": "Slot 4 label",
-          "slot_5_entity": "Slot 5",
-          "slot_5_label": "Slot 5 label",
-          "slot_6_entity": "Slot 6",
-          "slot_6_label": "Slot 6 label"
-        }
-      },
       "reauth_confirm": {
         "title": "Pair the panel again",
-        "description": "{name} is asking for a new access token, which happens after a tablet is wiped or an ESP32 is reflashed. Type the code it is showing. Its room controls and entity IDs stay as they are; only the token is replaced.",
+        "description": "{name} is asking for a new access token, which happens after a tablet is wiped or an ESP32 is reflashed. Type the code it is showing. Its room entities and entity IDs stay as they are; only the token is replaced.",
         "data": {
           "pairing_code": "Pairing code"
+        }
+      },
+      "entities": {
+        "title": "Room entities",
+        "description": "{profile} draws one tile for every entity listed here. Pick a group to add entities to it or remove them again; there is no fixed number of slots and no fixed order beyond the groups themselves.\n\n{summary}",
+        "menu_options": {
+          "lights": "Lights",
+          "switches": "Switches",
+          "media_players": "Media players",
+          "climate": "Climate",
+          "covers": "Covers",
+          "weather": "Weather",
+          "entities_done": "Done"
+        }
+      },
+      "group": {
+        "title": "{group}",
+        "description": "Choose the entities {profile} should draw in this group. The same list both adds and removes: an entity you clear is deleted from the registry and does not come back with the same identity. {remaining} of {entity_limit} places are free.\n\nEach label box below is named after the element's stable ID, because that is what survives an entity being renamed in Home Assistant. Leave one empty to use the entity's own name. An entity added just now gets its label box the next time this form is opened.\n\n{legend}",
+        "data": {
+          "group_entities": "Entities"
         }
       }
     },
@@ -80,7 +82,8 @@
       "token_failed": "Home Assistant could not create an access token for this panel. Check the log.",
       "code_mismatch": "The panel is showing a different code. Read the six digits off the panel's screen again.",
       "pairing_timeout": "The panel did not answer. Check that it is on, on the same network, and still showing a pairing code.",
-      "controller_failed": "Home Assistant could not create the media player source. Check the log, or add one from Add device → Media player source."
+      "controller_failed": "Home Assistant could not create the media player source. Check the log, or add one from Add device → Media player source.",
+      "too_many_entities": "That is more room entities than this panel can drive. Remove some before adding others."
     },
     "abort": {
       "already_configured": "This device is already configured.",
@@ -122,29 +125,46 @@
           "slot_4_label": "Slot 4 label"
         }
       },
-      "slots": {
+      "panel_init": {
         "title": "Panel options",
-        "description": "Choose the media player source {name} plays from and remap its room controls. It is a {profile} driving up to {slot_count} of them. Leave a slot empty to hide that tile. Labels are optional and fall back to the entity name. The panel keeps its token and its entity IDs.",
+        "description": "What would you like to change?",
+        "menu_options": {
+          "controller_link": "Media player source",
+          "entities": "Room entities"
+        }
+      },
+      "controller_link": {
+        "title": "Media player source",
+        "description": "Choose the media player source {name} plays from. It is a {profile}. Its token, its room entities and its entity IDs all stay as they are.",
         "data": {
-          "controller_entry_id": "Media player source",
-          "slot_1_entity": "Slot 1",
-          "slot_1_label": "Slot 1 label",
-          "slot_2_entity": "Slot 2",
-          "slot_2_label": "Slot 2 label",
-          "slot_3_entity": "Slot 3",
-          "slot_3_label": "Slot 3 label",
-          "slot_4_entity": "Slot 4",
-          "slot_4_label": "Slot 4 label",
-          "slot_5_entity": "Slot 5",
-          "slot_5_label": "Slot 5 label",
-          "slot_6_entity": "Slot 6",
-          "slot_6_label": "Slot 6 label"
+          "controller_entry_id": "Media player source"
+        }
+      },
+      "entities": {
+        "title": "Room entities",
+        "description": "{profile} draws one tile for every entity listed here. Pick a group to add entities to it or remove them again; there is no fixed number of slots and no fixed order beyond the groups themselves.\n\n{summary}",
+        "menu_options": {
+          "lights": "Lights",
+          "switches": "Switches",
+          "media_players": "Media players",
+          "climate": "Climate",
+          "covers": "Covers",
+          "weather": "Weather",
+          "entities_done": "Done"
+        }
+      },
+      "group": {
+        "title": "{group}",
+        "description": "Choose the entities {profile} should draw in this group. The same list both adds and removes: an entity you clear is deleted from the registry and does not come back with the same identity. {remaining} of {entity_limit} places are free.\n\nEach label box below is named after the element's stable ID, because that is what survives an entity being renamed in Home Assistant. Leave one empty to use the entity's own name. An entity added just now gets its label box the next time this form is opened.\n\n{legend}",
+        "data": {
+          "group_entities": "Entities"
         }
       }
     },
     "error": {
       "not_music_assistant": "Select a media player provided by Music Assistant.",
-      "already_configured": "This Music Assistant player already has a media player source."
+      "already_configured": "This Music Assistant player already has a media player source.",
+      "too_many_entities": "That is more room entities than this panel can drive. Remove some before adding others."
     }
   },
   "entity": {
@@ -160,12 +180,6 @@
       },
       "slot_4": {
         "name": "Slot 4"
-      },
-      "slot_5": {
-        "name": "Slot 5"
-      },
-      "slot_6": {
-        "name": "Slot 6"
       }
     },
     "switch": {
@@ -180,12 +194,6 @@
       },
       "slot_4": {
         "name": "Slot 4"
-      },
-      "slot_5": {
-        "name": "Slot 5"
-      },
-      "slot_6": {
-        "name": "Slot 6"
       },
       "screen": {
         "name": "Screen"
