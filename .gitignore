@@ -26,3 +26,4 @@ AGENTS.md
 clients/t560/t560-panel
 clients/t560/build/
 /.vs
+/TestResults
