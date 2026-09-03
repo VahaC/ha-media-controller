@@ -4,6 +4,8 @@
 
 #include <glib/gstdio.h>
 
+#include <string.h>
+
 #define PANEL_CONFIG_CACHE_NAME "layout.json"
 
 static gint clamp_kelvin(gdouble value, gint fallback)
@@ -15,10 +17,10 @@ static gint clamp_kelvin(gdouble value, gint fallback)
 
 /* An unknown control name is ignored rather than treated as an error, so the
  * integration can add one without breaking a released panel. */
-static void read_controls(JsonArray *controls, PanelRoom *room)
+static void read_controls(JsonArray *controls, PanelEntity *entity)
 {
-    room->brightness = FALSE;
-    room->color_temperature = FALSE;
+    entity->brightness = FALSE;
+    entity->color_temperature = FALSE;
     if (controls == NULL)
         return;
 
@@ -27,36 +29,60 @@ static void read_controls(JsonArray *controls, PanelRoom *room)
         if (control == NULL)
             continue;
         if (g_str_equal(control, "brightness"))
-            room->brightness = TRUE;
+            entity->brightness = TRUE;
         else if (g_str_equal(control, "color_temp"))
-            room->color_temperature = TRUE;
+            entity->color_temperature = TRUE;
     }
 }
 
-static gboolean read_room(JsonObject *object, PanelRoom *room)
+/* The domain is repeated in the payload so that a client can pick a card
+ * without parsing the entity ID. It is trusted when present and derived from
+ * the entity ID when it is not, which is what a payload from an integration
+ * that predates the field looks like. */
+static gchar *read_domain(JsonObject *object, const gchar *entity_id)
 {
-    const gchar *entity = json_object_string(object, "entity", NULL);
-    if (entity == NULL || *entity == '\0')
-        return FALSE;
+    const gchar *domain = json_object_string(object, "domain", NULL);
+    if (domain != NULL && *domain != '\0')
+        return g_strdup(domain);
+
+    const gchar *separator = strchr(entity_id, '.');
+    return separator != NULL
+               ? g_strndup(entity_id, (gsize)(separator - entity_id))
+               : g_strdup("");
+}
+
+/* An element with no entity, or with no rid, is skipped rather than drawn:
+ * the rid is what a card on this tablet is keyed on, so an element without
+ * one could never be placed on the grid in the first place. */
+static PanelEntity *read_entity(JsonObject *object)
+{
+    const gchar *entity_id = json_object_string(object, "entity", NULL);
+    const gchar *rid = json_object_string(object, "rid", NULL);
+
+    if (entity_id == NULL || *entity_id == '\0')
+        return NULL;
+    if (rid == NULL || *rid == '\0')
+        return NULL;
 
     gdouble value = 0.0;
-    room->slot = json_object_number(object, "slot", &value) && value > 0.0
-                     ? (guint)value
-                     : 0;
-    room->entity = g_strdup(entity);
-    room->label = g_strdup(json_object_string(object, "label", entity));
-    read_controls(json_optional_array(object, "controls"), room);
-    room->min_kelvin = json_object_number(object, "min_kelvin", &value)
-                           ? clamp_kelvin(value, 2000)
-                           : 2000;
-    room->max_kelvin = json_object_number(object, "max_kelvin", &value)
-                           ? clamp_kelvin(value, 6500)
-                           : 6500;
-    if (room->max_kelvin <= room->min_kelvin) {
-        room->min_kelvin = 2000;
-        room->max_kelvin = 6500;
+    PanelEntity *entity = g_new0(PanelEntity, 1);
+
+    entity->rid = g_strdup(rid);
+    entity->entity = g_strdup(entity_id);
+    entity->name = g_strdup(json_object_string(object, "name", entity_id));
+    entity->domain = read_domain(object, entity_id);
+    read_controls(json_optional_array(object, "controls"), entity);
+    entity->min_kelvin = json_object_number(object, "min_kelvin", &value)
+                             ? clamp_kelvin(value, 2000)
+                             : 2000;
+    entity->max_kelvin = json_object_number(object, "max_kelvin", &value)
+                             ? clamp_kelvin(value, 6500)
+                             : 6500;
+    if (entity->max_kelvin <= entity->min_kelvin) {
+        entity->min_kelvin = 2000;
+        entity->max_kelvin = 6500;
     }
-    return TRUE;
+    return entity;
 }
 
 /* Home Assistant clamps every setting before it sends one, so these bounds
@@ -194,16 +220,35 @@ gboolean panel_config_parse_state(JsonObject *state, PanelLayout *layout,
     read_settings(attributes, &parsed.settings);
     read_commands(attributes, &parsed.commands);
 
-    JsonArray *slots = json_optional_array(attributes, "slots");
-    guint length = slots != NULL ? json_array_get_length(slots) : 0;
-    for (guint i = 0; i < length && parsed.room_count < PANEL_ROOM_MAX; i++) {
-        JsonNode *node = json_array_get_element(slots, i);
+    /* The select Home Assistant holds this panel's skin in. Absent means the
+     * integration offered none, and the panel simply has no local skin
+     * picker to show. */
+    const gchar *skin_select = json_object_string(attributes, "skin_select",
+                                                  NULL);
+    if (skin_select != NULL && *skin_select != '\0')
+        parsed.skin_select_entity = g_strdup(skin_select);
+
+    /* The integration sends its own ceiling. A payload naming none, or naming
+     * an unreasonable one, is trusted only as far as this build's own. */
+    gdouble limit = 0.0;
+    guint entity_limit = PANEL_ENTITY_LIMIT;
+    if (json_object_number(attributes, "entity_limit", &limit) && limit > 0.0)
+        entity_limit = (guint)MIN(limit, (gdouble)PANEL_ENTITY_LIMIT);
+
+    /* Only a panel is sent this block, and a panel is sent no `slots` at all.
+     * A payload carrying neither is not an error: it is a panel with no room
+     * controls configured yet, and the grid draws itself empty. */
+    parsed.entities = g_ptr_array_new_with_free_func(
+        (GDestroyNotify)panel_entity_free);
+    JsonArray *entities = json_optional_array(attributes, "entities");
+    guint length = entities != NULL ? json_array_get_length(entities) : 0;
+    for (guint i = 0; i < length && parsed.entities->len < entity_limit; i++) {
+        JsonNode *node = json_array_get_element(entities, i);
         if (node == NULL || !JSON_NODE_HOLDS_OBJECT(node))
             continue;
-        if (read_room(json_node_get_object(node),
-                      &parsed.rooms[parsed.room_count])) {
-            parsed.room_count++;
-        }
+        PanelEntity *entity = read_entity(json_node_get_object(node));
+        if (entity != NULL)
+            g_ptr_array_add(parsed.entities, entity);
     }
 
     panel_layout_clear(layout);
@@ -219,7 +264,11 @@ gboolean panel_config_parse_json(const gchar *data, gssize length,
     JsonParser *parser = json_parser_new();
     GError *error = NULL;
 
+    /* A document of nothing but whitespace parses without error and leaves no
+     * root at all, so the node is checked for existence before its type. A
+     * truncated cache file looks exactly like that. */
     if (!json_parser_load_from_data(parser, data, length, &error) ||
+        json_parser_get_root(parser) == NULL ||
         !JSON_NODE_HOLDS_OBJECT(json_parser_get_root(parser))) {
         *error_message = error != NULL
                              ? g_strdup(error->message)

@@ -61,6 +61,7 @@ from .profiles import (
     panel_profile,
 )
 from .pairing import PairingStore
+from .panel_layout import async_setup_layout_endpoint
 from .panel_state import PanelSettings, PanelState
 from .provision import PanelProvisionView
 from .proxy import controller_device_info, panel_device_info
@@ -260,6 +261,9 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
     hass.http.register_view(PanelProvisionView(hass, pairings))
     # Authenticated, and only for the panel's own user. See status.py.
     hass.http.register_view(PanelStatusView(hass))
+    # The same ownership check, for the durable copy of a panel's own grid.
+    # See panel_layout.py for why it is an endpoint of its own.
+    async_setup_layout_endpoint(hass)
 
     async def async_handle_refresh(call: ServiceCall) -> None:
         runtimes: dict[str, MediaControllerRuntime] = hass.data[DOMAIN][

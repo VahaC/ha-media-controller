@@ -1,6 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <gresources>
   <gresource prefix="/com/vahac/t560">
+    <!-- The layout editor the panel serves on its own port. It is one
+         self-contained page: the tablet is often on a network with no
+         route to anywhere, so nothing in it may be fetched from a CDN. -->
+    <file>editor.html</file>
     <file>icons/light-1.png</file>
     <file>icons/light-2.png</file>
     <file>icons/fan.png</file>

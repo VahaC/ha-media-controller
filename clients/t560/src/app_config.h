@@ -18,13 +18,20 @@
  * Raise it in the same change that raises the number in that document. */
 #define T560_PANEL_CONTRACT_VERSION 6
 
-/* Six is the number of tiles this panel draws. It is the T560 profile of the
- * Media Controller integration, which never sends more; a larger payload is
- * truncated rather than trusted. */
+/* How many registry elements this panel will hold. The integration sends its
+ * own `entity_limit` and the T560 profile's is the same number; this is the
+ * ceiling a payload is trusted up to when it names none, and what stops a
+ * malformed one from being read into unbounded memory. It is not a number of
+ * tiles: how many cards are drawn, and how large each of them is, comes from
+ * the grid the user arranged, not from here. */
 enum {
-    PANEL_ROOM_MAX = 6,
+    PANEL_ENTITY_LIMIT = 100,
     PANEL_DEFAULT_POLL_MS = 1000,
-    PANEL_DEFAULT_PLAYLIST_POLL_MS = 60000
+    PANEL_DEFAULT_PLAYLIST_POLL_MS = 60000,
+    /* The layout editor's port. Above 1024 so that the panel needs no
+     * privileges it does not already have: the deployment is deliberately
+     * root-free. */
+    PANEL_DEFAULT_WEB_PORT = 8730
 };
 
 /* How the panel draws itself. The name arrives from Home Assistant in the
@@ -43,18 +50,23 @@ typedef enum {
 PanelPlayerSkin panel_player_skin_from_string(const gchar *name);
 const gchar *panel_player_skin_to_string(PanelPlayerSkin skin);
 
-/* One room control, exactly as the config sensor describes it. The panel
- * never inspects Home Assistant capabilities itself: the integration resolves
- * them and sends the controls this tile may draw. */
+/* One element of the panel's registry, exactly as the config sensor describes
+ * it. The panel never inspects Home Assistant capabilities itself: the
+ * integration resolves them and sends the controls this element may draw.
+ *
+ * `rid` is the identity, not `entity`. A Home Assistant entity ID is renamed
+ * by the user at will, so the grid on this tablet keys its cards on the rid
+ * and a rename moves nothing. */
 typedef struct {
-    guint slot;
+    gchar *rid;
     gchar *entity;
-    gchar *label;
+    gchar *name;
+    gchar *domain;
     gboolean brightness;
     gboolean color_temperature;
     gint min_kelvin;
     gint max_kelvin;
-} PanelRoom;
+} PanelEntity;
 
 /* The tablet-local settings Home Assistant owns. They used to live only in
  * config.ini, which is still read as the fallback the panel starts from
@@ -100,8 +112,14 @@ typedef struct {
     gchar *player_entity;
     gchar *queue_entity;
     gchar *playlists_entity;
-    PanelRoom rooms[PANEL_ROOM_MAX];
-    guint room_count;
+    /* The select Home Assistant holds this panel's skin in, or NULL when the
+     * integration named none. The panel writes it and never stores a skin of
+     * its own: Home Assistant stays the owner, and the new value arrives back
+     * in `settings.player_skin` on the next poll. */
+    gchar *skin_select_entity;
+    /* PanelEntity*, owned, in payload order. Unbounded by design: the number
+     * of room controls is the user's business, not a compile-time constant. */
+    GPtrArray *entities;
     /* A checksum of the layout above and of nothing else. Settings and
      * commands deliberately do not change it: they are applied while the
      * panel keeps running, and only a layout change rebuilds the interface. */
@@ -124,6 +142,10 @@ typedef struct {
     guint poll_interval_ms;
     guint playlist_poll_interval_ms;
     PanelPlayerSkin player_skin;
+    /* The port the layout editor answers on, and 0 to switch it off. The
+     * editor has no password by design, so the way to refuse it entirely is
+     * a setting rather than a firewall rule somebody has to remember. */
+    guint web_port;
     /* From Home Assistant, or from the on-disk cache. */
     PanelLayout layout;
 } AppConfig;
@@ -134,5 +156,11 @@ gchar *app_config_directory_path(void);
 gchar *app_config_cache_path(const gchar *name);
 
 void panel_layout_clear(PanelLayout *layout);
+/* The element with this rid, or NULL when the registry no longer carries one.
+ * A card whose rid has gone is a card whose entity was removed in Home
+ * Assistant, which the grid draws as unassigned rather than dropping. */
+const PanelEntity *panel_layout_find_entity(const PanelLayout *layout,
+                                            const gchar *rid);
+void panel_entity_free(PanelEntity *entity);
 
 #endif

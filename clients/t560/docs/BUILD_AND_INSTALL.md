@@ -43,6 +43,7 @@ Installed files:
 /home/vahac/.local/bin/t560-home-button
 /home/vahac/.local/bin/t560-configure-openbox.py
 /home/vahac/.config/t560-music-panel/config.ini
+/home/vahac/.config/t560-music-panel/grid.json
 /home/vahac/.config/t560-music-panel/token
 /home/vahac/.local/share/applications/t560-home-assistant.desktop
 /home/vahac/.local/share/icons/hicolor/<size>/apps/t560-music-panel.png
@@ -400,6 +401,48 @@ working. Confirm the camera state with `t560-motion-detector.py --probe`.
 
 Do not enable autostart until this test passes.
 
+### The layout editor, and the port it opens
+
+Once the panel is running it also serves its layout editor, by default on
+port 8730 of every interface. The address is in the panel's log, and an empty
+room page shows it on screen:
+
+```text
+http://<tablet address>:8730/
+```
+
+Open it from a phone or a desktop on the same network to arrange the room
+page. There is nothing to install and nothing to log into.
+
+**The editor has no password, and that port must never be forwarded through a
+router or exposed to the internet.** It is meant for a house network and
+nothing else.
+
+What the missing password costs is bounded on purpose. The server answers
+exactly seven routes and none of them is a proxy to Home Assistant: it cannot
+read a state, call an arbitrary service, reach an entity the panel does not
+already draw, or expose the panel's Home Assistant access token. The registry
+it shows comes from the payload the panel has already cached. The worst a
+caller on the network can do is rearrange this tablet's room page — and the
+editor's **Restore** button puts back the copy Home Assistant holds, which is
+written after every save.
+
+To switch the editor off entirely, set it in `config.ini` and restart the
+panel:
+
+```sh
+nano "$HOME/.config/t560-music-panel/config.ini"
+```
+
+```ini
+[panel]
+web_port=0
+```
+
+Any other value above 1024 moves it to another port. The panel binds it
+without privileges, so nothing about the editor needs root — the deployment
+stays rootless.
+
 ## 9. Enable the provided Openbox autostart
 
 The provided autostart keeps Tint2 and the cursor helper and starts the included
@@ -462,7 +505,8 @@ Reboot once after the watchdog test passes. The panel should start with Openbox.
 # Update an existing installation
 
 Use this procedure for every later source-code update. It preserves
-`config.ini`, the Home Assistant token, and the Openbox configuration.
+`config.ini`, `grid.json`, the Home Assistant token, and the Openbox
+configuration.
 
 ## 1. Rebuild the ARMv7 executable
 
@@ -497,7 +541,11 @@ Send-T560File .\scripts\t560-home-button /home/vahac/.local/bin/t560-home-button
 Send-T560File .\scripts\t560-configure-openbox.py /home/vahac/.local/bin/t560-configure-openbox.py.new
 ```
 
-Do not transfer `config.ini` or `token` during an update.
+Do not transfer `config.ini`, `grid.json` or `token` during an update.
+`grid.json` is the room-page arrangement the tablet's own editor writes; an
+update must not overwrite it. If it is ever lost, the panel falls back to
+placing every registry element as a 2 x 2 card, and the editor's **Restore**
+button puts back the copy Home Assistant holds.
 
 ## 4. Validate the new executable
 

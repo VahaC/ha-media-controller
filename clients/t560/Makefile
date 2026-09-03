@@ -7,7 +7,8 @@ PACKAGES = gtk+-3.0 libsoup-3.0 json-glib-1.0
 TARGET = t560-panel
 TEST_TARGET = tests/test-json-helpers
 RESOURCE_XML = data/t560.gresource.xml
-RESOURCE_FILES = data/icons/light-1.png \
+RESOURCE_FILES = data/editor.html \
+		 data/icons/light-1.png \
 		 data/icons/light-2.png \
 		 data/icons/fan.png \
 		 data/icons/ac.png \
@@ -23,19 +24,24 @@ SOURCES = src/main.c \
 	  src/json_helpers.c \
 	  src/panel_config.c \
 	  src/panel_display.c \
+	  src/panel_grid.c \
 	  src/panel_pairing.c \
 	  src/panel_ui.c \
+	  src/panel_web.c \
 	  src/system_status.c \
 	  $(RESOURCE_SOURCE)
 OBJECTS = $(SOURCES:.c=.o)
 DEPFILES = $(OBJECTS:.o=.d)
 TEST_OBJECTS = tests/test_json_helpers.o \
 	       tests/test_panel_config.o \
+	       tests/test_panel_grid.o \
 	       src/json_helpers.o \
 	       src/panel_config.o \
+	       src/panel_grid.o \
 	       src/panel_pairing.o \
 	       src/app_config.o
-TEST_DEPFILES = tests/test_json_helpers.d tests/test_panel_config.d
+TEST_DEPFILES = tests/test_json_helpers.d tests/test_panel_config.d \
+		tests/test_panel_grid.d
 
 CPPFLAGS += -Isrc -Itests $(shell $(PKG_CONFIG) --cflags $(PACKAGES))
 CFLAGS ?= -Os

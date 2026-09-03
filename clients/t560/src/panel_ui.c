@@ -1,10 +1,45 @@
 #include "panel_ui.h"
 
+#include "panel_grid.h"
+
 #include <math.h>
 
-/* The ADJUST button sits in the top-right corner of a room card and the
- * header row reserves its height, so both must use the same value. */
+/* The ADJUST control sits in the top-right corner of a room card.
+ *
+ * A card is as small as one cell — about 78 by 76 pixels on this screen — and
+ * a labelled pill does not fit in one. The control is therefore the same
+ * *hit region* at every size and only its drawing changes: a card with room
+ * gets the pill it always had, and a card without one gets a compact glyph of
+ * three slider lines in the same corner, the same size as the pill is tall.
+ * Nothing about what a tap does changes with the size of the card, which is
+ * the part a person has to be able to predict. */
 #define PANEL_ROOM_ADJUST_HEIGHT 44
+#define PANEL_ROOM_ADJUST_WIDTH 92
+#define PANEL_ROOM_ADJUST_GLYPH 36
+/* Below these the pill is dropped for the glyph: the pill plus its inset
+ * needs this much width, and a card shorter than this has nothing left for a
+ * name once the pill has taken the top of it. */
+#define PANEL_ROOM_ADJUST_PILL_MIN_WIDTH 132
+#define PANEL_ROOM_ADJUST_PILL_MIN_HEIGHT 120
+
+/* The gap between cards, in pixels. The cell size itself is derived from the
+ * work area the page is given, so the grid always fits whatever it gets and
+ * the bottom row is never cut off. */
+#define PANEL_ROOM_CARD_GAP 6
+
+/* The two sizes a card icon is tinted at. The large one is what the room page
+ * always drew; the small one exists because a card may be a single cell, and
+ * scaling a pixbuf on every frame is not something this tablet can afford. */
+/* Used by everything this file draws with Cairo, from the room cards to the
+ * header indicators. */
+#define PANEL_PI 3.14159265358979323846
+
+#define PANEL_ROOM_ICON_LARGE 62
+#define PANEL_ROOM_ICON_SMALL 34
+
+/* How long a card takes to cross between off and on. Unchanged from the
+ * fixed six-tile page: the animation is what makes a tap feel answered. */
+#define PANEL_ROOM_ANIMATION_US 180000.0
 
 /* The side of the artwork the modern skin draws. Album art is scaled to it
  * once, when it arrives. */
@@ -132,19 +167,31 @@ struct _PanelUi {
     GtkWidget *playlist_list;
     gboolean changing_list_selection;
     GPtrArray *navigation_buttons;
-    GtkWidget *room_buttons[PANEL_ROOM_MAX];
-    GtkWidget *room_adjust_buttons[PANEL_ROOM_MAX];
-    GtkWidget *room_icons[PANEL_ROOM_MAX];
-    GtkWidget *room_states[PANEL_ROOM_MAX];
-    gboolean room_active[PANEL_ROOM_MAX];
-    gdouble room_active_mix[PANEL_ROOM_MAX];
-    gdouble room_animation_from[PANEL_ROOM_MAX];
-    gdouble room_animation_to[PANEL_ROOM_MAX];
-    gint64 room_animation_start_us[PANEL_ROOM_MAX];
-    guint room_animation_tick[PANEL_ROOM_MAX];
-    GdkPixbuf *room_icon_source[PANEL_ROOM_MAX];
-    GdkPixbuf *room_icon_off[PANEL_ROOM_MAX];
-    GdkPixbuf *room_icon_on[PANEL_ROOM_MAX];
+    /* The room page is one drawing area, not a widget per card.
+     *
+     * A registry of a hundred elements would otherwise be a hundred GtkButton
+     * trees, each with its own style context, its own allocation and its own
+     * invalidation, on an ARMv7 running a software renderer. It is the same
+     * choice the cassette bay already makes, for the same reason: one draw
+     * handler that repaints the rectangles that actually changed. */
+    GtkWidget *room_area;
+    /* The arrangement, owned. Cards are built from it and from the registry
+     * every time either one changes; there is no fixed number of them. */
+    PanelGrid *room_grid;
+    /* PanelRoomCard*, owned, in the order the grid lists them. */
+    GPtrArray *room_cards;
+    /* Icon artwork by name, tinted for the current skin and shared by every
+     * card that names it. A skin change re-tints one image per distinct icon
+     * rather than one per card. */
+    GHashTable *room_icon_cache;
+    /* One tick callback for the whole page while any card is animating. */
+    guint room_animation_tick;
+    /* The card a finger is currently down on, and whether it went down on
+     * that card's ADJUST corner. -1 for neither. */
+    gint room_pressed_index;
+    gboolean room_pressed_adjust;
+    /* Where the editor can be reached, drawn on an empty page. */
+    gchar *room_editor_hint;
     GtkWidget *room_sheet;
     GtkWidget *room_sheet_title;
     GtkWidget *room_brightness_box;
@@ -154,10 +201,6 @@ struct _PanelUi {
     GtkWidget *room_temperature_scale;
     GtkWidget *room_temperature_value;
     gint room_adjust_index;
-    gint room_brightness[PANEL_ROOM_MAX];
-    gint room_temperature[PANEL_ROOM_MAX];
-    gint room_temperature_min[PANEL_ROOM_MAX];
-    gint room_temperature_max[PANEL_ROOM_MAX];
     gboolean changing_room_adjustment;
     guint brightness_debounce_source;
     guint temperature_debounce_source;
@@ -167,10 +210,62 @@ struct _PanelUi {
     gint pending_temperature;
 };
 
+/* One card on the room page. It knows its own identity, where it sits in
+ * cells, where that lands in pixels, and everything about the entity behind
+ * it that the page draws. Nothing here is indexed by a compile-time constant:
+ * the array of these is as long as the grid says. */
+typedef struct {
+    gchar *rid;
+    /* The registry element this card acts on, borrowed from the config
+     * layout, or NULL when the registry no longer carries its rid. Such a
+     * card is drawn as unassigned rather than dropped: the registry is empty
+     * while Home Assistant is unreachable, and a card removed on that basis
+     * would be gone for good at the next save. */
+    const PanelEntity *entity;
+    guint column;
+    guint row;
+    guint columns;
+    guint rows;
+    /* Recomputed from the allocation, never stored in the layout file. */
+    GdkRectangle bounds;
+    gboolean active;
+    gboolean state_known;
+    gdouble active_mix;
+    gdouble animation_from;
+    gdouble animation_to;
+    gint64 animation_start_us;
+    gboolean animating;
+    gint brightness;
+    gint temperature;
+    gint temperature_min;
+    gint temperature_max;
+    /* The colour the user chose for this card, and whether they chose one. */
+    guint accent;
+    gboolean has_accent;
+    /* Interned; points into the icon table or the card's own override. */
+    gchar *icon;
+} PanelRoomCard;
+
+/* One icon, at the two sizes a card may need. Nothing here is coloured.
+ *
+ * The artwork is painted through Cairo as a mask, so the colour is chosen at
+ * draw time and costs nothing: a skin change re-colours every card without
+ * touching a pixbuf, and a card the user gave its own colour is drawn in that
+ * colour without a private copy of the image. Two sizes are kept because a
+ * card may be a single cell, and scaling a pixbuf on every frame is not
+ * something this tablet can afford. */
+typedef struct {
+    GdkPixbuf *large;
+    GdkPixbuf *small;
+} PanelIconSet;
+
 static void rounded_rectangle(cairo_t *cr, gdouble x, gdouble y, gdouble width,
                               gdouble height, gdouble radius);
 static void set_source_color(cairo_t *cr, guint color, gdouble alpha);
 static void refresh_room_icons(PanelUi *ui);
+static void room_cards_rebuild(PanelUi *ui);
+static void room_cards_allocate(PanelUi *ui);
+static void open_room_sheet(PanelUi *ui, gint index);
 static void deck_update_animation(PanelUi *ui);
 static cairo_pattern_t *skin_texture_pattern(PanelPlayerSkin skin);
 static void paint_dithered_gradient(cairo_t *cr, gdouble x, gdouble y,
@@ -322,72 +417,95 @@ static GtkWidget *new_icon(const gchar *name, gint pixel_size)
     return icon;
 }
 
-static GdkPixbuf *tint_icon(GdkPixbuf *source, guint color)
-{
-    GdkPixbuf *result = gdk_pixbuf_copy(source);
-    guchar *pixels = gdk_pixbuf_get_pixels(result);
-    gint width = gdk_pixbuf_get_width(result);
-    gint height = gdk_pixbuf_get_height(result);
-    gint rowstride = gdk_pixbuf_get_rowstride(result);
-    gint channels = gdk_pixbuf_get_n_channels(result);
 
-    for (gint y = 0; y < height; y++) {
-        guchar *row = pixels + y * rowstride;
-        for (gint x = 0; x < width; x++) {
-            guchar *pixel = row + x * channels;
-            pixel[0] = (guchar)((color >> 16) & 0xffU);
-            pixel[1] = (guchar)((color >> 8) & 0xffU);
-            pixel[2] = (guchar)(color & 0xffU);
-        }
+
+/* The artwork this build carries, and the name each piece answers to in a
+ * layout file. The set is deliberately small: it is what the editor offers,
+ * and a card that names something else falls back to its domain's default
+ * rather than drawing nothing. */
+static const struct {
+    const gchar *name;
+    const gchar *resource;
+} PANEL_ROOM_ICONS[] = {
+    {"light-1", "/com/vahac/t560/icons/light-1.png"},
+    {"light-2", "/com/vahac/t560/icons/light-2.png"},
+    {"desk-lamp", "/com/vahac/t560/icons/desk-lamp.png"},
+    {"desk-led-strip", "/com/vahac/t560/icons/desk-led-strip.png"},
+    {"fan", "/com/vahac/t560/icons/fan.png"},
+    {"ac", "/com/vahac/t560/icons/ac.png"}
+};
+
+static const gchar *icon_resource(const gchar *name)
+{
+    for (guint i = 0; i < G_N_ELEMENTS(PANEL_ROOM_ICONS); i++) {
+        if (g_strcmp0(PANEL_ROOM_ICONS[i].name, name) == 0)
+            return PANEL_ROOM_ICONS[i].resource;
     }
-    return result;
+    return NULL;
 }
 
-/* A tile icon is the same artwork in two colours, and the skin decides which
- * two. Re-tinting is a pass over six 62x62 images, so it is done when the skin
- * changes rather than kept as four pixbufs per tile for the life of the
- * process. */
-static void refresh_room_icons(PanelUi *ui)
+/* What a card draws when the user has chosen no icon for it. The registry
+ * carries the domain precisely so that a client can pick a card without
+ * parsing an entity ID. */
+static const gchar *icon_for_domain(const gchar *domain)
 {
-    const PanelSkinPalette *colors = palette(ui);
-
-    for (guint i = 0; i < PANEL_ROOM_MAX; i++) {
-        if (ui->room_icon_source[i] == NULL)
-            continue;
-        g_clear_object(&ui->room_icon_off[i]);
-        g_clear_object(&ui->room_icon_on[i]);
-        ui->room_icon_off[i] = tint_icon(ui->room_icon_source[i],
-                                         colors->icon_off);
-        ui->room_icon_on[i] = tint_icon(ui->room_icon_source[i],
-                                        colors->icon_on);
-        if (ui->room_icons[i] != NULL) {
-            gtk_image_set_from_pixbuf(
-                GTK_IMAGE(ui->room_icons[i]),
-                ui->room_active[i] ? ui->room_icon_on[i]
-                                   : ui->room_icon_off[i]);
-        }
-    }
+    if (g_strcmp0(domain, "light") == 0)
+        return "light-1";
+    if (g_strcmp0(domain, "switch") == 0)
+        return "fan";
+    return "light-2";
 }
 
-static GtkWidget *new_room_icon(PanelUi *ui, guint index,
-                                const gchar *resource_path)
+static void icon_set_free(gpointer data)
 {
+    PanelIconSet *icons = data;
+
+    g_clear_object(&icons->large);
+    g_clear_object(&icons->small);
+    g_free(icons);
+}
+
+/* Loads one piece of artwork once and keeps it for the life of the process.
+ * Cards share the entry, so a page of a hundred cards naming three icons
+ * holds three of these and not a hundred. */
+static const PanelIconSet *icon_set(PanelUi *ui, const gchar *name)
+{
+    if (name == NULL)
+        return NULL;
+
+    PanelIconSet *icons = g_hash_table_lookup(ui->room_icon_cache, name);
+    if (icons != NULL)
+        return icons;
+
+    const gchar *resource = icon_resource(name);
+    if (resource == NULL)
+        return NULL;
+
     GError *error = NULL;
-    const PanelSkinPalette *colors = palette(ui);
-    GdkPixbuf *source = gdk_pixbuf_new_from_resource_at_scale(
-        resource_path, 62, 62, TRUE, &error);
-
-    if (source == NULL) {
-        g_warning("Could not load room icon %s: %s", resource_path,
+    GdkPixbuf *large = gdk_pixbuf_new_from_resource_at_scale(
+        resource, PANEL_ROOM_ICON_LARGE, PANEL_ROOM_ICON_LARGE, TRUE, &error);
+    if (large == NULL) {
+        g_warning("Could not load room icon %s: %s", resource,
                   error != NULL ? error->message : "unknown error");
         g_clear_error(&error);
-        return new_icon("image-missing-symbolic", 48);
+        return NULL;
     }
 
-    ui->room_icon_source[index] = source;
-    ui->room_icon_off[index] = tint_icon(source, colors->icon_off);
-    ui->room_icon_on[index] = tint_icon(source, colors->icon_on);
-    return gtk_image_new_from_pixbuf(ui->room_icon_off[index]);
+    icons = g_new0(PanelIconSet, 1);
+    icons->large = large;
+    icons->small = gdk_pixbuf_scale_simple(large, PANEL_ROOM_ICON_SMALL,
+                                           PANEL_ROOM_ICON_SMALL,
+                                           GDK_INTERP_BILINEAR);
+    g_hash_table_insert(ui->room_icon_cache, g_strdup(name), icons);
+    return icons;
+}
+
+/* A skin change re-colours the room page without touching the artwork: the
+ * colour is decided per draw, so there is nothing to re-tint. */
+static void refresh_room_icons(PanelUi *ui)
+{
+    if (ui->room_area != NULL)
+        gtk_widget_queue_draw(ui->room_area);
 }
 
 static GtkWidget *new_icon_button(const gchar *icon_name, const gchar *text,
@@ -447,11 +565,43 @@ static void repeat_clicked(GtkButton *button, gpointer user_data)
     emit_event(user_data, PANEL_UI_CYCLE_REPEAT, NULL, -1);
 }
 
-static void room_clicked(GtkButton *button, gpointer user_data)
+/* The card at a point, or -1. Cards never overlap — the layout reader drops
+ * one that would — so the first hit is the only hit. */
+static gint room_card_at(PanelUi *ui, gdouble x, gdouble y)
 {
-    emit_event(user_data, PANEL_UI_TOGGLE_ROOM, NULL,
-               GPOINTER_TO_INT(g_object_get_data(G_OBJECT(button),
-                                                 "room-index")));
+    for (guint i = 0; i < ui->room_cards->len; i++) {
+        const PanelRoomCard *card = g_ptr_array_index(ui->room_cards, i);
+        if (x >= card->bounds.x && x < card->bounds.x + card->bounds.width &&
+            y >= card->bounds.y && y < card->bounds.y + card->bounds.height) {
+            return (gint)i;
+        }
+    }
+    return -1;
+}
+
+static gboolean card_is_adjustable(const PanelRoomCard *card)
+{
+    return card->entity != NULL &&
+           (card->entity->brightness || card->entity->color_temperature);
+}
+
+/* The ADJUST hit region: the top-right corner, the same size whatever the
+ * card is drawn like. See PANEL_ROOM_ADJUST_HEIGHT above for why the drawing
+ * changes with the size and the target does not. */
+static void card_adjust_region(const PanelRoomCard *card, GdkRectangle *out)
+{
+    gboolean pill = card->bounds.width >= PANEL_ROOM_ADJUST_PILL_MIN_WIDTH &&
+                    card->bounds.height >= PANEL_ROOM_ADJUST_PILL_MIN_HEIGHT;
+    gint width = pill ? PANEL_ROOM_ADJUST_WIDTH : PANEL_ROOM_ADJUST_GLYPH;
+    gint height = pill ? PANEL_ROOM_ADJUST_HEIGHT : PANEL_ROOM_ADJUST_GLYPH;
+    gint inset = pill ? 14 : 6;
+
+    out->width = MIN(width, card->bounds.width);
+    out->height = MIN(height, card->bounds.height);
+    out->x = card->bounds.x + card->bounds.width - out->width - inset;
+    out->y = card->bounds.y + inset;
+    if (out->x < card->bounds.x)
+        out->x = card->bounds.x;
 }
 
 static gboolean emit_brightness_change(gpointer user_data)
@@ -523,32 +673,27 @@ static void close_room_sheet(GtkButton *button, gpointer user_data)
     gtk_revealer_set_reveal_child(GTK_REVEALER(ui->room_sheet), FALSE);
 }
 
-static void room_adjust_clicked(GtkButton *button, gpointer user_data)
+static void open_room_sheet(PanelUi *ui, gint index)
 {
-    PanelUi *ui = user_data;
-    gint index = GPOINTER_TO_INT(
-        g_object_get_data(G_OBJECT(button), "room-index"));
-    const PanelRoom *room = &ui->config->layout.rooms[index];
-    gchar *title = g_strdup_printf("%s SETTINGS", room->label);
-    gint brightness = ui->room_brightness[index] >= 0
-                          ? ui->room_brightness[index]
-                          : 100;
-    gint temperature = ui->room_temperature[index] >= 0
-                           ? ui->room_temperature[index]
-                           : (ui->room_temperature_min[index] +
-                              ui->room_temperature_max[index]) / 2;
+    PanelRoomCard *card = g_ptr_array_index(ui->room_cards, index);
+    const PanelEntity *entity = card->entity;
+    gchar *title = g_strdup_printf("%s SETTINGS", entity->name);
+    gint brightness = card->brightness >= 0 ? card->brightness : 100;
+    gint temperature = card->temperature >= 0
+                           ? card->temperature
+                           : (card->temperature_min +
+                              card->temperature_max) / 2;
 
     ui->room_adjust_index = index;
     gtk_label_set_text(GTK_LABEL(ui->room_sheet_title), title);
     g_free(title);
-    gtk_widget_set_visible(ui->room_brightness_box, room->brightness);
+    gtk_widget_set_visible(ui->room_brightness_box, entity->brightness);
     gtk_widget_set_visible(ui->room_temperature_box,
-                           room->color_temperature);
+                           entity->color_temperature);
 
     ui->changing_room_adjustment = TRUE;
     gtk_range_set_range(GTK_RANGE(ui->room_temperature_scale),
-                        ui->room_temperature_min[index],
-                        ui->room_temperature_max[index]);
+                        card->temperature_min, card->temperature_max);
     gtk_range_set_value(GTK_RANGE(ui->room_brightness_scale), brightness);
     gtk_range_set_value(GTK_RANGE(ui->room_temperature_scale), temperature);
     ui->changing_room_adjustment = FALSE;
@@ -1620,86 +1765,563 @@ static gboolean room_sheet_draw(GtkWidget *widget, cairo_t *cr,
     return FALSE;
 }
 
-static gboolean room_card_draw(GtkWidget *widget, cairo_t *cr,
-                               gpointer user_data)
+/* One piece of text on a card. The font is built per call rather than kept
+ * per card: a card is redrawn when its state changes, not per frame, and one
+ * font description is cheaper than a cache that has to be invalidated with
+ * every skin and every size change. */
+static gdouble card_text(cairo_t *cr, PangoLayout *layout, const gchar *text,
+                         gint size, gboolean bold, guint color, gdouble alpha,
+                         gdouble x, gdouble y, gdouble width)
 {
-    PanelUi *ui = user_data;
-    guint index = (guint)GPOINTER_TO_INT(
-        g_object_get_data(G_OBJECT(widget), "room-index"));
-    GtkStateFlags flags = gtk_widget_get_state_flags(widget);
-    gdouble width = gtk_widget_get_allocated_width(widget);
-    gdouble height = gtk_widget_get_allocated_height(widget);
-    const PanelSkinPalette *colors = palette(ui);
-    gdouble mix = ui->room_active_mix[index];
-    guint start = colors->card_start;
-    guint end = colors->card_end;
-    guint active_start = colors->card_active_start;
-    guint active_end = colors->card_active_end;
-    guint border = mix_color(colors->border, colors->border_active, mix);
-    guint bottom = mix_color(colors->bottom, colors->bottom_active, mix);
-    gdouble shadow_alpha = 0.42;
+    PangoFontDescription *font = pango_font_description_new();
+    gint text_height = 0;
 
-    if ((flags & GTK_STATE_FLAG_INSENSITIVE) != 0) {
+    pango_font_description_set_family(font, "Sans");
+    pango_font_description_set_weight(
+        font, bold ? PANGO_WEIGHT_BOLD : PANGO_WEIGHT_NORMAL);
+    pango_font_description_set_absolute_size(font, size * PANGO_SCALE);
+    pango_layout_set_font_description(layout, font);
+    pango_font_description_free(font);
+
+    pango_layout_set_text(layout, text, -1);
+    pango_layout_set_width(layout, (gint)(width * PANGO_SCALE));
+    pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_END);
+    pango_layout_set_alignment(layout, PANGO_ALIGN_CENTER);
+    pango_layout_get_pixel_size(layout, NULL, &text_height);
+
+    set_source_color(cr, color, alpha);
+    cairo_move_to(cr, x, y);
+    pango_cairo_show_layout(cr, layout);
+    return text_height;
+}
+
+static gdouble card_text_height(PangoLayout *layout, const gchar *text,
+                                gint size, gboolean bold, gdouble width)
+{
+    PangoFontDescription *font = pango_font_description_new();
+    gint text_height = 0;
+
+    pango_font_description_set_family(font, "Sans");
+    pango_font_description_set_weight(
+        font, bold ? PANGO_WEIGHT_BOLD : PANGO_WEIGHT_NORMAL);
+    pango_font_description_set_absolute_size(font, size * PANGO_SCALE);
+    pango_layout_set_font_description(layout, font);
+    pango_font_description_free(font);
+
+    pango_layout_set_text(layout, text, -1);
+    pango_layout_set_width(layout, (gint)(width * PANGO_SCALE));
+    pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_END);
+    pango_layout_get_pixel_size(layout, NULL, &text_height);
+    return text_height;
+}
+
+/* The ADJUST control. A card with room for it gets the pill the six-tile page
+ * always drew; a card without gets the same target drawn as a slider glyph.
+ * See PANEL_ROOM_ADJUST_HEIGHT for why only the drawing changes. */
+static void draw_room_adjust(PanelUi *ui, cairo_t *cr, PangoLayout *layout,
+                             const PanelRoomCard *card, gboolean pressed)
+{
+    const PanelSkinPalette *colors = palette(ui);
+    GdkRectangle region;
+    gboolean pill;
+
+    card_adjust_region(card, &region);
+    pill = region.width >= PANEL_ROOM_ADJUST_WIDTH;
+
+    guint fill = mix_color(colors->card_end, colors->border_active,
+                           pressed ? 0.34 : 0.16);
+    gdouble radius = pill ? region.height / 2.0
+                          : MIN(12.0, region.width / 3.0);
+
+    cairo_save(cr);
+    set_source_color(cr, fill, 1.0);
+    rounded_rectangle(cr, region.x, region.y, region.width, region.height,
+                      radius);
+    cairo_fill(cr);
+    set_source_color(cr, colors->border_active, pressed ? 1.0 : 0.72);
+    cairo_set_line_width(cr, 1.0);
+    rounded_rectangle(cr, region.x + 0.5, region.y + 0.5, region.width - 1.0,
+                      region.height - 1.0, radius);
+    cairo_stroke(cr);
+
+    if (pill) {
+        gdouble height = card_text_height(layout, "ADJUST", 10, TRUE,
+                                          region.width);
+        card_text(cr, layout, "ADJUST", 10, TRUE, colors->border_active, 1.0,
+                  region.x, region.y + (region.height - height) / 2.0,
+                  region.width);
+    } else {
+        /* Three slider lines, each with the knob at a different place: the
+         * same picture the sheet behind this control draws. */
+        static const gdouble knobs[] = {0.32, 0.62, 0.44};
+        gdouble inset = region.width * 0.24;
+        gdouble span = region.width - inset * 2.0;
+        gdouble step = region.height / 4.0;
+
+        cairo_set_line_width(cr, 1.6);
+        for (guint i = 0; i < G_N_ELEMENTS(knobs); i++) {
+            gdouble line_y = region.y + step * (i + 1);
+            set_source_color(cr, colors->border_active, 0.55);
+            cairo_move_to(cr, region.x + inset, line_y);
+            cairo_line_to(cr, region.x + inset + span, line_y);
+            cairo_stroke(cr);
+            set_source_color(cr, colors->border_active, 1.0);
+            cairo_arc(cr, region.x + inset + span * knobs[i], line_y, 2.1,
+                      0.0, 2.0 * PANEL_PI);
+            cairo_fill(cr);
+        }
+    }
+    cairo_restore(cr);
+}
+
+static void draw_room_card(PanelUi *ui, cairo_t *cr, PangoLayout *layout,
+                           const PanelRoomCard *card, gint index)
+{
+    const PanelSkinPalette *colors = palette(ui);
+    gdouble x = card->bounds.x;
+    gdouble y = card->bounds.y;
+    gdouble width = card->bounds.width;
+    gdouble height = card->bounds.height;
+    gdouble radius = MIN(27.0, MIN(width, height) / 3.2);
+    gdouble mix = card->active_mix;
+    gboolean unassigned = card->entity == NULL;
+    gboolean pressed = index == ui->room_pressed_index &&
+                       !ui->room_pressed_adjust;
+
+    guint start = pressed ? colors->card_down_start : colors->card_start;
+    guint end = pressed ? colors->card_down_end : colors->card_end;
+    guint active_start = pressed ? colors->card_down_active_start
+                                 : colors->card_active_start;
+    guint active_end = pressed ? colors->card_down_active_end
+                               : colors->card_active_end;
+    guint border_active = colors->border_active;
+    gdouble shadow_alpha = pressed ? 0.3 : 0.42;
+
+    /* A colour the user chose replaces the skin's own accent and nothing
+     * else, so a card still reads as part of the skin it sits in. */
+    if (card->has_accent) {
+        border_active = card->accent;
+        active_start = mix_color(card->accent, 0x000000U, 0.40);
+        active_end = mix_color(card->accent, 0x000000U, 0.76);
+        if (pressed) {
+            guint swap = active_start;
+            active_start = active_end;
+            active_end = swap;
+        }
+    }
+
+    if (unassigned) {
+        /* Its registry element is gone from Home Assistant, or has not
+         * arrived yet. The card keeps its place and says so rather than
+         * disappearing and taking the arrangement with it. */
         start = colors->card_off;
         end = colors->card_off;
         active_start = start;
         active_end = end;
-        border = colors->border_off;
-        bottom = colors->bottom_off;
+        border_active = colors->border_off;
         shadow_alpha = 0.0;
-    } else if ((flags & GTK_STATE_FLAG_ACTIVE) != 0) {
-        start = colors->card_down_start;
-        end = colors->card_down_end;
-        active_start = colors->card_down_active_start;
-        active_end = colors->card_down_active_end;
-        shadow_alpha = 0.3;
-    } else if ((flags & GTK_STATE_FLAG_PRELIGHT) != 0) {
-        start = colors->card_hover_start;
-        end = colors->card_hover_end;
-        active_start = colors->card_hover_active_start;
-        active_end = colors->card_hover_active_end;
+        mix = 0.0;
     }
+
+    guint border = mix_color(colors->border, border_active, mix);
+    guint bottom = mix_color(colors->bottom, colors->bottom_active, mix);
+
+    if (unassigned)
+        border = colors->border_off;
 
     start = mix_color(start, active_start, mix);
     end = mix_color(end, active_end, mix);
+
     cairo_save(cr);
     set_source_color(cr, 0x000000U, shadow_alpha);
-    rounded_rectangle(cr, 2.0, 7.0, width - 4.0, height - 8.0, 26.0);
+    rounded_rectangle(cr, x + 1.0, y + 6.0, width - 2.0, height - 6.0,
+                      radius - 1.0);
     cairo_fill(cr);
     set_source_color(cr, bottom, 1.0);
-    rounded_rectangle(cr, 1.0, 1.0, width - 2.0, height - 2.0, 27.0);
+    rounded_rectangle(cr, x, y, width, height, radius);
     cairo_fill(cr);
-    paint_dithered_gradient(cr, 1.0, 1.0, width - 2.0, height - 6.0, 26.0,
+    paint_dithered_gradient(cr, x, y, width, height - 4.0, radius - 1.0,
                             start, end, ui->skin);
     set_source_color(cr, border, 1.0);
     cairo_set_line_width(cr, 1.0);
-    rounded_rectangle(cr, 1.5, 1.5, width - 3.0, height - 7.0, 26.0);
+    rounded_rectangle(cr, x + 0.5, y + 0.5, width - 1.0, height - 5.0,
+                      radius - 1.0);
     cairo_stroke(cr);
     cairo_restore(cr);
+
+    gdouble pad = CLAMP(width * 0.09, 5.0, 18.0);
+    gdouble text_width = width - pad * 2.0;
+    gdouble bottom_edge = y + height - pad - 3.0;
+    if (text_width < 8.0) {
+        return;
+    }
+
+    cairo_save(cr);
+    rounded_rectangle(cr, x, y, width, height, radius);
+    cairo_clip(cr);
+
+    /* The card's own gradient stays dark when it is on — that is what the
+     * skin does — so the text and the artwork on it stay light and take the
+     * accent rather than the icon-on colour, which belongs to the bright
+     * shell this page no longer draws. */
+    guint lit = card->has_accent ? card->accent : colors->border_active;
+
+    const gchar *name = unassigned ? "Unassigned" : card->entity->name;
+    gint name_size = (gint)CLAMP(height / 6.4, 11.0, 23.0);
+    gdouble name_height = card_text_height(layout, name, name_size, TRUE,
+                                           text_width);
+
+    /* Drawn from the bottom up, so that a card too small for everything
+     * loses the least important thing first: the state, then the icon. The
+     * name is what identifies the card and is never dropped. */
+    gdouble content_bottom = bottom_edge - name_height;
+    card_text(cr, layout, name, name_size, TRUE,
+              unassigned ? 0x52657cU : 0xf1f6fdU, 1.0, x + pad,
+              content_bottom, text_width);
+
+    if (height >= 108.0) {
+        const gchar *state = unassigned ? card->rid
+                             : !card->state_known ? "--"
+                             : card->active ? "ON" : "OFF";
+        gint state_size = (gint)CLAMP(height / 11.0, 9.0, 13.0);
+        gdouble state_height = card_text_height(layout, state, state_size,
+                                                TRUE, text_width);
+        content_bottom -= state_height + 4.0;
+        card_text(cr, layout, state, state_size, TRUE,
+                  unassigned ? 0x52657cU : mix_color(0x8fa9c7U, lit, mix),
+                  1.0, x + pad, content_bottom, text_width);
+    }
+
+    if (!unassigned) {
+        const PanelIconSet *icons = icon_set(ui, card->icon);
+        gdouble available = content_bottom - (y + pad);
+
+        if (icons != NULL && available >= PANEL_ROOM_ICON_SMALL + 4.0) {
+            gboolean large = available >= PANEL_ROOM_ICON_LARGE + 8.0 &&
+                             width >= PANEL_ROOM_ICON_LARGE + pad * 2.0;
+            GdkPixbuf *pixbuf = large ? icons->large : icons->small;
+            gdouble size = large ? PANEL_ROOM_ICON_LARGE
+                                 : PANEL_ROOM_ICON_SMALL;
+            GdkRectangle artwork_box = {
+                (gint)(x + (width - size) / 2.0),
+                (gint)(y + pad + (available - size) / 2.0),
+                (gint)size, (gint)size
+            };
+
+            /* On a card one cell wide the ADJUST corner and the centred
+             * artwork want the same pixels, and the control wins: a person
+             * can act on a card with no picture on it, and cannot act on a
+             * picture. From two cells up they do not meet and both are
+             * drawn. The name is below either way, so the card is still
+             * identifiable at every size. */
+            GdkRectangle adjust_box;
+            GdkRectangle collision;
+            if (card_is_adjustable(card)) {
+                card_adjust_region(card, &adjust_box);
+                if (gdk_rectangle_intersect(&adjust_box, &artwork_box,
+                                            &collision)) {
+                    pixbuf = NULL;
+                }
+            }
+
+            if (pixbuf != NULL) {
+                gdouble left = artwork_box.x;
+                gdouble top = artwork_box.y;
+
+                /* The artwork is the mask and the colour is ours, so one
+                 * pixbuf serves both states, both skins, and every colour a
+                 * user picked for a card. */
+                gdk_cairo_set_source_pixbuf(cr, pixbuf, left, top);
+                cairo_pattern_t *artwork =
+                    cairo_pattern_reference(cairo_get_source(cr));
+
+                set_source_color(cr, mix_color(colors->icon_off, lit, mix),
+                                 1.0);
+                cairo_mask(cr, artwork);
+                cairo_pattern_destroy(artwork);
+            }
+        }
+    }
+    cairo_restore(cr);
+
+    if (card_is_adjustable(card)) {
+        draw_room_adjust(ui, cr, layout, card,
+                         index == ui->room_pressed_index &&
+                             ui->room_pressed_adjust);
+    }
+}
+
+/* The page with nothing on it. A panel that has just been configured in Home
+ * Assistant places every element for itself, so this is only reached by a
+ * panel whose registry is empty — and then the useful thing to say is where
+ * the arrangement is edited. */
+static void draw_room_placeholder(PanelUi *ui, cairo_t *cr, gdouble width,
+                                  gdouble height)
+{
+    PangoLayout *layout = pango_cairo_create_layout(cr);
+    const gchar *title = "No room controls yet";
+    const gchar *body = ui->room_editor_hint != NULL
+                            ? ui->room_editor_hint
+                            : "Add entities to this panel in Home Assistant.";
+    gdouble text_width = MIN(width - 60.0, 520.0);
+    gdouble left = (width - text_width) / 2.0;
+
+    gdouble title_height = card_text_height(layout, title, 26, TRUE,
+                                            text_width);
+    gdouble body_height = card_text_height(layout, body, 16, FALSE,
+                                           text_width);
+    gdouble top = (height - title_height - body_height - 14.0) / 2.0;
+
+    card_text(cr, layout, title, 26, TRUE, 0xf1f6fdU, 1.0, left, top,
+              text_width);
+    card_text(cr, layout, body, 16, FALSE, 0x8fa9c7U, 1.0, left,
+              top + title_height + 14.0, text_width);
+    g_object_unref(layout);
+}
+
+static gboolean room_area_draw(GtkWidget *widget, cairo_t *cr,
+                               gpointer user_data)
+{
+    PanelUi *ui = user_data;
+    GdkRectangle clip;
+    gboolean clipped = gdk_cairo_get_clip_rectangle(cr, &clip);
+
+    if (ui->room_cards->len == 0) {
+        draw_room_placeholder(ui, cr, gtk_widget_get_allocated_width(widget),
+                              gtk_widget_get_allocated_height(widget));
+        return FALSE;
+    }
+
+    /* One layout for the whole page. Only the cards the expose actually
+     * covers are drawn, which is what makes a state change cost one card
+     * rather than a hundred. */
+    PangoLayout *layout = pango_cairo_create_layout(cr);
+    for (guint i = 0; i < ui->room_cards->len; i++) {
+        const PanelRoomCard *card = g_ptr_array_index(ui->room_cards, i);
+        GdkRectangle unused;
+
+        if (clipped && !gdk_rectangle_intersect(&clip, &card->bounds, &unused))
+            continue;
+        draw_room_card(ui, cr, layout, card, (gint)i);
+    }
+    g_object_unref(layout);
     return FALSE;
 }
 
-static gboolean room_card_animation_tick(GtkWidget *widget,
-                                         GdkFrameClock *frame_clock,
-                                         gpointer user_data)
+static void invalidate_card(PanelUi *ui, const PanelRoomCard *card)
+{
+    if (ui->room_area == NULL)
+        return;
+    /* A little wider than the card, so the shadow under it is repainted. */
+    gtk_widget_queue_draw_area(ui->room_area, card->bounds.x - 2,
+                               card->bounds.y - 2, card->bounds.width + 4,
+                               card->bounds.height + 8);
+}
+
+/* One tick callback for the page, not one per card: a hundred cards changing
+ * at once still costs a single frame callback, and it stops as soon as the
+ * last card has arrived. */
+static gboolean room_animation_frame(GtkWidget *widget,
+                                     GdkFrameClock *frame_clock,
+                                     gpointer user_data)
 {
     PanelUi *ui = user_data;
-    guint index = (guint)GPOINTER_TO_INT(
-        g_object_get_data(G_OBJECT(widget), "room-index"));
-    gint64 elapsed = gdk_frame_clock_get_frame_time(frame_clock) -
-                     ui->room_animation_start_us[index];
-    gdouble progress = CLAMP(elapsed / 180000.0, 0.0, 1.0);
-    gdouble eased = 1.0 - (1.0 - progress) * (1.0 - progress) *
-                              (1.0 - progress);
+    gint64 now = gdk_frame_clock_get_frame_time(frame_clock);
+    gboolean running = FALSE;
 
-    ui->room_active_mix[index] = ui->room_animation_from[index] +
-        (ui->room_animation_to[index] - ui->room_animation_from[index]) * eased;
-    gtk_widget_queue_draw(widget);
-    if (progress >= 1.0) {
-        ui->room_animation_tick[index] = 0;
+    (void)widget;
+    for (guint i = 0; i < ui->room_cards->len; i++) {
+        PanelRoomCard *card = g_ptr_array_index(ui->room_cards, i);
+        gdouble progress;
+        gdouble eased;
+
+        if (!card->animating)
+            continue;
+        progress = CLAMP((now - card->animation_start_us) /
+                             PANEL_ROOM_ANIMATION_US, 0.0, 1.0);
+        eased = 1.0 - (1.0 - progress) * (1.0 - progress) * (1.0 - progress);
+        card->active_mix = card->animation_from +
+            (card->animation_to - card->animation_from) * eased;
+        invalidate_card(ui, card);
+        if (progress >= 1.0)
+            card->animating = FALSE;
+        else
+            running = TRUE;
+    }
+
+    if (!running) {
+        ui->room_animation_tick = 0;
         return G_SOURCE_REMOVE;
     }
     return G_SOURCE_CONTINUE;
+}
+
+static void start_card_animation(PanelUi *ui, PanelRoomCard *card,
+                                 gboolean active)
+{
+    GdkFrameClock *frame_clock = ui->room_area != NULL
+                                     ? gtk_widget_get_frame_clock(ui->room_area)
+                                     : NULL;
+
+    card->animation_from = card->active_mix;
+    card->animation_to = active ? 1.0 : 0.0;
+    card->animation_start_us = frame_clock != NULL
+                                   ? gdk_frame_clock_get_frame_time(frame_clock)
+                                   : g_get_monotonic_time();
+    card->animating = TRUE;
+    if (ui->room_animation_tick == 0 && ui->room_area != NULL) {
+        ui->room_animation_tick = gtk_widget_add_tick_callback(
+            ui->room_area, room_animation_frame, ui, NULL);
+    }
+}
+
+static gboolean room_area_pressed(GtkWidget *widget, GdkEventButton *event,
+                                  gpointer user_data)
+{
+    PanelUi *ui = user_data;
+    gint index = room_card_at(ui, event->x, event->y);
+
+    (void)widget;
+    ui->room_pressed_index = index;
+    ui->room_pressed_adjust = FALSE;
+    if (index >= 0) {
+        const PanelRoomCard *card = g_ptr_array_index(ui->room_cards, index);
+        GdkRectangle region;
+
+        if (card_is_adjustable(card)) {
+            card_adjust_region(card, &region);
+            ui->room_pressed_adjust =
+                event->x >= region.x && event->x < region.x + region.width &&
+                event->y >= region.y && event->y < region.y + region.height;
+        }
+        invalidate_card(ui, card);
+    }
+    return TRUE;
+}
+
+static gboolean room_area_released(GtkWidget *widget, GdkEventButton *event,
+                                   gpointer user_data)
+{
+    PanelUi *ui = user_data;
+    gint pressed = ui->room_pressed_index;
+    gboolean on_adjust = ui->room_pressed_adjust;
+    gint index = room_card_at(ui, event->x, event->y);
+
+    (void)widget;
+    ui->room_pressed_index = -1;
+    ui->room_pressed_adjust = FALSE;
+    if (pressed < 0)
+        return TRUE;
+
+    const PanelRoomCard *card = g_ptr_array_index(ui->room_cards, pressed);
+    invalidate_card(ui, card);
+    /* A finger that left the card it went down on cancels, the way a button
+     * does. */
+    if (index != pressed || card->entity == NULL)
+        return TRUE;
+
+    if (on_adjust && card_is_adjustable(card))
+        open_room_sheet(ui, pressed);
+    else
+        emit_event(ui, PANEL_UI_TOGGLE_ROOM, NULL, pressed);
+    return TRUE;
+}
+
+static void room_card_free(gpointer data)
+{
+    PanelRoomCard *card = data;
+
+    g_free(card->rid);
+    g_free(card->icon);
+    g_free(card);
+}
+
+/* Where each card lands in pixels. The cell size is derived from whatever
+ * work area the page was given rather than written down anywhere, so the
+ * grid always fits and the bottom row is never cut off. */
+static void room_cards_allocate(PanelUi *ui)
+{
+    gdouble gap = PANEL_ROOM_CARD_GAP;
+    gint width;
+    gint height;
+    gdouble cell_width;
+    gdouble cell_height;
+
+    if (ui->room_area == NULL || ui->room_grid == NULL)
+        return;
+    width = gtk_widget_get_allocated_width(ui->room_area);
+    height = gtk_widget_get_allocated_height(ui->room_area);
+    if (width <= 1 || height <= 1)
+        return;
+
+    cell_width = (width + gap) / (gdouble)ui->room_grid->columns;
+    cell_height = (height + gap) / (gdouble)ui->room_grid->rows;
+
+    for (guint i = 0; i < ui->room_cards->len; i++) {
+        PanelRoomCard *card = g_ptr_array_index(ui->room_cards, i);
+        gdouble left = card->column * cell_width;
+        gdouble top = card->row * cell_height;
+        gdouble right = left + card->columns * cell_width - gap;
+        gdouble foot = top + card->rows * cell_height - gap;
+
+        /* Rounded as edges rather than as an origin and a size, so that two
+         * cards that share a boundary still meet exactly. */
+        card->bounds.x = (gint)(left + 0.5);
+        card->bounds.y = (gint)(top + 0.5);
+        card->bounds.width = (gint)(right + 0.5) - card->bounds.x;
+        card->bounds.height = (gint)(foot + 0.5) - card->bounds.y;
+    }
+}
+
+static void room_area_allocated(GtkWidget *widget, GdkRectangle *allocation,
+                                gpointer user_data)
+{
+    (void)widget;
+    (void)allocation;
+    room_cards_allocate(user_data);
+}
+
+/* Builds the card list from the grid and the registry. Both can change while
+ * the panel runs — the registry when Home Assistant is edited, the grid when
+ * somebody saves in the editor — and this is the one place the two are put
+ * together. */
+static void room_cards_rebuild(PanelUi *ui)
+{
+    g_ptr_array_set_size(ui->room_cards, 0);
+    ui->room_pressed_index = -1;
+    ui->room_pressed_adjust = FALSE;
+    ui->room_adjust_index = -1;
+    if (ui->room_grid == NULL)
+        return;
+
+    for (guint i = 0; i < ui->room_grid->cards->len; i++) {
+        const PanelCard *placed = g_ptr_array_index(ui->room_grid->cards, i);
+        PanelRoomCard *card = g_new0(PanelRoomCard, 1);
+        const PanelEntity *entity = panel_layout_find_entity(
+            &ui->config->layout, placed->rid);
+
+        card->rid = g_strdup(placed->rid);
+        card->entity = entity;
+        card->column = placed->x;
+        card->row = placed->y;
+        card->columns = placed->width;
+        card->rows = placed->height;
+        card->brightness = -1;
+        card->temperature = -1;
+        card->temperature_min = entity != NULL ? entity->min_kelvin : 2000;
+        card->temperature_max = entity != NULL ? entity->max_kelvin : 6500;
+        card->icon = g_strdup(
+            placed->icon != NULL
+                ? placed->icon
+                : icon_for_domain(entity != NULL ? entity->domain : NULL));
+        if (placed->color != NULL) {
+            card->accent = (guint)g_ascii_strtoull(placed->color + 1, NULL,
+                                                   16);
+            card->has_accent = TRUE;
+        }
+        g_ptr_array_add(ui->room_cards, card);
+    }
+    room_cards_allocate(ui);
 }
 
 static GtkWidget *room_adjust_sheet(PanelUi *ui)
@@ -1794,142 +2416,100 @@ static GtkWidget *room_adjust_sheet(PanelUi *ui)
     return revealer;
 }
 
-/* Icons follow the slot number, so a tile keeps its icon when the entity
- * behind it is changed in Home Assistant. */
-static const gchar *slot_icon_resource(guint slot, guint fallback_index)
-{
-    static const gchar *icons[PANEL_ROOM_MAX] = {
-        "/com/vahac/t560/icons/light-1.png",
-        "/com/vahac/t560/icons/light-2.png",
-        "/com/vahac/t560/icons/fan.png",
-        "/com/vahac/t560/icons/ac.png",
-        "/com/vahac/t560/icons/desk-lamp.png",
-        "/com/vahac/t560/icons/desk-led-strip.png"
-    };
-    guint index = slot >= 1 && slot <= PANEL_ROOM_MAX ? slot - 1
-                                                      : fallback_index;
-    return icons[MIN(index, (guint)PANEL_ROOM_MAX - 1)];
-}
-
-/* A slot is generic now, so the kicker above a tile comes from the proxy
- * domain rather than from a hardcoded list of tile names. */
-static const gchar *room_control_type(const PanelRoom *room)
-{
-    return g_str_has_prefix(room->entity, "light.") ? "LIGHTING" : "POWER";
-}
-
+/* The room page: one drawing area for the whole grid, and the navigation bar
+ * under it.
+ *
+ * The intro row the six-tile page carried — a kicker, a hint and a count of
+ * tiles — is gone. Fourteen rows have to fit between the header and the
+ * navigation bar without the bottom one being cut off, and a count of cards
+ * is not a fact worth a row of the screen once the user has arranged them
+ * themselves. */
 static GtkWidget *room_page(PanelUi *ui)
 {
-    const PanelLayout *layout = &ui->config->layout;
+    GtkWidget *page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    GtkWidget *area = gtk_drawing_area_new();
 
-    GtkWidget *page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 14);
-    gtk_widget_set_margin_start(page, 20);
-    gtk_widget_set_margin_end(page, 20);
-    gtk_widget_set_margin_top(page, 14);
-    gtk_widget_set_margin_bottom(page, 10);
+    gtk_widget_set_margin_start(page, 14);
+    gtk_widget_set_margin_end(page, 14);
+    gtk_widget_set_margin_top(page, 10);
+    gtk_widget_set_margin_bottom(page, 6);
     add_css_class(page, "room-page");
     g_signal_connect(page, "draw", G_CALLBACK(room_page_draw), ui);
 
-    GtkWidget *intro = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
-    GtkWidget *intro_text = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
-    GtkWidget *kicker = new_label("AMBIENT CONTROL", "room-kicker");
-    GtkWidget *help = new_label("Tap a device to switch it", "room-help");
-    gchar *count_text = g_strdup_printf("%u CONTROLS", layout->room_count);
-    GtkWidget *count = new_label(count_text, "room-count");
-    g_free(count_text);
-    gtk_label_set_ellipsize(GTK_LABEL(kicker), PANGO_ELLIPSIZE_NONE);
-    gtk_widget_set_halign(kicker, GTK_ALIGN_START);
-    gtk_widget_set_halign(help, GTK_ALIGN_START);
-    gtk_widget_set_halign(count, GTK_ALIGN_END);
-    gtk_widget_set_valign(count, GTK_ALIGN_CENTER);
-    gtk_box_pack_start(GTK_BOX(intro_text), kicker, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(intro_text), help, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(intro), intro_text, TRUE, TRUE, 0);
-    gtk_box_pack_end(GTK_BOX(intro), count, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(page), intro, FALSE, FALSE, 0);
+    add_css_class(area, "room-grid");
+    gtk_widget_set_hexpand(area, TRUE);
+    gtk_widget_set_vexpand(area, TRUE);
+    /* Touch arrives as button events on this tablet; both masks are asked
+     * for so that a mouse in a development session behaves the same way. */
+    gtk_widget_add_events(area, GDK_BUTTON_PRESS_MASK |
+                                    GDK_BUTTON_RELEASE_MASK |
+                                    GDK_TOUCH_MASK);
+    g_signal_connect(area, "draw", G_CALLBACK(room_area_draw), ui);
+    g_signal_connect(area, "button-press-event",
+                     G_CALLBACK(room_area_pressed), ui);
+    g_signal_connect(area, "button-release-event",
+                     G_CALLBACK(room_area_released), ui);
+    g_signal_connect(area, "size-allocate",
+                     G_CALLBACK(room_area_allocated), ui);
+    ui->room_area = area;
 
-    GtkWidget *grid = gtk_grid_new();
-    gtk_grid_set_row_spacing(GTK_GRID(grid), 16);
-    gtk_grid_set_column_spacing(GTK_GRID(grid), 20);
-    gtk_widget_set_vexpand(grid, TRUE);
-    for (guint i = 0; i < layout->room_count; i++) {
-        const PanelRoom *room = &layout->rooms[i];
-        GtkWidget *tile = gtk_overlay_new();
-        GtkWidget *button = gtk_button_new();
-        gtk_widget_set_hexpand(tile, TRUE);
-        gtk_widget_set_vexpand(tile, TRUE);
-        gtk_widget_set_hexpand(button, TRUE);
-        gtk_widget_set_vexpand(button, TRUE);
-        gtk_widget_set_size_request(button, 350, 250);
-        add_css_class(button, "room-card");
-        g_signal_connect(button, "draw", G_CALLBACK(room_card_draw), ui);
+    /* The grid is read here rather than in the constructor, because reading
+     * it needs the registry the config sensor delivered, and that has
+     * arrived by the time the interface is built. */
+    if (ui->room_grid == NULL)
+        ui->room_grid = panel_grid_load(&ui->config->layout);
+    room_cards_rebuild(ui);
 
-        GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
-        add_css_class(box, "room-card-content");
-
-        GtkWidget *header = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-        GtkWidget *type = new_label(room_control_type(room), "room-type");
-        gtk_label_set_ellipsize(GTK_LABEL(type), PANGO_ELLIPSIZE_NONE);
-        gtk_widget_set_halign(type, GTK_ALIGN_START);
-        gtk_widget_set_valign(type, GTK_ALIGN_CENTER);
-        gtk_widget_set_size_request(header, -1, PANEL_ROOM_ADJUST_HEIGHT);
-        gtk_box_pack_start(GTK_BOX(header), type, TRUE, TRUE, 0);
-
-        GtkWidget *icon_shell = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-        GtkWidget *icon = new_room_icon(
-            ui, i, slot_icon_resource(room->slot, i));
-        gtk_widget_set_size_request(icon_shell, 88, 88);
-        gtk_widget_set_halign(icon_shell, GTK_ALIGN_CENTER);
-        gtk_widget_set_valign(icon_shell, GTK_ALIGN_CENTER);
-        gtk_widget_set_halign(icon, GTK_ALIGN_CENTER);
-        gtk_widget_set_valign(icon, GTK_ALIGN_CENTER);
-        add_css_class(icon_shell, "room-icon-shell");
-        add_css_class(icon, "room-icon");
-        ui->room_icons[i] = icon;
-        gtk_box_pack_start(GTK_BOX(icon_shell), icon, TRUE, TRUE, 0);
-
-        GtkWidget *name = new_label(room->label, "room-name");
-        ui->room_states[i] = new_label("--", "room-state");
-        gtk_widget_set_halign(ui->room_states[i], GTK_ALIGN_CENTER);
-        gtk_box_pack_start(GTK_BOX(box), header, FALSE, FALSE, 0);
-        gtk_box_pack_start(GTK_BOX(box), icon_shell, TRUE, TRUE, 0);
-        gtk_box_pack_start(GTK_BOX(box), name, FALSE, FALSE, 0);
-        gtk_box_pack_start(GTK_BOX(box), ui->room_states[i], FALSE, FALSE, 0);
-        gtk_container_add(GTK_CONTAINER(button), box);
-        g_object_set_data(G_OBJECT(button), "room-index", GINT_TO_POINTER(i));
-        g_signal_connect(button, "clicked", G_CALLBACK(room_clicked), ui);
-        ui->room_buttons[i] = button;
-        gtk_container_add(GTK_CONTAINER(tile), button);
-
-        if (room->brightness || room->color_temperature) {
-            GtkWidget *adjust = new_button("ADJUST", "room-adjust-button",
-                                           92, PANEL_ROOM_ADJUST_HEIGHT);
-            gtk_widget_set_halign(adjust, GTK_ALIGN_END);
-            gtk_widget_set_valign(adjust, GTK_ALIGN_START);
-            /* Matches the .room-card-content padding, so the button lands on
-             * the header row instead of floating over the icon. */
-            gtk_widget_set_margin_end(adjust, 20);
-            gtk_widget_set_margin_top(adjust, 14);
-            g_object_set_data(G_OBJECT(adjust), "room-index",
-                              GINT_TO_POINTER(i));
-            g_signal_connect(adjust, "clicked",
-                             G_CALLBACK(room_adjust_clicked), ui);
-            gtk_overlay_add_overlay(GTK_OVERLAY(tile), adjust);
-            ui->room_adjust_buttons[i] = adjust;
-        }
-        gtk_grid_attach(GTK_GRID(grid), tile, i % 2, i / 2, 1, 1);
-    }
-    if (layout->room_count == 0) {
-        GtkWidget *empty = new_label(
-            "No room controls are configured for this panel.\n"
-            "Add them to the panel in Home Assistant.", "room-help");
-        gtk_label_set_line_wrap(GTK_LABEL(empty), TRUE);
-        gtk_widget_set_valign(empty, GTK_ALIGN_CENTER);
-        gtk_grid_attach(GTK_GRID(grid), empty, 0, 0, 2, 1);
-    }
-    gtk_box_pack_start(GTK_BOX(page), grid, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(page), area, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(page), navigation(ui), FALSE, FALSE, 4);
     return page;
+}
+
+guint panel_ui_card_count(PanelUi *ui)
+{
+    return ui->room_cards != NULL ? ui->room_cards->len : 0;
+}
+
+const PanelEntity *panel_ui_card_entity(PanelUi *ui, guint index)
+{
+    if (ui->room_cards == NULL || index >= ui->room_cards->len)
+        return NULL;
+    return ((const PanelRoomCard *)g_ptr_array_index(ui->room_cards,
+                                                     index))->entity;
+}
+
+/* A saved arrangement replaces the one on screen without rebuilding a single
+ * widget: the page is one drawing area, so a new grid is a new card list and
+ * a redraw. This is what the editor calls once it has written the file. */
+void panel_ui_set_grid(PanelUi *ui, PanelGrid *grid)
+{
+    g_return_if_fail(grid != NULL);
+
+    if (ui->room_sheet != NULL)
+        gtk_revealer_set_reveal_child(GTK_REVEALER(ui->room_sheet), FALSE);
+    if (ui->room_grid != grid) {
+        g_clear_pointer(&ui->room_grid, panel_grid_free);
+        ui->room_grid = grid;
+    }
+    room_cards_rebuild(ui);
+    if (ui->room_area != NULL)
+        gtk_widget_queue_draw(ui->room_area);
+}
+
+const PanelGrid *panel_ui_grid(PanelUi *ui)
+{
+    return ui->room_grid;
+}
+
+void panel_ui_set_editor_url(PanelUi *ui, const gchar *url)
+{
+    g_free(ui->room_editor_hint);
+    ui->room_editor_hint = url != NULL && *url != 0
+        ? g_strdup_printf("Open %s in a browser on this network to arrange "
+                          "the room page.", url)
+        : NULL;
+    if (ui->room_area != NULL && panel_ui_card_count(ui) == 0)
+        gtk_widget_queue_draw(ui->room_area);
 }
 
 PanelUi *panel_ui_new(const AppConfig *config, PanelUiEventHandler handler,
@@ -1949,12 +2529,10 @@ PanelUi *panel_ui_new(const AppConfig *config, PanelUiEventHandler handler,
     ui->skin = config->player_skin;
     ui->deck_pack_radius = -1;
     ui->deck_tape_filled = -1;
-    for (guint i = 0; i < PANEL_ROOM_MAX; i++) {
-        ui->room_brightness[i] = -1;
-        ui->room_temperature[i] = -1;
-        ui->room_temperature_min[i] = 2000;
-        ui->room_temperature_max[i] = 6500;
-    }
+    ui->room_pressed_index = -1;
+    ui->room_cards = g_ptr_array_new_with_free_func(room_card_free);
+    ui->room_icon_cache = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                                g_free, icon_set_free);
     return ui;
 }
 
@@ -1964,18 +2542,13 @@ void panel_ui_free(PanelUi *ui)
         g_source_remove(ui->brightness_debounce_source);
     if (ui->temperature_debounce_source != 0)
         g_source_remove(ui->temperature_debounce_source);
-    for (guint i = 0; i < PANEL_ROOM_MAX; i++) {
-        if (ui->room_animation_tick[i] != 0 &&
-            ui->room_buttons[i] != NULL) {
-            gtk_widget_remove_tick_callback(ui->room_buttons[i],
-                                            ui->room_animation_tick[i]);
-        }
-    }
-    for (guint i = 0; i < PANEL_ROOM_MAX; i++) {
-        g_clear_object(&ui->room_icon_source[i]);
-        g_clear_object(&ui->room_icon_off[i]);
-        g_clear_object(&ui->room_icon_on[i]);
-    }
+    if (ui->room_animation_tick != 0 && ui->room_area != NULL)
+        gtk_widget_remove_tick_callback(ui->room_area,
+                                        ui->room_animation_tick);
+    g_clear_pointer(&ui->room_cards, g_ptr_array_unref);
+    g_clear_pointer(&ui->room_icon_cache, g_hash_table_unref);
+    g_clear_pointer(&ui->room_grid, panel_grid_free);
+    g_free(ui->room_editor_hint);
     if (ui->deck_animation_source != 0)
         g_source_remove(ui->deck_animation_source);
     g_clear_object(&ui->deck_art);
@@ -1985,7 +2558,6 @@ void panel_ui_free(PanelUi *ui)
 
 /* The header indicators are drawn with Cairo so that they do not depend on
  * the icon theme installed on the tablet and can be tinted per state. */
-#define PANEL_PI 3.14159265358979323846
 #define PANEL_COLOR_ACCENT 0x56e5dcU
 #define PANEL_COLOR_CHARGING 0x5ce48aU
 #define PANEL_COLOR_WARNING 0xffc36bU
@@ -2304,25 +2876,11 @@ void panel_ui_install_styles(void)
         ".room-kicker{font-size:12px;font-weight:700;letter-spacing:2px;color:#54ded6}"
         ".room-help{font-size:17px;color:#778ba5}"
         ".room-count{font-size:12px;font-weight:700;color:#8fa9c7;background:#111d2d;border:1px solid #263952;border-radius:16px;padding:8px 14px}"
-        ".room-card{background:transparent;background-image:none;border:0;border-radius:27px;box-shadow:none;padding:0;transition:180ms ease-out}"
-        ".room-card:hover{background:transparent;background-image:none;border:0;box-shadow:none}"
-        ".room-card:active{background:transparent;background-image:none;border:0;box-shadow:none}"
-        ".room-card.active{background:transparent;background-image:none;border:0;box-shadow:none;color:#78f1e9}"
-        ".room-card:disabled{background:transparent;background-image:none;border:0;box-shadow:none;color:#52657c}"
-        ".room-card-content{padding:14px 20px 13px 20px}"
-        ".room-type{font-size:12px;font-weight:700;letter-spacing:1px;color:#7189a7}"
-        ".room-icon-shell{background-image:linear-gradient(to bottom,#203550,#0d1828);border:1px solid #3c5574;border-bottom:4px solid #07101a;border-radius:44px;box-shadow:0 7px 15px rgba(0,0,0,.4);transition:180ms ease-out}"
-        ".room-icon{color:#9ab2cf;-gtk-icon-shadow:0 2px 3px rgba(0,0,0,.35)}"
-        ".room-card.active .room-icon-shell{background-image:linear-gradient(to bottom,#65eee4,#2bc3ce);border-color:#8ff8f1;border-bottom-color:#147680;box-shadow:0 9px 22px rgba(45,208,205,.32)}"
-        ".room-card.active .room-icon{color:#062125;-gtk-icon-shadow:none}"
-        ".room-name{font-size:23px;font-weight:700;color:#f1f6fd}"
-        ".room-state{font-size:12px;font-weight:700;color:#8fa9c7;background:#0a121d;border:1px solid #263951;border-radius:14px;padding:5px 12px;transition:180ms ease-out}"
-        ".room-card.active .room-state{color:#062125;background:#5ce4dc;border-color:#8cf6ef}"
-        ".room-card:disabled .room-icon,.room-card:disabled .room-name,.room-card:disabled .room-type{color:#52657c}";
+        /* The cards themselves are drawn with Cairo in one drawing area,
+         * so the only rule they need is that GTK paints nothing behind
+         * them. */
+        ".room-grid{background:transparent}";
     static const gchar room_sheet_css[] =
-        ".room-adjust-button{font-size:10px;font-weight:700;color:#63e5dd;background:#132c39;border:1px solid #34757b;border-radius:15px;box-shadow:0 4px 10px rgba(0,0,0,.3);padding:0}"
-        ".room-adjust-button:hover{background:#173a46;border-color:#56dcd4}"
-        ".room-adjust-button:active{background:#24515a;color:#efffff}"
         ".room-sheet{background:transparent;background-image:none;border:1px solid #3a526e;border-bottom:5px solid #050a11;border-radius:28px;padding:22px 28px;box-shadow:0 0 34px rgba(0,0,0,.62)}"
         ".room-sheet-title{font-size:25px;font-weight:700;color:#f5f9ff}"
         ".room-sheet-subtitle{font-size:14px;color:#7f98b6}"
@@ -2704,56 +3262,41 @@ void panel_ui_set_room(PanelUi *ui, guint index, gboolean active,
                        gint min_color_temp_kelvin,
                        gint max_color_temp_kelvin)
 {
-    g_return_if_fail(index < PANEL_ROOM_MAX);
+    g_return_if_fail(ui->room_cards != NULL);
+    g_return_if_fail(index < ui->room_cards->len);
+
+    PanelRoomCard *card = g_ptr_array_index(ui->room_cards, index);
+
     if (brightness_percent >= 0)
-        ui->room_brightness[index] = CLAMP(brightness_percent, 1, 100);
+        card->brightness = CLAMP(brightness_percent, 1, 100);
     if (min_color_temp_kelvin > 0 && max_color_temp_kelvin > 0 &&
         min_color_temp_kelvin < max_color_temp_kelvin) {
-        ui->room_temperature_min[index] = min_color_temp_kelvin;
-        ui->room_temperature_max[index] = max_color_temp_kelvin;
+        card->temperature_min = min_color_temp_kelvin;
+        card->temperature_max = max_color_temp_kelvin;
     }
     if (color_temp_kelvin > 0) {
-        ui->room_temperature[index] = CLAMP(
-            color_temp_kelvin, ui->room_temperature_min[index],
-            ui->room_temperature_max[index]);
+        card->temperature = CLAMP(color_temp_kelvin, card->temperature_min,
+                                  card->temperature_max);
     }
-    gtk_label_set_text(GTK_LABEL(ui->room_states[index]), active ? "ON" : "OFF");
-    if (ui->room_icon_off[index] != NULL &&
-        ui->room_icon_on[index] != NULL) {
-        gtk_image_set_from_pixbuf(
-            GTK_IMAGE(ui->room_icons[index]),
-            active ? ui->room_icon_on[index] : ui->room_icon_off[index]);
+
+    if (card->active != active || !card->state_known) {
+        card->active = active;
+        start_card_animation(ui, card, active);
     }
-    if (ui->room_active[index] != active) {
-        ui->room_active[index] = active;
-        ui->room_animation_from[index] = ui->room_active_mix[index];
-        ui->room_animation_to[index] = active ? 1.0 : 0.0;
-        GdkFrameClock *frame_clock = gtk_widget_get_frame_clock(
-            ui->room_buttons[index]);
-        ui->room_animation_start_us[index] = frame_clock != NULL
-            ? gdk_frame_clock_get_frame_time(frame_clock)
-            : g_get_monotonic_time();
-        if (ui->room_animation_tick[index] == 0) {
-            ui->room_animation_tick[index] = gtk_widget_add_tick_callback(
-                ui->room_buttons[index], room_card_animation_tick, ui, NULL);
-        }
-    }
-    toggle_css_class(ui->room_buttons[index], "active", active);
+    card->state_known = TRUE;
+    invalidate_card(ui, card);
 
     if (ui->room_adjust_index == (gint)index) {
         ui->changing_room_adjustment = TRUE;
-        if (ui->brightness_debounce_source == 0 &&
-            ui->room_brightness[index] >= 0) {
+        if (ui->brightness_debounce_source == 0 && card->brightness >= 0) {
             gtk_range_set_value(GTK_RANGE(ui->room_brightness_scale),
-                                ui->room_brightness[index]);
+                                card->brightness);
         }
         gtk_range_set_range(GTK_RANGE(ui->room_temperature_scale),
-                            ui->room_temperature_min[index],
-                            ui->room_temperature_max[index]);
-        if (ui->temperature_debounce_source == 0 &&
-            ui->room_temperature[index] >= 0) {
+                            card->temperature_min, card->temperature_max);
+        if (ui->temperature_debounce_source == 0 && card->temperature >= 0) {
             gtk_range_set_value(GTK_RANGE(ui->room_temperature_scale),
-                                ui->room_temperature[index]);
+                                card->temperature);
         }
         ui->changing_room_adjustment = FALSE;
     }

@@ -31,6 +31,20 @@ gboolean home_assistant_client_post_path(HomeAssistantClient *client,
                                          HomeAssistantResponse callback,
                                          gpointer user_data,
                                          GDestroyNotify user_data_destroy);
+/* The layout backup: a document Home Assistant stores and hands back without
+ * ever parsing it. See the panel layout endpoint in docs/CONTRACT.md. */
+gboolean home_assistant_client_put_path(HomeAssistantClient *client,
+                                        const gchar *path,
+                                        const gchar *body,
+                                        const gchar *content_type,
+                                        HomeAssistantResponse callback,
+                                        gpointer user_data,
+                                        GDestroyNotify user_data_destroy);
+gboolean home_assistant_client_get_path(HomeAssistantClient *client,
+                                        const gchar *path,
+                                        HomeAssistantResponse callback,
+                                        gpointer user_data,
+                                        GDestroyNotify user_data_destroy);
 gboolean home_assistant_client_get_url(HomeAssistantClient *client,
                                        const gchar *url,
                                        gint priority,

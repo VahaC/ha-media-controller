@@ -37,11 +37,33 @@ is ever written by hand is an optional set of fallbacks.
 - Shuffle and Repeat Off/All/One controls.
 - Queue browsing and playback of a selected queue item without replacing the queue.
 - Playlist browsing and playback through `music_assistant.play_media`.
-- Up to six room-control tiles, defined entirely in Home Assistant. The
-  entity, the label, and which controls a tile offers come from the Media
-  Controller integration; nothing about them is configured on the tablet.
-- Brightness and color-temperature controls appear on a tile only when the
-  entity behind it actually supports them, as reported by the integration.
+- A room page that is a **10 x 14 grid of cards the user arranges**, not a
+  fixed number of tiles. A card carries a position and a size in cells, and
+  the cell size is derived from whatever work area the page is given, so the
+  bottom row is never cut off. Which entities exist comes from Home Assistant
+  and where each one sits comes from the tablet; the two are separate on
+  purpose.
+- Which entities a panel may draw is the registry the Media Controller
+  integration publishes: up to a hundred of them, with the name and the
+  controls each one offers resolved there. Nothing about them is configured on
+  the tablet.
+- The panel is usable the moment it is configured in Home Assistant, without
+  visiting the editor: with no saved arrangement it places every registry
+  element as a 2 x 2 card, in registry order.
+- A card whose registry element has been removed in Home Assistant keeps its
+  place and says it is unassigned, rather than disappearing and taking the
+  arrangement with it.
+- Brightness and color-temperature controls appear on a card only when the
+  entity behind it actually supports them, as reported by the integration. On
+  a card too small for the ADJUST button, the same corner is still the same
+  target and is drawn as a compact slider glyph.
+- **A layout editor the panel serves itself**, on port 8730 by default, so
+  the grid is arranged from a phone or a desktop rather than on a tablet with
+  no keyboard. It has no password; see [The layout
+  editor](#the-layout-editor) below for what that does and does not allow.
+- Every save leaves a copy of the arrangement in Home Assistant, and the
+  editor can put that copy back. A tablet that is wiped, reinstalled or
+  replaced finds its own layout again.
 - Direct Home Assistant REST API access without loading Lovelace.
 - A separate token file with `0600` permissions.
 - Watchdog, desktop entry, Openbox rule, and ARMv7 `APKBUILD`.
@@ -84,10 +106,92 @@ is ever written by hand is an optional set of fallbacks.
   display is on, and only wakes the display while it is off.
 - The existing long-press Power menu is retained.
 
+## The layout editor
+
+The room page is arranged from a browser on the same network:
+
+```text
+http://<tablet address>:8730/
+```
+
+The panel prints the address to its log at start-up, and an empty room page
+shows it on screen.
+
+The page is one screen: the grid on the left, and the registry grouped by
+domain on the right. Pick an entity and tap a free cell to place it, drag a
+card to move it, drag the corner to resize it, and use the panel above the
+palette to change which entity a card acts on, its icon, its colour, or to
+remove it. It is built for a phone as much as for a desktop. The player skin
+is a select in the header; choosing one asks Home Assistant, which stays the
+owner of that value, and the panel adopts it on its next poll.
+
+### It has no password, and that is deliberate
+
+A tablet on a house network, serving one page that arranges its own room
+controls, is not worth a login on a device with no keyboard. What makes that
+defensible is what the server cannot do, and the seven routes are the whole of
+it:
+
+```text
+GET    /              the editor page
+GET    /api/entities  the registry, out of the payload the panel already holds
+GET    /api/layout    the arrangement on screen
+PUT    /api/layout    save an arrangement
+DELETE /api/layout    put back the copy Home Assistant holds
+GET    /api/skins     the skins this build draws
+PUT    /api/skin      ask Home Assistant for one of them
+```
+
+There is no general proxy to Home Assistant. Nothing here reads a state, calls
+an arbitrary service, or reaches an entity the panel does not already draw;
+`/api/entities` is answered from the config payload the panel has cached and
+never becomes a request to Home Assistant; `PUT /api/skin` calls
+`select.select_option` on this panel's own skin select, with a name checked
+against the skins this build draws, and nothing else. The panel's Home
+Assistant token is not readable through any route.
+
+The worst an unauthenticated caller on the network can do is rearrange the
+room page of one tablet — and `DELETE /api/layout`, the **Restore** button in
+the editor, undoes exactly that from the copy Home Assistant holds.
+
+**Do not forward this port through a router.** It is meant for a house
+network. Set `web_port=0` under `[panel]` in `config.ini` to switch the editor
+off entirely.
+
+### Where the arrangement lives
+
+```text
+~/.config/t560-music-panel/grid.json
+```
+
+Beside `config.ini` rather than in the cache: the cache is what Home Assistant
+last said and is safe to lose, and this is the user's own arrangement and is
+not. The format is small on purpose:
+
+```json
+{"v":1,"cols":10,"rows":14,
+ "cards":[{"x":0,"y":0,"w":2,"h":2,"rid":"a3f1c92d",
+           "icon":"lightbulb","color":"#4dd0e1"}]}
+```
+
+A card is keyed on `rid`, the identity of the registry element, never on an
+entity ID: a Home Assistant entity ID is renamed by the user at will, and a
+grid keyed on one would scatter the next time somebody tidied their entity
+IDs. The card **type is not stored** — it follows from the domain of the
+element behind the rid, so it cannot drift from what Home Assistant says.
+
+A card that does not fit the grid, or that lands on a card already placed, is
+dropped when the file is read rather than moved: where it should go instead is
+a question only the person editing can answer. A card naming a rid the
+registry does not carry is **kept**, because the registry is empty whenever
+Home Assistant is unreachable and dropping cards against it would let one
+failed poll erase an arrangement that the next save wrote back.
+
 ## Tablet configuration files
 
 ```text
 ~/.config/t560-music-panel/panel-id          (written on the first run)
+~/.config/t560-music-panel/grid.json         (the room-page arrangement)
 ~/.config/t560-music-panel/token             (written when pairing succeeds)
 ~/.config/t560-music-panel/config.ini        (optional)
 ~/.cache/t560-music-panel/layout.json
@@ -174,10 +278,19 @@ The application is split into focused C modules with explicit interfaces:
 - `application` owns the application lifecycle and coordinates UI events with
   Home Assistant state;
 - `app_config` validates and owns configuration data;
-- `panel_config` reads the layout, the settings, and the commands Home
+- `panel_config` reads the registry, the settings, and the commands Home
   Assistant publishes, and caches the payload;
+- `panel_grid` is the arrangement itself: reading and writing `grid.json`,
+  validating a card against the grid, and building the default 2 x 2
+  arrangement a panel starts from. It knows nothing about GTK and is where the
+  layout tests point;
+- `panel_web` serves the layout editor over libsoup, in exactly seven routes
+  and with no proxy to Home Assistant;
 - `home_assistant_client` encapsulates authenticated asynchronous HTTP I/O;
-- `panel_ui` builds and updates GTK widgets without knowing API details;
+- `panel_ui` builds and updates GTK widgets without knowing API details. The
+  room page is one drawing area rather than a widget per card: a hundred cards
+  would otherwise be a hundred widget trees, each with its own style context
+  and its own invalidation, on an ARMv7 running a software renderer;
 - `json_helpers` contains reusable, unit-tested JSON accessors;
 - `system_status` reads the battery charge and charging state from
   `/sys/class/power_supply`, and the Wi-Fi signal and tablet temperature from

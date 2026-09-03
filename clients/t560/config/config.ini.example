@@ -43,6 +43,20 @@ screen_off_seconds=30
 # a dead letter: Home Assistant sends no skin until somebody picks one there,
 # so what is set here decides until then.
 player_skin=modern
+# The port the layout editor answers on, or 0 to switch it off entirely.
+#
+# THE EDITOR HAS NO PASSWORD. It is reachable by anything on the same network,
+# which is the point: the arrangement is edited from a phone rather than on a
+# tablet with no keyboard. What that costs is bounded on purpose — the editor
+# can rearrange this panel's room page and ask Home Assistant for a skin this
+# panel already offers, and nothing else. It cannot read a state, call a
+# service, reach an entity the panel does not draw, or expose the panel's
+# Home Assistant token. Its "Restore" button puts back the copy Home Assistant
+# holds, so a rearrangement somebody did not want is undone by one button.
+#
+# Never forward this port through a router. See docs/BUILD_AND_INSTALL.md.
+# This key is the panel's own and is not sent by Home Assistant.
+web_port=8730
 
 # Front camera motion detection. While the display is off, detected motion
 # turns it on; while motion continues, the automatic screen off above is

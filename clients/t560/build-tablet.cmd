@@ -17,7 +17,7 @@ echo Building and testing the T560 panel for ARMv7...
 docker run --rm --platform linux/arm/v7 ^
     -v "%CD%:/src" ^
     -w /src alpine:3.20 ^
-    sh -lc "set -eu; apk add --no-cache build-base gtk+3.0-dev libsoup3-dev json-glib-dev file; make clean; make; make test; file t560-panel | tee /tmp/t560-file; grep -q 'ELF 32-bit' /tmp/t560-file; grep -q 'ARM' /tmp/t560-file; grep -q 'EABI5' /tmp/t560-file; grep -q '/lib/ld-musl-armhf.so.1' /tmp/t560-file; sha256sum t560-panel src/*.c src/*.h tests/*.c tests/*.h data/t560.gresource.xml data/icons/*.png > SHA256SUMS"
+    sh -lc "set -eu; apk add --no-cache build-base gtk+3.0-dev libsoup3-dev json-glib-dev file; make clean; make; make test; file t560-panel | tee /tmp/t560-file; grep -q 'ELF 32-bit' /tmp/t560-file; grep -q 'ARM' /tmp/t560-file; grep -q 'EABI5' /tmp/t560-file; grep -q '/lib/ld-musl-armhf.so.1' /tmp/t560-file; sha256sum t560-panel src/*.c src/*.h tests/*.c tests/*.h data/t560.gresource.xml data/editor.html data/icons/*.png > SHA256SUMS"
 
 if errorlevel 1 (
     echo ERROR: The ARMv7 build or tests failed.

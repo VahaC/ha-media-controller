@@ -71,6 +71,38 @@ def async_unregister_panel(hass: HomeAssistant, panel_id: str) -> None:
     hass.data.get(DOMAIN, {}).get(DATA_PANELS, {}).pop(panel_id, None)
 
 
+def async_resolve_panel(
+    hass: HomeAssistant,
+    request: web.Request,
+    panel_id: str,
+) -> tuple[PanelRegistration | None, str | None]:
+    """Return the loaded panel a request may act on, or why it may not.
+
+    This is the one ownership rule of every authenticated panel endpoint, in
+    one place: a panel is reachable only while its entry is loaded, and only
+    the Home Assistant user created for that panel may speak for it. A second
+    endpoint gets exactly the isolation the first one already has, rather than
+    a second implementation of it that can drift.
+
+    The failure is returned rather than raised so that each endpoint keeps
+    control of its own answers.
+    """
+    panels: dict[str, PanelRegistration] = hass.data.get(DOMAIN, {}).get(
+        DATA_PANELS, {}
+    )
+    registration = panels.get(panel_id)
+    if registration is None:
+        return None, STATUS_UNKNOWN_PANEL
+
+    user = request.get("hass_user")
+    if user is None or user.id != registration.user_id:
+        _LOGGER.warning(
+            "Refused a request for panel %s from another account", panel_id
+        )
+        return None, STATUS_WRONG_PANEL
+    return registration, None
+
+
 class PanelStatusView(HomeAssistantView):
     """Accept one panel's report about itself."""
 
@@ -100,22 +132,15 @@ class PanelStatusView(HomeAssistantView):
                 {"status": STATUS_INVALID_REPORT}, status_code=400
             )
 
-        panels: dict[str, PanelRegistration] = self._hass.data.get(
-            DOMAIN, {}
-        ).get(DATA_PANELS, {})
-        registration = panels.get(panel_id)
+        registration, error = async_resolve_panel(
+            self._hass, request, panel_id
+        )
+        if error == STATUS_WRONG_PANEL:
+            return self.json({"status": STATUS_WRONG_PANEL}, status_code=403)
         if registration is None:
             return self.json(
                 {"status": STATUS_UNKNOWN_PANEL}, status_code=404
             )
-
-        user = request.get("hass_user")
-        if user is None or user.id != registration.user_id:
-            _LOGGER.warning(
-                "Refused a status report for panel %s from another account",
-                panel_id,
-            )
-            return self.json({"status": STATUS_WRONG_PANEL}, status_code=403)
 
         registration.state.apply_report(payload)
         self._async_update_version(registration)

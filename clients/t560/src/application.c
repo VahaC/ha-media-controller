@@ -7,6 +7,7 @@
 #include "panel_display.h"
 #include "panel_pairing.h"
 #include "panel_ui.h"
+#include "panel_web.h"
 #include "system_status.h"
 
 #include <json-glib/json-glib.h>
@@ -51,6 +52,13 @@ typedef struct {
     guint poll_pending;
     guint unauthorized_polls;
     gint64 next_playlist_poll_us;
+    /* Where the round-robin over the room cards reached. See
+     * poll_room_cards. */
+    guint room_poll_cursor;
+    /* The layout editor this panel serves, or NULL when it is switched off
+     * in config.ini or its port could not be bound. The room page works
+     * either way; only the editing does not. */
+    PanelWeb *web;
     /* The last payload written to the layout cache. It is compared before
      * every write: the config sensor is polled every cycle, and rewriting an
      * unchanged file once a second would wear the tablet's flash and would
@@ -265,12 +273,17 @@ static gchar *service_json(const gchar *entity, const gchar *key,
     return json;
 }
 
-static const PanelRoom *configured_room(PanelApplication *application,
-                                        gint index)
+/* The registry element behind one card on the room page.
+ *
+ * The interface owns the arrangement, so it owns the mapping from a card
+ * position to the element that card acts on. A card whose rid the registry no
+ * longer carries answers NULL and every action on it is dropped. */
+static const PanelEntity *configured_room(PanelApplication *application,
+                                          gint index)
 {
-    if (index < 0 || (guint)index >= application->config->layout.room_count)
+    if (index < 0 || application->ui == NULL)
         return NULL;
-    return &application->config->layout.rooms[index];
+    return panel_ui_card_entity(application->ui, (guint)index);
 }
 
 static gchar *room_value_json(const gchar *entity, const gchar *key,
@@ -416,7 +429,7 @@ static void handle_ui_event(PanelUiEvent event, const gchar *value, gint index,
         break;
     }
     case PANEL_UI_TOGGLE_ROOM: {
-        const PanelRoom *room = configured_room(application, index);
+        const PanelEntity *room = configured_room(application, index);
         if (room != NULL) {
             call_entity_service(application, "homeassistant", "toggle",
                                 room->entity);
@@ -424,7 +437,7 @@ static void handle_ui_event(PanelUiEvent event, const gchar *value, gint index,
         break;
     }
     case PANEL_UI_SET_ROOM_BRIGHTNESS: {
-        const PanelRoom *room = configured_room(application, index);
+        const PanelEntity *room = configured_room(application, index);
         if (room != NULL && value != NULL && room->brightness) {
             gint brightness = (gint)g_ascii_strtoll(value, NULL, 10);
             brightness = CLAMP(brightness, 1, 100);
@@ -436,7 +449,7 @@ static void handle_ui_event(PanelUiEvent event, const gchar *value, gint index,
         break;
     }
     case PANEL_UI_SET_ROOM_COLOR_TEMPERATURE: {
-        const PanelRoom *room = configured_room(application, index);
+        const PanelEntity *room = configured_room(application, index);
         if (room != NULL && value != NULL && room->color_temperature) {
             gint temperature = (gint)g_ascii_strtoll(value, NULL, 10);
             temperature = CLAMP(temperature, room->min_kelvin,
@@ -839,6 +852,21 @@ static void update_config(PanelApplication *application, JsonObject *state,
         return;
     }
 
+    /* Adopted on every payload rather than only on the first one.
+     *
+     * Which entity holds the skin is deliberately outside the revision — it
+     * is not layout, and folding it in would restart every panel in the house
+     * whenever Home Assistant assigned it. The cost of that choice is this:
+     * a payload that gains the key later must be picked up here, or a panel
+     * that happened to poll while Home Assistant was still starting its
+     * platforms would never learn the entity and could never write a skin. */
+    if (g_strcmp0(application->config->layout.skin_select_entity,
+                  candidate.skin_select_entity) != 0) {
+        g_free(application->config->layout.skin_select_entity);
+        application->config->layout.skin_select_entity =
+            g_strdup(candidate.skin_select_entity);
+    }
+
     apply_settings(application, &candidate.settings);
     apply_commands(application, &candidate.commands);
     panel_layout_clear(&candidate);
@@ -1037,6 +1065,250 @@ static void start_state_request(PanelApplication *application,
     }
 }
 
+/* Requests the state of the entities the room page is showing.
+ *
+ * The six-tile page asked for all six every cycle, and at six that is what
+ * this still does. A registry of a hundred is the case that changes: a
+ * hundred single-entity requests a second is not something an ARMv7 tablet
+ * and the network between it and Home Assistant should be asked to carry, and
+ * nothing on screen changes fast enough to need it. So a bounded number of
+ * cards are refreshed per cycle, round robin, and a page of a hundred cards
+ * comes fully round in about twelve seconds while a page of a handful behaves
+ * exactly as it always did. */
+#define PANEL_ROOM_POLL_BATCH 8
+
+static void poll_room_cards(PanelApplication *application)
+{
+    guint count = application->ui != NULL
+                      ? panel_ui_card_count(application->ui)
+                      : 0;
+    guint batch;
+
+    if (count == 0)
+        return;
+    batch = MIN(count, (guint)PANEL_ROOM_POLL_BATCH);
+    for (guint i = 0; i < batch; i++) {
+        guint index = (application->room_poll_cursor + i) % count;
+        const PanelEntity *entity = panel_ui_card_entity(application->ui,
+                                                         index);
+
+        /* A card whose registry element has gone names no entity to ask
+         * about. It keeps its place on the page and simply has no state. */
+        if (entity == NULL)
+            continue;
+        start_state_request(application, entity->entity, POLL_REQUEST_ROOM,
+                            index);
+    }
+    application->room_poll_cursor = (application->room_poll_cursor + batch) %
+                                    count;
+}
+
+/* ------------------------------------------------------- layout editor */
+
+/* Where Home Assistant keeps this panel's copy of its own arrangement. It is
+ * an endpoint of its own rather than a block on the config sensor: the config
+ * sensor is polled every second, and a layout is read twice in the life of a
+ * panel. See the panel layout endpoint in docs/CONTRACT.md. */
+static gchar *layout_backup_path(PanelApplication *application)
+{
+    gchar *escaped = g_uri_escape_string(application->config->panel_id, NULL,
+                                         TRUE);
+    gchar *path = g_strdup_printf("/api/media_controller/panel_layout/%s",
+                                  escaped);
+
+    g_free(escaped);
+    return path;
+}
+
+static void backup_finished(guint status_code, GBytes *body,
+                            const GError *error, gpointer user_data)
+{
+    (void)body;
+    (void)user_data;
+
+    /* A failed backup is logged and not shown: the layout is already saved on
+     * the panel, and the copy is retried by the next save. */
+    if (error != NULL) {
+        g_warning("Could not send the layout to Home Assistant: %s",
+                  error->message);
+    } else if (status_code < 200 || status_code >= 300) {
+        g_warning("Home Assistant refused the layout copy with status %u",
+                  status_code);
+    }
+}
+
+static gboolean send_layout_backup(PanelApplication *application,
+                                   const PanelGrid *grid)
+{
+    gchar *path = layout_backup_path(application);
+    gchar *json = panel_grid_to_json(grid);
+    /* Opaque on the far side: Home Assistant stores these bytes and hands
+     * them back without ever parsing them, so they are not announced as
+     * JSON. */
+    gboolean sent = home_assistant_client_put_path(
+        application->client, path, json, "text/plain", backup_finished,
+        NULL, NULL);
+
+    g_free(json);
+    g_free(path);
+    return sent;
+}
+
+static const PanelLayout *editor_layout(gpointer user_data)
+{
+    PanelApplication *application = user_data;
+    return &application->config->layout;
+}
+
+/* The skin on screen, which is not the same question as what Home Assistant
+ * last said. `layout.settings` holds the first payload this panel ever read
+ * and is not refreshed, because settings are applied as they arrive rather
+ * than stored; the live answer is the one the interface was given. */
+static PanelPlayerSkin editor_skin(gpointer user_data)
+{
+    PanelApplication *application = user_data;
+    return application->config->player_skin;
+}
+
+static const PanelGrid *editor_grid(gpointer user_data)
+{
+    PanelApplication *application = user_data;
+    return application->ui != NULL ? panel_ui_grid(application->ui) : NULL;
+}
+
+/* Writes the file, puts the arrangement on screen, and sends Home Assistant
+ * its copy. The order matters: the panel's own file is the thing that must
+ * survive, so it is written first and a Home Assistant that is unreachable
+ * costs the backup and nothing else. */
+static gboolean editor_save_grid(PanelGrid *grid, gboolean *backed_up,
+                                 gchar **error_message, gpointer user_data)
+{
+    PanelApplication *application = user_data;
+
+    if (!panel_grid_save(grid, error_message))
+        return FALSE;
+
+    *backed_up = send_layout_backup(application, grid);
+    /* The interface takes ownership. The room page is one drawing area, so
+     * this is a new card list and a redraw rather than a rebuilt widget
+     * tree — and the poll cursor starts again so the new cards get states. */
+    panel_ui_set_grid(application->ui, grid);
+    application->room_poll_cursor = 0;
+    return TRUE;
+}
+
+typedef struct {
+    PanelWebRestoreReady ready;
+    gpointer request;
+} RestoreCall;
+
+static void restore_finished(guint status_code, GBytes *body,
+                             const GError *error, gpointer user_data)
+{
+    RestoreCall *call = user_data;
+    gsize length = 0;
+    const gchar *data = body != NULL ? g_bytes_get_data(body, &length) : NULL;
+
+    if (error != NULL) {
+        call->ready(NULL, error->message, call->request);
+    } else if (status_code == 404) {
+        call->ready(NULL, "Home Assistant holds no copy of this layout yet.",
+                    call->request);
+    } else if (status_code < 200 || status_code >= 300) {
+        gchar *text = g_strdup_printf(
+            "Home Assistant answered %u.", status_code);
+        call->ready(NULL, text, call->request);
+        g_free(text);
+    } else if (data == NULL || length == 0) {
+        call->ready(NULL, "The copy in Home Assistant is empty.",
+                    call->request);
+    } else {
+        gchar *document = g_strndup(data, length);
+        call->ready(document, NULL, call->request);
+        g_free(document);
+    }
+}
+
+static void restore_call_free(gpointer user_data)
+{
+    g_free(user_data);
+}
+
+static void editor_restore(PanelWebRestoreReady ready, gpointer request,
+                           gpointer user_data)
+{
+    PanelApplication *application = user_data;
+    RestoreCall *call = g_new0(RestoreCall, 1);
+    gchar *path = layout_backup_path(application);
+
+    call->ready = ready;
+    call->request = request;
+    if (!home_assistant_client_get_path(application->client, path,
+                                        restore_finished, call,
+                                        restore_call_free)) {
+        ready(NULL, "The Home Assistant URL is not usable.", request);
+        g_free(call);
+    }
+    g_free(path);
+}
+
+/* Calls select.select_option on this panel's own skin select and nothing
+ * else. The skin is not stored locally: Home Assistant owns the value and the
+ * panel adopts it on its next poll, which is the same path as changing it in
+ * Home Assistant itself. */
+static gboolean editor_select_skin(const gchar *name, gchar **error_message,
+                                   gpointer user_data)
+{
+    PanelApplication *application = user_data;
+    const gchar *entity = application->config->layout.skin_select_entity;
+
+    if (entity == NULL) {
+        *error_message = g_strdup(
+            "Home Assistant has not told this panel which entity holds the "
+            "skin.");
+        return FALSE;
+    }
+
+    gchar *json = service_json(entity, "option", name, -1);
+    gboolean called = home_assistant_client_call_service(
+        application->client, "select", "select_option", json,
+        service_finished, application);
+
+    g_free(json);
+    if (!called)
+        *error_message = g_strdup("The Home Assistant URL is not usable.");
+    return called;
+}
+
+static void start_editor(PanelApplication *application)
+{
+    static const PanelWebCallbacks CALLBACKS = {
+        .layout = editor_layout,
+        .skin = editor_skin,
+        .grid = editor_grid,
+        .save_grid = editor_save_grid,
+        .restore = editor_restore,
+        .select_skin = editor_select_skin
+    };
+    gchar *failure = NULL;
+
+    if (application->web != NULL || application->config->web_port == 0)
+        return;
+
+    application->web = panel_web_new(application->config->web_port,
+                                     &CALLBACKS, application, &failure);
+    if (application->web == NULL) {
+        /* Not fatal, and deliberately not shown on the status line: the room
+         * page is fully usable without an editor, and a warning that never
+         * clears would sit over the music. */
+        g_warning("The layout editor is not available: %s", failure);
+        g_free(failure);
+        return;
+    }
+    panel_ui_set_editor_url(application->ui, panel_web_url(application->web));
+    g_message("The layout editor is at %s", panel_web_url(application->web));
+}
+
 static gboolean poll_states(gpointer user_data)
 {
     PanelApplication *application = user_data;
@@ -1075,11 +1347,7 @@ static gboolean poll_states(gpointer user_data)
         application->next_playlist_poll_us =
             now + (gint64)application->config->playlist_poll_interval_ms * 1000;
     }
-    for (guint i = 0; i < application->config->layout.room_count; i++) {
-        start_state_request(application,
-                            application->config->layout.rooms[i].entity,
-                            POLL_REQUEST_ROOM, i);
-    }
+    poll_room_cards(application);
 
     /* Every request was rejected before it started, so no callback will run
      * to report the outcome. */
@@ -1263,6 +1531,8 @@ static void panel_application_free(PanelApplication *application)
     if (application->config_reload_source != 0)
         g_source_remove(application->config_reload_source);
     g_clear_object(&application->config_monitor);
+    /* Before the interface: a request in flight calls back into it. */
+    panel_web_free(application->web);
     home_assistant_client_free(application->client);
     panel_ui_free(application->ui);
     app_config_free(application->config);
@@ -1413,6 +1683,8 @@ static void start_panel(PanelApplication *application)
     panel_ui_set_skin(application->ui, application->config->player_skin);
     start_header_updates(application);
     start_config_monitor(application);
+    /* Last, because it needs the interface it hands its URL to. */
+    start_editor(application);
 }
 
 static void activate(GtkApplication *gtk_application, gpointer user_data)

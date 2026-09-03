@@ -333,6 +333,12 @@ class ClientConfiguration:
         self.controller = controller
         self.panel = panel
         self._proxy_entity_ids: dict[int, str] = {}
+        # Reported by the skin select once Home Assistant has assigned it one,
+        # the same way a proxy reports its own. A panel that offers a skin
+        # picker on the device needs the entity ID to write to, and guessing
+        # it from the device name would survive only until somebody renamed
+        # something.
+        self._skin_select_entity_id = ""
         self._listeners: list[Callable[[], None]] = []
 
     @callback
@@ -361,6 +367,15 @@ class ClientConfiguration:
         if self._proxy_entity_ids.get(index) == entity_id:
             return
         self._proxy_entity_ids[index] = entity_id
+        for listener in list(self._listeners):
+            listener()
+
+    @callback
+    def async_set_skin_select_entity_id(self, entity_id: str) -> None:
+        """Record the entity ID Home Assistant gave this panel's skin select."""
+        if self._skin_select_entity_id == entity_id:
+            return
+        self._skin_select_entity_id = entity_id
         for listener in list(self._listeners):
             listener()
 
@@ -474,6 +489,10 @@ class ClientConfiguration:
                 if (proxy_entity_id := self._proxy_entity_ids.get(slot.index))
             ),
             entity_limit=self.profile.entity_limit if registry else None,
+            # Only a panel writes a skin, and only one that has a select to
+            # write to. The classic ESP32 controller is sent no settings at
+            # all and has nothing to do with this.
+            skin_select_entity=self._skin_select_entity_id if registry else "",
             entities=tuple(
                 EntityPayload(
                     rid=entry.rid,

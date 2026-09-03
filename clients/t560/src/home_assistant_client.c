@@ -58,20 +58,26 @@ static void request_finished(GObject *source, GAsyncResult *result,
     g_free(request);
 }
 
-static gboolean send_request(HomeAssistantClient *client, const gchar *method,
-                             const gchar *url, const gchar *json, gint priority,
-                             HomeAssistantResponse callback, gpointer user_data,
-                             GDestroyNotify user_data_destroy)
+/* The body's content type is a parameter because not everything this panel
+ * sends Home Assistant is JSON: the layout backup is an opaque document that
+ * Home Assistant stores and returns without ever parsing it, and calling it
+ * JSON would be a claim neither side checks. */
+static gboolean send_request_typed(HomeAssistantClient *client,
+                                   const gchar *method, const gchar *url,
+                                   const gchar *body,
+                                   const gchar *content_type, gint priority,
+                                   HomeAssistantResponse callback,
+                                   gpointer user_data,
+                                   GDestroyNotify user_data_destroy)
 {
     SoupMessage *message = soup_message_new(method, url);
     if (message == NULL)
         return FALSE;
 
     add_headers(client, message);
-    if (json != NULL) {
-        GBytes *bytes = g_bytes_new(json, strlen(json));
-        soup_message_set_request_body_from_bytes(
-            message, "application/json", bytes);
+    if (body != NULL) {
+        GBytes *bytes = g_bytes_new(body, strlen(body));
+        soup_message_set_request_body_from_bytes(message, content_type, bytes);
         g_bytes_unref(bytes);
     }
 
@@ -86,6 +92,16 @@ static gboolean send_request(HomeAssistantClient *client, const gchar *method,
                                      request_finished, request);
     g_object_unref(message);
     return TRUE;
+}
+
+static gboolean send_request(HomeAssistantClient *client, const gchar *method,
+                             const gchar *url, const gchar *json, gint priority,
+                             HomeAssistantResponse callback, gpointer user_data,
+                             GDestroyNotify user_data_destroy)
+{
+    return send_request_typed(client, method, url, json, "application/json",
+                              priority, callback, user_data,
+                              user_data_destroy);
 }
 
 HomeAssistantClient *home_assistant_client_new(const gchar *base_url,
@@ -162,6 +178,37 @@ gboolean home_assistant_client_post_path(HomeAssistantClient *client,
 {
     gchar *url = g_strdup_printf("%s%s", client->base_url, path);
     gboolean started = send_request(client, "POST", url, json,
+                                    G_PRIORITY_DEFAULT, callback, user_data,
+                                    user_data_destroy);
+    g_free(url);
+    return started;
+}
+
+gboolean home_assistant_client_put_path(HomeAssistantClient *client,
+                                        const gchar *path,
+                                        const gchar *body,
+                                        const gchar *content_type,
+                                        HomeAssistantResponse callback,
+                                        gpointer user_data,
+                                        GDestroyNotify user_data_destroy)
+{
+    gchar *url = g_strdup_printf("%s%s", client->base_url, path);
+    gboolean started = send_request_typed(client, "PUT", url, body,
+                                          content_type, G_PRIORITY_DEFAULT,
+                                          callback, user_data,
+                                          user_data_destroy);
+    g_free(url);
+    return started;
+}
+
+gboolean home_assistant_client_get_path(HomeAssistantClient *client,
+                                        const gchar *path,
+                                        HomeAssistantResponse callback,
+                                        gpointer user_data,
+                                        GDestroyNotify user_data_destroy)
+{
+    gchar *url = g_strdup_printf("%s%s", client->base_url, path);
+    gboolean started = send_request(client, "GET", url, NULL,
                                     G_PRIORITY_DEFAULT, callback, user_data,
                                     user_data_destroy);
     g_free(url);

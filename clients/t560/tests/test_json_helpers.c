@@ -1,6 +1,7 @@
 #include "json_helpers.h"
 
 #include "test_panel_config.h"
+#include "test_panel_grid.h"
 
 #include <glib.h>
 
@@ -63,6 +64,27 @@ static void test_large_string_array(void)
     json_array_unref(source);
 }
 
+/* A member holding the wrong type reads as absent. Both accessors are given
+ * remote input: a config sensor that carried a string where an array belongs
+ * must leave the panel with nothing to draw, not abort it. */
+static void test_optional_accessors_check_the_type(void)
+{
+    JsonObject *object = json_object_new();
+    json_object_set_string_member(object, "entities", "all");
+    json_object_set_string_member(object, "settings", "none");
+    json_object_set_null_member(object, "commands");
+
+    g_assert_null(json_optional_array(object, "entities"));
+    g_assert_null(json_optional_object(object, "settings"));
+    g_assert_null(json_optional_array(object, "missing"));
+    g_assert_null(json_optional_object(object, "commands"));
+
+    json_object_set_array_member(object, "controls", json_array_new());
+    g_assert_nonnull(json_optional_array(object, "controls"));
+
+    json_object_unref(object);
+}
+
 static void test_builder_serialization(void)
 {
     JsonBuilder *builder = json_builder_new();
@@ -84,7 +106,10 @@ int main(int argc, char **argv)
     g_test_add_func("/json/scalar-accessors", test_scalar_accessors);
     g_test_add_func("/json/string-arrays", test_string_arrays);
     g_test_add_func("/json/large-string-array", test_large_string_array);
+    g_test_add_func("/json/optional-accessor-types",
+                    test_optional_accessors_check_the_type);
     g_test_add_func("/json/builder-serialization", test_builder_serialization);
     panel_config_tests_register();
+    panel_grid_tests_register();
     return g_test_run();
 }

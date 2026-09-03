@@ -2,6 +2,7 @@
 #define T560_PANEL_UI_H
 
 #include "app_config.h"
+#include "panel_grid.h"
 
 #include <gtk/gtk.h>
 
@@ -64,6 +65,20 @@ void panel_ui_set_playlists(PanelUi *ui, GPtrArray *names, guint count,
                             gint selected);
 void panel_ui_select_queue_item(PanelUi *ui, gint selected);
 void panel_ui_select_playlist(PanelUi *ui, gint selected);
+/* The room page is a grid of cards the user arranged, so the panel addresses
+ * a card by its position in that arrangement rather than by a slot number.
+ * A card whose registry element has gone reports NULL and acts on nothing. */
+guint panel_ui_card_count(PanelUi *ui);
+const PanelEntity *panel_ui_card_entity(PanelUi *ui, guint index);
+/* Replaces the arrangement on screen; takes ownership of the grid. The page
+ * is one drawing area, so this rebuilds a card list and redraws rather than
+ * rebuilding a widget tree. */
+void panel_ui_set_grid(PanelUi *ui, PanelGrid *grid);
+/* The arrangement on screen, borrowed. */
+const PanelGrid *panel_ui_grid(PanelUi *ui);
+/* Where the layout editor answers, shown on a page with no cards on it. */
+void panel_ui_set_editor_url(PanelUi *ui, const gchar *url);
+
 void panel_ui_set_room(PanelUi *ui, guint index, gboolean active,
                        gint brightness_percent, gint color_temp_kelvin,
                        gint min_color_temp_kelvin,

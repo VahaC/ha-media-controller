@@ -81,6 +81,11 @@ DATA_PROVISIONING = "provisioning"
 # Panel state by panel ID. The status endpoint is not tied to a config entry,
 # so it resolves a reporting panel through this.
 DATA_PANELS = "panels"
+# The saved grid of every panel that has ever pushed one, by panel ID. It is
+# deliberately not on a config entry: a layout has to outlive the entry, and
+# writing it to entry data would reload the entry and rebuild the config
+# sensor at the moment the panel saved a layout. See panel_layout.py.
+DATA_LAYOUTS = "layouts"
 
 # Version 1 keys. They survive only in async_migrate_entry.
 CONF_LIGHT_1_ENTITY = "light_1_entity"

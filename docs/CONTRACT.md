@@ -50,6 +50,13 @@ neither panel needs one: both learn entity IDs at runtime. A panel is
 therefore no longer sent `slots` at all, and its room controls have to be
 chosen again. See **Registry entries** and **What version 6 breaks** below.
 
+Version 6 also gives a panel two things the registry needs to be usable on the
+device: `skin_select`, the entity a panel writes when a person picks a skin on
+the tablet rather than in Home Assistant, and an endpoint where a panel keeps
+a durable copy of the grid it arranges its registry into. Both are additive
+and optional, and the classic ESP32 controller is sent neither. See **Panel
+layout endpoint** below.
+
 The classic ESP32 controller is untouched by all of it. It still receives
 `slots`, still addresses proxies, and still behaves exactly as it did under
 version 5: it resolves both entity IDs and service domains while compiling, so
@@ -188,6 +195,7 @@ receives the block it does not read. The panel payload is:
   ],
   "revision": 2098342174,
   "contract_version": 6,
+  "skin_select": "select.kitchen_tablet_player_skin",
   "settings": {
     "poll_interval_ms": 1000,
     "playlist_poll_interval_ms": 60000,
@@ -256,6 +264,15 @@ Real attributes, not an encoded string. Rules a client must follow:
   is deliberately outside it: the protocol number is not layout, and folding
   it in would restart every panel in a house to redraw a room page that did
   not move.
+- `skin_select` is the entity ID of this panel's *Player skin* select, and is
+  sent **only to panels**, and only to one whose profile draws more than one
+  skin. It is the single entity in the payload a client **writes** rather than
+  reads: a panel that offers a skin picker on the device calls
+  `select.select_option` on it and changes nothing locally, so Home Assistant
+  stays the owner of the value and the new skin arrives back the ordinary way,
+  in `settings.player_skin`. It is outside `revision` for the same reason
+  `contract_version` is: which entity holds the skin is not layout. A client
+  that finds it absent simply has no local skin picker to offer.
 - `contract_version` is the version of this document the integration
   implements. It is sent to every client, panel or not, so that a client can
   see whether the other half of the contract is behind it. An absent value
@@ -541,6 +558,52 @@ another's battery level.
 Answers: `200` with `{"status": "ok"}`; `400` for an unusable body; `403` when
 the token belongs to another account; `404` when no loaded panel has that ID.
 
+## Panel layout endpoint
+
+```text
+GET  /api/media_controller/panel_layout/<panel_id>
+PUT  /api/media_controller/panel_layout/<panel_id>
+```
+
+A panel that lets a person arrange its registry into a grid keeps that
+arrangement on the device, where it is edited. This endpoint is the durable
+copy of it, and the only thing here that Home Assistant could not lose without
+losing something a client cannot rebuild: wiping the tablet, reinstalling the
+application, or replacing the hardware loses the file, and a panel derives the
+same `panel_id` from the same machine, so it finds its layout again.
+
+- the body is an **opaque blob**. Home Assistant stores the bytes it is handed
+  and returns them unchanged; it never parses them, and no key inside them
+  means anything to it. The grid format belongs to the client that draws it,
+  which may change it without a change to this document;
+- it is **its own endpoint and not a block on the config sensor**, deliberately.
+  The config sensor is polled every `poll_interval_ms` — once a second by
+  default — and a hundred-card grid is several kilobytes: it would travel to
+  the device every second for data read twice in the life of a panel. Keeping
+  it out also keeps it out of `revision`, so saving a layout cannot make the
+  panel rebuild the page it has just saved;
+- authentication and isolation are the status endpoint's, unchanged. The
+  request carries the panel's own access token, and Home Assistant accepts it
+  only from the Home Assistant user created for **that** panel. One panel can
+  neither read nor overwrite another's layout;
+- a body larger than **16 KiB** is refused. Home Assistant stores whatever it
+  is given, so the ceiling is what stops a client growing its storage without
+  limit;
+- the layout **outlives the config entry**. Removing a panel from Home
+  Assistant does not delete it, because surviving a reinstall is the entire
+  purpose.
+
+`PUT` answers `200` with `{"status": "ok"}`; `403` when the token belongs to
+another account; `404` when no loaded panel has that ID; `413` when the body
+is over the ceiling.
+
+`GET` answers `200` with the stored bytes as `text/plain`; `404` with
+`{"status": "no_layout"}` when that panel has never saved one, and the same
+`403` and `404` as above.
+
+A client uses it twice: once after every local save, so the copy is current,
+and once when a person asks for the layout to be restored. Nothing polls it.
+
 ## Version compatibility
 
 The number above is not decoration: both halves of the contract carry it in
@@ -662,7 +725,12 @@ Tests that protect the contract:
 - `tests/test_profiles.py` — which controls a client is told to draw;
 - `tests/test_migration.py` — the version 1 slots keep their numbers;
 - `clients/t560/tests/test_panel_config.c` — payload parsing on the client
-  side, including an unknown control name;
+  side, including an unknown control name, the registry limit, and the skin
+  select;
+- `clients/t560/tests/test_panel_grid.c` — the client-side layout the backup
+  endpoint carries: what is a usable grid and what is dropped;
+- `tests/test_layout_backup.py` — the layout a panel stores here: that it is
+  opaque, private to one panel, and bounded;
 - `tests/test_pairing.py` — the rules that guard the provisioning endpoint;
 - `tests/test_panel_state.py` — the settings, the command channel, and the
   validation of a status report;

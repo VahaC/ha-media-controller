@@ -85,8 +85,22 @@ class PanelPlayerSkinSelect(PanelEntity, SelectEntity):
     def __init__(self, entry: ConfigEntry, runtime: Any) -> None:
         """Initialize the skin selector for this client's own layouts."""
         super().__init__(entry, runtime, "player_skin")
+        self._client = runtime.client
         self._profile = runtime.client.profile
         self._attr_options = list(self._profile.skins)
+
+    async def async_added_to_hass(self) -> None:
+        """Tell the config sensor which entity holds the skin.
+
+        A panel that lets a person pick a skin on the tablet itself calls
+        `select.select_option` on this entity, so it has to learn the entity
+        ID from somewhere. It is reported here, once Home Assistant has
+        assigned one, rather than guessed from the device name: the panel
+        keeps no entity ID of its own by design, and a guess would break the
+        first time this entity or the config sensor was renamed.
+        """
+        await super().async_added_to_hass()
+        self._client.async_set_skin_select_entity_id(self.entity_id)
 
     @property
     def current_option(self) -> str:

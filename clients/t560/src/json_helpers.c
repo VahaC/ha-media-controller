@@ -66,8 +66,16 @@ JsonObject *json_optional_object(JsonObject *object, const gchar *member)
 
 JsonArray *json_optional_array(JsonObject *object, const gchar *member)
 {
-    return object != NULL && json_object_has_member(object, member)
-               ? json_object_get_array_member(object, member)
+    if (object == NULL || !json_object_has_member(object, member))
+        return NULL;
+
+    /* The member's type is checked rather than assumed, exactly as
+     * json_optional_object checks its own. A payload is remote input: a key
+     * that arrives holding something other than an array reads as absent,
+     * which is a room page with no cards rather than an aborted panel. */
+    JsonNode *node = json_object_get_member(object, member);
+    return node != NULL && JSON_NODE_HOLDS_ARRAY(node)
+               ? json_node_get_array(node)
                : NULL;
 }
 

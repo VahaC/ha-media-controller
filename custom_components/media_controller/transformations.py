@@ -292,6 +292,13 @@ class ClientConfigPayload:
     slots: tuple[SlotPayload, ...] | None = None
     entity_limit: int | None = None
     entities: tuple[EntityPayload, ...] | None = None
+    # Panels only, and only those that draw more than one skin. It is the one
+    # entity in the payload a client *writes* rather than reads: a panel that
+    # lets a person pick a skin on the device itself calls
+    # `select.select_option` on it. Deriving it from the config sensor's own
+    # entity ID would break the first time somebody renamed either of them,
+    # which is exactly what `rid` exists to avoid elsewhere.
+    skin_select_entity: str = ""
     player_entity: str = ""
     queue_entity: str = ""
     playlists_entity: str = ""
@@ -341,6 +348,13 @@ class ClientConfigPayload:
         # upgraded, and folding it into the checksum would restart every panel
         # in the house to redraw a room page that did not move.
         payload["contract_version"] = self.contract_version
+        # Also after the revision, and for the same reason: which entity holds
+        # the skin is not layout. It is assigned once, when the select is
+        # added, and folding it in would spend a re-layout on a fact that
+        # changes nothing on screen. Panels only, decided the same way every
+        # other panel-only key here is: a client that reads `slots` is not one.
+        if self.entities is not None and self.skin_select_entity:
+            payload["skin_select"] = self.skin_select_entity
         if self.settings is not None:
             payload["settings"] = dict(self.settings)
         if self.commands is not None:

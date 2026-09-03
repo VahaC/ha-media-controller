@@ -92,6 +92,36 @@ static gchar *discovered_base_url(void)
     return url;
 }
 
+void panel_entity_free(PanelEntity *entity)
+{
+    if (entity == NULL)
+        return;
+
+    g_free(entity->rid);
+    g_free(entity->entity);
+    g_free(entity->name);
+    g_free(entity->domain);
+    g_free(entity);
+}
+
+/* A linear scan, because the registry is at most a hundred elements and this
+ * is called while a page is being built rather than per frame. A hash table
+ * would be a second structure to keep in step with the payload for no
+ * measurable gain on the tablet. */
+const PanelEntity *panel_layout_find_entity(const PanelLayout *layout,
+                                            const gchar *rid)
+{
+    if (layout == NULL || layout->entities == NULL || rid == NULL)
+        return NULL;
+
+    for (guint i = 0; i < layout->entities->len; i++) {
+        const PanelEntity *entity = g_ptr_array_index(layout->entities, i);
+        if (g_strcmp0(entity->rid, rid) == 0)
+            return entity;
+    }
+    return NULL;
+}
+
 void panel_layout_clear(PanelLayout *layout)
 {
     if (layout == NULL)
@@ -100,13 +130,10 @@ void panel_layout_clear(PanelLayout *layout)
     g_clear_pointer(&layout->player_entity, g_free);
     g_clear_pointer(&layout->queue_entity, g_free);
     g_clear_pointer(&layout->playlists_entity, g_free);
-    for (guint i = 0; i < PANEL_ROOM_MAX; i++) {
-        g_clear_pointer(&layout->rooms[i].entity, g_free);
-        g_clear_pointer(&layout->rooms[i].label, g_free);
-    }
+    g_clear_pointer(&layout->skin_select_entity, g_free);
+    g_clear_pointer(&layout->entities, g_ptr_array_unref);
     g_clear_pointer(&layout->commands.display_state, g_free);
     g_clear_pointer(&layout->commands.page, g_free);
-    layout->room_count = 0;
     layout->revision = 0;
     layout->settings.present = FALSE;
     layout->commands.display_at = 0;
@@ -149,6 +176,12 @@ static gboolean load_key_file(AppConfig *config, gchar **error_message)
             read_integer(file, "panel", "playlist_poll_interval_ms",
                          PANEL_DEFAULT_PLAYLIST_POLL_MS),
             10000, 3600000);
+        /* 0 switches the editor off entirely; anything else is a port the
+         * panel may bind without privileges. */
+        gint port = read_integer(file, "panel", "web_port",
+                                 PANEL_DEFAULT_WEB_PORT);
+        config->web_port = port <= 0 ? 0
+                                     : (guint)CLAMP(port, 1024, 65535);
         gchar *skin = read_string(file, "panel", "player_skin", NULL);
         if (skin != NULL) {
             config->player_skin = panel_player_skin_from_string(skin);
@@ -209,6 +242,7 @@ AppConfig *app_config_load(gchar **error_message)
     config->poll_interval_ms = PANEL_DEFAULT_POLL_MS;
     config->playlist_poll_interval_ms = PANEL_DEFAULT_PLAYLIST_POLL_MS;
     config->player_skin = PANEL_PLAYER_SKIN_MODERN;
+    config->web_port = PANEL_DEFAULT_WEB_PORT;
 
     if (!load_key_file(config, error_message)) {
         app_config_free(config);

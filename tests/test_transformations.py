@@ -435,6 +435,38 @@ class RegistryPayloadTests(unittest.TestCase):
         after = self._panel(contract_version=99).as_attributes()["revision"]
         self.assertEqual(before, after)
 
+    def test_a_panel_is_told_which_entity_holds_its_skin(self) -> None:
+        attributes = self._panel(
+            skin_select_entity="select.kitchen_tablet_player_skin"
+        ).as_attributes()
+        self.assertEqual(
+            attributes["skin_select"], "select.kitchen_tablet_player_skin"
+        )
+
+    def test_a_panel_with_no_skin_select_is_sent_no_key(self) -> None:
+        """A panel that was told none simply offers no local skin picker."""
+        self.assertNotIn("skin_select", self._panel().as_attributes())
+
+    def test_the_classic_esp32_is_never_sent_a_skin_select(self) -> None:
+        """It is not a panel: it is sent no settings and nothing to write."""
+        attributes = self._controller(
+            skin_select_entity="select.anything"
+        ).as_attributes()
+        self.assertNotIn("skin_select", attributes)
+
+    def test_the_skin_select_stays_outside_the_revision(self) -> None:
+        """Which entity holds the skin is not layout.
+
+        It is assigned once, when the select is added, and folding it into the
+        checksum would spend a re-layout on a fact that changes nothing on
+        screen.
+        """
+        before = self._panel().as_attributes()["revision"]
+        after = self._panel(
+            skin_select_entity="select.kitchen_tablet_player_skin"
+        ).as_attributes()["revision"]
+        self.assertEqual(before, after)
+
 
 if __name__ == "__main__":
     unittest.main()
