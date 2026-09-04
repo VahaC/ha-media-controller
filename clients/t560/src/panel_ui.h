@@ -93,6 +93,7 @@ void panel_ui_set_editor_url(PanelUi *ui, const gchar *url);
  * temperatures. */
 /* One daily forecast row a weather block draws when the card is large
  * enough for it: the weekday and the high, with the low where one was
+ * reported, the condition behind it, and the precipitation where any was
  * reported. */
 #define PANEL_WEATHER_FORECAST_MAX 5
 typedef struct {
@@ -100,6 +101,9 @@ typedef struct {
     gdouble high;
     gdouble low;
     gboolean has_low;
+    gchar condition[16];
+    gdouble precipitation;
+    gboolean has_precipitation;
 } PanelWeatherDay;
 
 typedef struct {

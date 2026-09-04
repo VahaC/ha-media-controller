@@ -588,8 +588,9 @@ brightness or a room's temperature, and draws the temperature with a bare
 degree sign: the payload names no unit, because a unit is not a capability.
 
 Where the card is large enough, the block lists the coming days beneath the
-current reading — the weekday with the high and the low, one row per day,
-as many rows as fit. The days come from the `weather.get_forecasts`
+current reading — weekday columns with the high and the low, high/low
+curves and precipitation bars where they fit, plain rows where only they
+do, as many as fit. The days come from the `weather.get_forecasts`
 service, which each client asks itself no oftener than every half hour:
 slow-moving data needs no faster poll, and the payload carries none of it,
 so this adds no field and no version.

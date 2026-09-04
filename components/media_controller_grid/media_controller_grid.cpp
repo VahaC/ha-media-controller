@@ -163,12 +163,28 @@ bool entry_is_on(const Entry &entry) {
   return entry.domain == DOMAIN_CLIMATE ? entry.state != "off" : entry.state == "on";
 }
 
-/* A Home Assistant weather state ("sunny", "partlycloudy", "clear-night")
- * as a card writes it ("Sunny", "Partlycloudy", "Clear night"). The payload
- * names no vocabulary beyond the state itself, so separators become spaces
- * and each word is capitalised; anything unknown is still drawn rather than
- * dropped. */
+/* What the card calls each Home Assistant weather state. The states are a
+ * closed vocabulary ("partlycloudy" is one word), so a table says it right
+ * where capitalising the raw state says "Partlycloudy". Anything unlisted
+ * is drawn as it arrived rather than dropped. */
 static std::string humanize_weather_condition(const std::string &condition) {
+  static const struct {
+    const char *state;
+    const char *label;
+  } LABELS[] = {
+      {"clear-night", "Clear night"}, {"cloudy", "Cloudy"},
+      {"fog", "Fog"},                 {"hail", "Hail"},
+      {"lightning", "Thunderstorm"},  {"lightning-rainy", "Thunderstorm"},
+      {"partlycloudy", "Partly cloudy"}, {"pouring", "Pouring rain"},
+      {"rainy", "Rain"},              {"snowy", "Snow"},
+      {"snowy-rainy", "Sleet"},       {"sunny", "Sunny"},
+      {"windy", "Windy"},             {"windy-variant", "Windy"},
+      {"exceptional", "Exceptional"},
+  };
+  for (const auto &row : LABELS) {
+    if (condition == row.state)
+      return std::string(row.label);
+  }
   std::string out;
   bool capitalize = true;
   for (char c : condition) {

@@ -1341,6 +1341,16 @@ static guint collect_forecast_days(JsonObject *root, const gchar *entity,
             days[count].low = 0.0;
             days[count].has_low = FALSE;
         }
+        g_strlcpy(days[count].condition,
+                  json_object_string(item, "condition", ""),
+                  sizeof(days[count].condition));
+        if (json_object_number(item, "precipitation", &low) && low > 0.0) {
+            days[count].precipitation = low;
+            days[count].has_precipitation = TRUE;
+        } else {
+            days[count].precipitation = 0.0;
+            days[count].has_precipitation = FALSE;
+        }
         count++;
     }
     return count;

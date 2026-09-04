@@ -693,6 +693,202 @@ static gchar *humanize_weather_condition(const gchar *condition)
     return g_string_free(out, FALSE);
 }
 
+/* What the panel calls each Home Assistant weather state, and which glyph
+ * goes with it. The states are a closed vocabulary ("partlycloudy" is one
+ * word), so a table says it right where capitalising the raw state says
+ * "Partlycloudy". Anything unlisted falls back to the humanised state with
+ * a plain cloud. */
+typedef enum {
+    WEATHER_SUN,
+    WEATHER_MOON,
+    WEATHER_PARTLY,
+    WEATHER_CLOUD,
+    WEATHER_FOG,
+    WEATHER_RAIN,
+    WEATHER_POUR,
+    WEATHER_STORM,
+    WEATHER_SNOW,
+    WEATHER_SLEET,
+    WEATHER_HAIL,
+    WEATHER_WIND
+} WeatherGlyph;
+
+static const struct {
+    const gchar *state;
+    const gchar *label;
+    WeatherGlyph glyph;
+} WEATHER_CONDITIONS[] = {
+    {"clear-night", "Clear night", WEATHER_MOON},
+    {"cloudy", "Cloudy", WEATHER_CLOUD},
+    {"fog", "Fog", WEATHER_FOG},
+    {"hail", "Hail", WEATHER_HAIL},
+    {"lightning", "Thunderstorm", WEATHER_STORM},
+    {"lightning-rainy", "Thunderstorm", WEATHER_STORM},
+    {"partlycloudy", "Partly cloudy", WEATHER_PARTLY},
+    {"pouring", "Pouring rain", WEATHER_POUR},
+    {"rainy", "Rain", WEATHER_RAIN},
+    {"snowy", "Snow", WEATHER_SNOW},
+    {"snowy-rainy", "Sleet", WEATHER_SLEET},
+    {"sunny", "Sunny", WEATHER_SUN},
+    {"windy", "Windy", WEATHER_WIND},
+    {"windy-variant", "Windy", WEATHER_PARTLY},
+    {"exceptional", "Exceptional", WEATHER_CLOUD},
+};
+
+/* The label and glyph for a weather state. The label is newly allocated;
+ * the glyph answers by value. */
+static void weather_condition_info(const gchar *condition, gchar **label,
+                                   WeatherGlyph *glyph)
+{
+    if (condition != NULL) {
+        for (guint i = 0; i < G_N_ELEMENTS(WEATHER_CONDITIONS); i++) {
+            if (g_strcmp0(condition, WEATHER_CONDITIONS[i].state) == 0) {
+                *label = g_strdup(WEATHER_CONDITIONS[i].label);
+                *glyph = WEATHER_CONDITIONS[i].glyph;
+                return;
+            }
+        }
+    }
+    *label = humanize_weather_condition(condition);
+    *glyph = WEATHER_CLOUD;
+}
+
+static void weather_circle(cairo_t *cr, gdouble cx, gdouble cy, gdouble radius)
+{
+    cairo_new_sub_path(cr);
+    cairo_arc(cr, cx, cy, radius, 0.0, 2.0 * PANEL_PI);
+}
+
+static void weather_line(cairo_t *cr, gdouble x1, gdouble y1, gdouble x2,
+                         gdouble y2, gdouble width)
+{
+    cairo_set_line_width(cr, width);
+    cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+    cairo_move_to(cr, x1, y1);
+    cairo_line_to(cr, x2, y2);
+    cairo_stroke(cr);
+}
+
+/* A cloud of three puffs on a flat base, centred at (cx, cy) and spanning
+ * about s by s*0.7. Filled, in the current source colour. */
+static void weather_cloud(cairo_t *cr, gdouble cx, gdouble cy, gdouble s)
+{
+    gdouble x0 = cx - s / 2.0;
+    gdouble y0 = cy - s * 0.35;
+
+    cairo_new_sub_path(cr);
+    cairo_rectangle(cr, x0 + s * 0.18, y0 + s * 0.32, s * 0.64, s * 0.30);
+    weather_circle(cr, x0 + s * 0.30, y0 + s * 0.32, s * 0.185);
+    weather_circle(cr, x0 + s * 0.52, y0 + s * 0.22, s * 0.24);
+    weather_circle(cr, x0 + s * 0.72, y0 + s * 0.34, s * 0.17);
+    cairo_fill(cr);
+}
+
+/* One condition as a vector glyph, centred at (cx, cy) in a box of side s.
+ * Drawn, not loaded: a card needs the glyph at whatever size its layout
+ * leaves, and a scaled pixbuf is exactly what this tablet cannot afford. */
+static void draw_weather_glyph(cairo_t *cr, WeatherGlyph glyph, gdouble cx,
+                               gdouble cy, gdouble s, guint color,
+                               gdouble alpha)
+{
+    gdouble sun_r = s * 0.16;
+
+    set_source_color(cr, color, alpha);
+    switch (glyph) {
+    case WEATHER_SUN:
+        weather_circle(cr, cx, cy, sun_r);
+        cairo_fill(cr);
+        for (gint i = 0; i < 8; i++) {
+            gdouble angle = i * PANEL_PI / 4.0;
+            gdouble dx = cos(angle);
+            gdouble dy = sin(angle);
+            weather_line(cr, cx + dx * sun_r * 1.45, cy + dy * sun_r * 1.45,
+                         cx + dx * sun_r * 2.0, cy + dy * sun_r * 2.0,
+                         MAX(1.5, s * 0.035));
+        }
+        break;
+    case WEATHER_MOON:
+        cairo_set_fill_rule(cr, CAIRO_FILL_RULE_EVEN_ODD);
+        cairo_new_sub_path(cr);
+        cairo_arc(cr, cx, cy, s * 0.22, 0.0, 2.0 * PANEL_PI);
+        cairo_new_sub_path(cr);
+        cairo_arc(cr, cx + s * 0.10, cy - s * 0.06, s * 0.19, 0.0,
+                  2.0 * PANEL_PI);
+        cairo_fill(cr);
+        cairo_set_fill_rule(cr, CAIRO_FILL_RULE_WINDING);
+        break;
+    case WEATHER_PARTLY:
+        weather_circle(cr, cx - s * 0.14, cy - s * 0.14, sun_r);
+        cairo_fill(cr);
+        weather_cloud(cr, cx + s * 0.08, cy + s * 0.10, s * 0.72);
+        break;
+    case WEATHER_CLOUD:
+        weather_cloud(cr, cx, cy, s);
+        break;
+    case WEATHER_FOG:
+        weather_cloud(cr, cx, cy - s * 0.10, s * 0.72);
+        for (gint i = 0; i < 3; i++) {
+            gdouble y = cy + s * (0.12 + i * 0.11);
+            weather_line(cr, cx - s * 0.30, y, cx + s * 0.30, y,
+                         MAX(1.5, s * 0.035));
+        }
+        break;
+    case WEATHER_RAIN:
+    case WEATHER_POUR: {
+        gint drops = glyph == WEATHER_RAIN ? 3 : 5;
+        weather_cloud(cr, cx, cy - s * 0.12, s * 0.72);
+        for (gint i = 0; i < drops; i++) {
+            gdouble x = cx - s * 0.26 + i * (s * 0.52 / (drops - 1));
+            weather_line(cr, x + s * 0.04, cy + s * 0.12, x - s * 0.04,
+                         cy + s * 0.30, MAX(1.5, s * 0.04));
+        }
+        break;
+    }
+    case WEATHER_STORM:
+        weather_cloud(cr, cx, cy - s * 0.12, s * 0.72);
+        cairo_new_sub_path(cr);
+        cairo_move_to(cr, cx + s * 0.06, cy - s * 0.02);
+        cairo_line_to(cr, cx - s * 0.08, cy + s * 0.20);
+        cairo_line_to(cr, cx + s * 0.00, cy + s * 0.20);
+        cairo_line_to(cr, cx - s * 0.06, cy + s * 0.36);
+        cairo_line_to(cr, cx + s * 0.12, cy + s * 0.10);
+        cairo_line_to(cr, cx + s * 0.03, cy + s * 0.10);
+        cairo_close_path(cr);
+        cairo_fill(cr);
+        break;
+    case WEATHER_SNOW:
+    case WEATHER_SLEET:
+    case WEATHER_HAIL: {
+        gint flakes = glyph == WEATHER_SNOW ? 3 : 4;
+        weather_cloud(cr, cx, cy - s * 0.12, s * 0.72);
+        for (gint i = 0; i < flakes; i++) {
+            gdouble x = cx - s * 0.22 + i * (s * 0.44 / (flakes - 1));
+            gdouble y = cy + s * (0.16 + (i % 2) * 0.09);
+            if (glyph == WEATHER_HAIL) {
+                weather_circle(cr, x, y, MAX(1.2, s * 0.028));
+                cairo_fill(cr);
+            } else {
+                gdouble r = MAX(1.2, s * 0.045);
+                weather_line(cr, x - r, y, x + r, y, MAX(1.2, s * 0.02));
+                weather_line(cr, x, y - r, x, y + r, MAX(1.2, s * 0.02));
+                if (glyph == WEATHER_SLEET)
+                    weather_line(cr, x + s * 0.03, y + s * 0.10,
+                                 x - s * 0.01, y + s * 0.20,
+                                 MAX(1.2, s * 0.02));
+            }
+        }
+        break;
+    }
+    case WEATHER_WIND:
+        weather_cloud(cr, cx - s * 0.05, cy - s * 0.16, s * 0.60);
+        weather_line(cr, cx - s * 0.34, cy + s * 0.08, cx + s * 0.30,
+                     cy + s * 0.08, MAX(1.5, s * 0.04));
+        weather_line(cr, cx - s * 0.34, cy + s * 0.22, cx + s * 0.16,
+                     cy + s * 0.22, MAX(1.5, s * 0.04));
+        break;
+    }
+}
+
 /* The ADJUST hit region: the top-right corner, the same size whatever the
  * card is drawn like. See PANEL_ROOM_ADJUST_HEIGHT above for why the drawing
  * changes with the size and the target does not. */
@@ -2126,34 +2322,6 @@ static gchar *card_reading(const PanelRoomCard *card)
         return g_strdup(card->active ? "OPEN" : "CLOSED");
     }
 
-    /* A weather block says what the sky is doing and how warm it is. It is
-     * a reading rather than a control: ON and OFF would be the wrong words
-     * here, and so would an empty line while Home Assistant has answered. */
-    if (g_strcmp0(card->entity->domain, "weather") == 0) {
-        gboolean has_temp = !isnan(card->weather_temperature);
-        gboolean has_humidity = card->weather_humidity >= 0;
-        gchar *condition = humanize_weather_condition(card->weather_condition);
-        gchar *reading = NULL;
-
-        if (has_temp && condition != NULL) {
-            gchar *temp = format_temperature(card->weather_temperature);
-            reading = g_strdup_printf("%s %s", temp, condition);
-            g_free(temp);
-        } else if (has_temp)
-            reading = format_temperature(card->weather_temperature);
-        else if (condition != NULL)
-            reading = g_strdup(condition);
-        else if (has_humidity)
-            reading = g_strdup_printf("%d%%", card->weather_humidity);
-        if (has_humidity && reading != NULL && (has_temp || condition != NULL)) {
-            gchar *with_humidity = g_strdup_printf("%s · %d%%", reading, card->weather_humidity);
-            g_free(reading);
-            reading = with_humidity;
-        }
-        g_free(condition);
-        return reading;
-    }
-
     if (!card->entity->target_temperature)
         return NULL;
 
@@ -2185,6 +2353,329 @@ static gchar *card_reading(const PanelRoomCard *card)
     return NULL;
 }
 
+/* The day-by-day chart on a weather block: weekday columns with the high
+ * above a high/low curve and the low below it, and precipitation bars where
+ * any was reported. Returns the height drawn, or 0 when the card has no
+ * room for even the compact columns of day, high and low alone. */
+static gdouble draw_weather_chart(cairo_t *cr, PangoLayout *layout,
+                                  const PanelRoomCard *card, gdouble x,
+                                  gdouble y, gdouble width, gdouble height)
+{
+    guint cols;
+    gdouble col_w;
+    gdouble tmax;
+    gdouble tmin;
+    gboolean precipitating = FALSE;
+    gboolean full;
+    /* Every row answers to the card: a wall-sized block gets wall-sized
+     * type, a two-cell one keeps the small type it always had. */
+    gdouble cf;
+    gint day_size;
+    gint high_size;
+    gint low_size;
+    gint precip_size;
+    gdouble day_h;
+    gdouble glyph_h;
+    gdouble high_h;
+    gdouble low_h;
+    gdouble value_h;
+    gdouble bar_max;
+    gdouble precip_h;
+    gdouble stroke;
+    gdouble dot;
+    gdouble top;
+    guint i;
+
+    if (card->forecast_count == 0 || width < 80.0)
+        return 0.0;
+    cols = (guint)(width / 64.0);
+    if (cols < 1)
+        return 0.0;
+    cols = MIN(cols, card->forecast_count);
+    cols = MIN(cols, (guint)PANEL_WEATHER_FORECAST_MAX);
+    col_w = width / (gdouble)cols;
+
+    cf = CLAMP(MIN(col_w / 5.0, height / 8.0), 8.0, 26.0);
+    day_size = (gint)cf;
+    high_size = (gint)cf + 1;
+    low_size = MAX(8, (gint)cf - 1);
+    precip_size = MAX(8, (gint)cf - 3);
+    day_h = cf * 1.35;
+    glyph_h = cf * 1.8;
+    high_h = cf * 1.55;
+    low_h = cf * 1.35;
+    value_h = cf * 1.1;
+    bar_max = cf * 1.1;
+    precip_h = value_h + bar_max + 6.0;
+    stroke = MAX(2.0, cf * 0.22);
+    dot = MAX(2.0, cf * 0.22);
+
+    tmax = card->forecast[0].high;
+    tmin = card->forecast[0].has_low ? card->forecast[0].low
+                                     : card->forecast[0].high;
+    for (i = 1; i < cols; i++) {
+        gdouble low = card->forecast[i].has_low ? card->forecast[i].low
+                                                : card->forecast[i].high;
+        tmax = MAX(tmax, card->forecast[i].high);
+        tmin = MIN(tmin, low);
+        precipitating = precipitating || card->forecast[i].has_precipitation;
+    }
+    precipitating =
+        precipitating || card->forecast[0].has_precipitation;
+
+    /* Curves and precipitation when they fit; compact day/high/low columns
+     * when only they do. */
+    full = height >= day_h + glyph_h + high_h + low_h + 4.0 + cf * 2.7 +
+           (precipitating ? precip_h : 0.0);
+    if (!full && height < day_h + high_h + low_h + 4.0)
+        return 0.0;
+
+    top = y;
+    for (i = 0; i < cols; i++) {
+        card_text(cr, layout, card->forecast[i].day, day_size, TRUE,
+                  0xa9c3e0U, 1.0, x + col_w * i, top, col_w);
+    }
+    top += day_h;
+
+    if (full) {
+        WeatherGlyph glyph;
+
+        for (i = 0; i < cols; i++) {
+            gchar *label = NULL;
+
+            weather_condition_info(card->forecast[i].condition, &label,
+                                   &glyph);
+            g_free(label);
+            draw_weather_glyph(cr, glyph, x + col_w * i + col_w / 2.0,
+                               top + glyph_h / 2.0, glyph_h * 0.95,
+                               0xd6e9faU, 1.0);
+        }
+        top += glyph_h;
+    }
+
+    for (i = 0; i < cols; i++) {
+        gchar *high = format_temperature(card->forecast[i].high);
+        gdouble high_here =
+            card_text_height(layout, high, high_size, TRUE, col_w);
+
+        card_text(cr, layout, high, high_size, TRUE, 0xf5a83dU, 1.0,
+                  x + col_w * i, top + (high_h - high_here) / 2.0, col_w);
+        g_free(high);
+    }
+    top += high_h;
+
+    if (full) {
+        gdouble zone = height - (top - y) - low_h -
+                       (precipitating ? precip_h : 0.0);
+        gdouble span = tmax - tmin;
+
+        if (span < 0.5)
+            span = 0.5;
+        cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+        cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
+        for (gint pass = 0; pass < 2; pass++) {
+            gboolean high_line = pass == 0;
+
+            set_source_color(cr, high_line ? 0xf5a83dU : 0x7fb2f0U, 1.0);
+            cairo_set_line_width(cr, stroke);
+            for (i = 0; i < cols; i++) {
+                gdouble t = high_line ? card->forecast[i].high
+                                      : (card->forecast[i].has_low
+                                             ? card->forecast[i].low
+                                             : card->forecast[i].high);
+                gdouble cx = x + col_w * i + col_w / 2.0;
+                gdouble cy_dot = top + stroke * 2.0 +
+                                 (1.0 - (t - tmin) / span) *
+                                     (zone - stroke * 4.0);
+
+                if (i == 0)
+                    cairo_move_to(cr, cx, cy_dot);
+                else
+                    cairo_line_to(cr, cx, cy_dot);
+            }
+            cairo_stroke(cr);
+            for (i = 0; i < cols; i++) {
+                gdouble t = high_line ? card->forecast[i].high
+                                      : (card->forecast[i].has_low
+                                             ? card->forecast[i].low
+                                             : card->forecast[i].high);
+                gdouble cx = x + col_w * i + col_w / 2.0;
+                gdouble cy_dot = top + stroke * 2.0 +
+                                 (1.0 - (t - tmin) / span) *
+                                     (zone - stroke * 4.0);
+
+                cairo_new_sub_path(cr);
+                cairo_arc(cr, cx, cy_dot, dot, 0.0, 2.0 * PANEL_PI);
+                cairo_fill(cr);
+            }
+        }
+        top += zone;
+        if (precipitating) {
+            gdouble pmax = 0.0;
+
+            for (i = 0; i < cols; i++) {
+                if (card->forecast[i].has_precipitation)
+                    pmax = MAX(pmax, card->forecast[i].precipitation);
+            }
+            if (pmax < 0.1)
+                pmax = 0.1;
+            for (i = 0; i < cols; i++) {
+                if (!card->forecast[i].has_precipitation)
+                    continue;
+                {
+                    gdouble bar = card->forecast[i].precipitation / pmax *
+                                  bar_max;
+                    gdouble cx = x + col_w * i + col_w / 2.0;
+                    gchar *value = g_strdup_printf(
+                        "%.1f mm", card->forecast[i].precipitation);
+
+                    card_text(cr, layout, value, precip_size, FALSE,
+                              0x8fc3e8U, 1.0, x + col_w * i, top, col_w);
+                    g_free(value);
+                    set_source_color(cr, 0x7fc4e8U, 0.75);
+                    cairo_rectangle(cr, cx - col_w * 0.16, top + value_h,
+                                    col_w * 0.32, bar);
+                    cairo_fill(cr);
+                }
+            }
+            top += precip_h;
+        }
+    }
+
+    for (i = 0; i < cols; i++) {
+        if (card->forecast[i].has_low) {
+            gchar *low = format_temperature(card->forecast[i].low);
+
+            card_text(cr, layout, low, low_size, FALSE, 0x8fb8e8U, 1.0,
+                      x + col_w * i, top, col_w);
+            g_free(low);
+        } else {
+            card_text(cr, layout, "–", low_size, FALSE, 0x8fb8e8U, 1.0,
+                      x + col_w * i, top, col_w);
+        }
+    }
+    top += low_h;
+    return top - y;
+}
+
+/* A weather block draws itself rather than borrowing the button's lines,
+ * top down: the current conditions first — glyph, hero temperature and the
+ * condition with the humidity — and the day-by-day chart beneath them. The
+ * name below is the caller's; everything here must stay above
+ * *content_bottom. */
+static void draw_weather_body(cairo_t *cr, PangoLayout *layout,
+                              const PanelRoomCard *card, gdouble x, gdouble y,
+                              gdouble pad, gdouble width,
+                              gdouble *content_bottom, gint state_size)
+{
+    gboolean has_temp = !isnan(card->weather_temperature);
+    gboolean has_humidity = card->weather_humidity >= 0;
+    gchar *condition = NULL;
+    WeatherGlyph glyph = WEATHER_CLOUD;
+    gdouble top = y + pad;
+    gdouble bottom = *content_bottom;
+
+    weather_condition_info(card->weather_condition, &condition, &glyph);
+    if (condition == NULL && !has_temp && !has_humidity) {
+        card_text(cr, layout, "--", state_size, TRUE, 0xcfe3f7U, 1.0,
+                  x + pad, top, width);
+    } else {
+        gchar *hero = has_temp ? format_temperature(card->weather_temperature)
+                               : NULL;
+        gchar *line = NULL;
+        gint hero_size = CLAMP(state_size * 3, 22, 46);
+        gdouble hero_height = hero != NULL ? card_text_height(
+                                                  layout, hero, hero_size,
+                                                  TRUE, width)
+                                           : 0.0;
+
+        if (condition != NULL && has_humidity)
+            line = g_strdup_printf("%s · %d%%", condition,
+                                   card->weather_humidity);
+        else if (condition != NULL)
+            line = g_strdup(condition);
+        else
+            line = g_strdup_printf("Humidity %d%%", card->weather_humidity);
+        {
+            gdouble line_height =
+                card_text_height(layout, line, state_size, TRUE, width);
+
+            if (width >= 190.0 &&
+                top + MAX(hero_height + line_height + 8.0, 84.0) <= bottom) {
+                /* Wide enough for a row: the glyph on the left, the numbers
+                 * beside it. The hero is sized to its column, not the card:
+                 * a 46-point "21.8°" never survived 90 pixels. */
+                gdouble box = MIN(hero_height + line_height + 8.0, 96.0);
+                gdouble text_top;
+
+                hero_size = MIN(hero_size,
+                                MAX(18, (gint)((width - box) / 3.6)));
+                hero_height = hero != NULL ? card_text_height(
+                                                  layout, hero, hero_size,
+                                                  TRUE, width - box)
+                                           : 0.0;
+                box = MIN(hero_height + line_height + 8.0, 96.0);
+                text_top =
+                    top + (box - (hero_height + 4.0 + line_height)) / 2.0;
+
+                draw_weather_glyph(cr, glyph, x + pad + box / 2.0,
+                                   top + box / 2.0, box * 0.72, 0xd6e9faU,
+                                   1.0);
+                if (hero != NULL) {
+                    card_text(cr, layout, hero, hero_size, TRUE, 0xffffffU,
+                              1.0, x + pad + box, text_top,
+                              width - box);
+                    text_top += hero_height + 4.0;
+                }
+                card_text(cr, layout, line, state_size, TRUE, 0xcfe3f7U,
+                          1.0, x + pad + box, text_top, width - box);
+                top += box + 6.0;
+            } else {
+                /* Narrow: glyph, hero and condition stacked and centred.
+                 * The hero answers to the card's own width here as well. */
+                gdouble need;
+                gdouble glyph_size;
+
+                hero_size = MIN(hero_size,
+                                MAX(16, (gint)(width / 3.6)));
+                hero_height = hero != NULL ? card_text_height(
+                                                  layout, hero, hero_size,
+                                                  TRUE, width)
+                                           : 0.0;
+                need = hero_height + line_height + 8.0;
+                glyph_size = MIN(56.0, bottom - top - need - 4.0);
+
+                if (glyph_size >= 30.0) {
+                    draw_weather_glyph(cr, glyph, x + pad + width / 2.0,
+                                       top + glyph_size / 2.0, glyph_size,
+                                       0xd6e9faU, 1.0);
+                    top += glyph_size + 4.0;
+                }
+                if (hero != NULL &&
+                    top + hero_height + 4.0 <= bottom) {
+                    card_text(cr, layout, hero, hero_size, TRUE, 0xffffffU,
+                              1.0, x + pad, top, width);
+                    top += hero_height + 4.0;
+                }
+                if (top + line_height <= bottom) {
+                    card_text(cr, layout, line, state_size, TRUE, 0xcfe3f7U,
+                              1.0, x + pad, top, width);
+                    top += line_height + 6.0;
+                }
+            }
+        }
+        g_free(line);
+        g_free(hero);
+    }
+    g_free(condition);
+
+    /* The coming days beneath the current conditions, as much of them as
+     * the room between here and the name allows. */
+    if (top < bottom)
+        draw_weather_chart(cr, layout, card, x + pad, top, width,
+                           bottom - top);
+}
+
 static void draw_room_card(PanelUi *ui, cairo_t *cr, PangoLayout *layout,
                            const PanelRoomCard *card, gint index)
 {
@@ -2209,6 +2700,19 @@ static void draw_room_card(PanelUi *ui, cairo_t *cr, PangoLayout *layout,
                                : colors->card_active_end;
     guint border_active = colors->border_active;
     gdouble shadow_alpha = pressed ? 0.3 : 0.42;
+
+    /* A weather block wears its own sky rather than the off gradient: it
+     * is information, not a switch left off. The mix is pinned on so the
+     * sky and its border actually draw — the card is never "active" on its
+     * own. A colour the user chose still wins over it. */
+    if (!unassigned && !card->has_accent && card_is_weather(card)) {
+        start = 0x2e5d8fU;
+        end = 0x122540U;
+        active_start = 0x2e5d8fU;
+        active_end = 0x122540U;
+        border_active = 0x6fb3e8U;
+        mix = 1.0;
+    }
 
     /* A colour the user chose replaces the skin's own accent and nothing
      * else, so a card still reads as part of the skin it sits in. */
@@ -2280,66 +2784,67 @@ static void draw_room_card(PanelUi *ui, cairo_t *cr, PangoLayout *layout,
     guint lit = card->has_accent ? card->accent : colors->border_active;
 
     const gchar *name = unassigned ? "Unassigned" : card->entity->name;
-    gint name_size = (gint)CLAMP(height / 6.4, 11.0, 23.0);
+    /* A weather block is headed by its name: location first, then the
+     * current conditions, then the coming days. Its type grows with the
+     * card — unlike a button, a forecast block is the content, so a wall
+     * of empty sky around 13-point text is the bug, not the design. */
+    gboolean weather_headed =
+        !unassigned && height >= 108.0 && card_is_weather(card);
+    gint name_size = weather_headed
+                         ? (gint)CLAMP(MIN(height / 6.4, width / 12.0), 11.0,
+                                       30.0)
+                         : (gint)CLAMP(height / 6.4, 11.0, 23.0);
     gdouble name_height = card_text_height(layout, name, name_size, TRUE,
                                            text_width);
+    gdouble body_top = y + pad;
 
     /* Drawn from the bottom up, so that a card too small for everything
      * loses the least important thing first: the state, then the icon. The
      * name is what identifies the card and is never dropped. */
     gdouble content_bottom = bottom_edge - name_height;
-    card_text(cr, layout, name, name_size, TRUE,
-              unassigned ? 0x52657cU : 0xf1f6fdU, 1.0, x + pad,
-              content_bottom, text_width);
+    if (weather_headed) {
+        card_text(cr, layout, name, name_size, TRUE, 0xf1f6fdU, 1.0,
+                  x + pad, y + pad, text_width);
+        body_top = y + pad + name_height + 6.0;
+        content_bottom = bottom_edge;
+    } else {
+        card_text(cr, layout, name, name_size, TRUE,
+                  unassigned ? 0x52657cU : 0xf1f6fdU, 1.0, x + pad,
+                  content_bottom, text_width);
+    }
 
     if (height >= 108.0) {
-        gchar *reading = unassigned ? NULL : card_reading(card);
-        gboolean weather = !unassigned && card_is_weather(card);
-        const gchar *state = unassigned ? card->rid
-                             : reading != NULL ? reading
-                             : weather ? "--"
-                             : !card->state_known ? "--"
-                             : card->active ? "ON" : "OFF";
-        gint state_size = (gint)CLAMP(height / 11.0, 9.0, 13.0);
-        gdouble state_height = card_text_height(layout, state, state_size,
-                                                TRUE, text_width);
-        content_bottom -= state_height + 4.0;
-        card_text(cr, layout, state, state_size, TRUE,
-                  unassigned ? 0x52657cU : mix_color(0x8fa9c7U, lit, mix),
-                  1.0, x + pad, content_bottom, text_width);
-        g_free(reading);
+        /* A weather block draws its own body — hero, condition and chart —
+         * rather than the button's state line. */
+        if (weather_headed) {
+            gint state_size =
+                (gint)CLAMP(MIN(height / 11.0, width / 20.0), 9.0, 18.0);
+            gdouble body_y = body_top - pad;
 
-        /* The daily forecast, as many rows as the card has room for. Drawn
-         * bottom-up like everything else on this card, so a card that fits
-         * two rows draws two and a taller one draws more; the artwork above
-         * takes whatever is left. */
-        if (weather && card->forecast_count > 0) {
-            gdouble row_height = state_size + 5.0;
-            for (guint i = 0; i < card->forecast_count; i++) {
-                if (content_bottom - row_height < y + pad)
-                    break;
-                gchar *high = format_temperature(card->forecast[i].high);
-                gchar *row;
-                if (card->forecast[i].has_low) {
-                    gchar *low = format_temperature(card->forecast[i].low);
-                    row = g_strdup_printf("%s %s/%s", card->forecast[i].day,
-                                          high, low);
-                    g_free(low);
-                } else {
-                    row = g_strdup_printf("%s %s", card->forecast[i].day,
-                                          high);
-                }
-                g_free(high);
-                content_bottom -= row_height;
-                card_text(cr, layout, row, state_size, TRUE,
-                          mix_color(0x8fa9c7U, lit, mix),
-                          1.0, x + pad, content_bottom, text_width);
-                g_free(row);
-            }
+            draw_weather_body(cr, layout, card, x, body_y, pad, text_width,
+                              &content_bottom, state_size);
+        } else {
+            gchar *reading = unassigned ? NULL : card_reading(card);
+            const gchar *state = unassigned ? card->rid
+                                 : reading != NULL ? reading
+                                 : !card->state_known ? "--"
+                                 : card->active ? "ON" : "OFF";
+            gint state_size = (gint)CLAMP(height / 11.0, 9.0, 13.0);
+            gdouble state_height = card_text_height(layout, state,
+                                                    state_size, TRUE,
+                                                    text_width);
+
+            content_bottom -= state_height + 4.0;
+            card_text(cr, layout, state, state_size, TRUE,
+                      unassigned ? 0x52657cU : mix_color(0x8fa9c7U, lit, mix),
+                      1.0, x + pad, content_bottom, text_width);
+            g_free(reading);
         }
     }
 
-    if (!unassigned) {
+    /* Weather draws vector glyphs of its own in the body above; everything
+     * else takes its artwork from the icon table. */
+    if (!unassigned && !card_is_weather(card)) {
         const PanelIconSet *icons = icon_set(ui, card->icon);
         gdouble available = content_bottom - (y + pad);
 

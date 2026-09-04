@@ -1902,12 +1902,18 @@ script:
             bool known = entry != nullptr &&
                          media_controller_grid::entry_is_known(*entry);
             bool on = known && media_controller_grid::entry_is_on(*entry);
+            // -- A weather block wears its own sky rather than the off
+            //    grey: it is information, not a switch left off. --
+            bool weather =
+                entry != nullptr &&
+                entry->domain == media_controller_grid::DOMAIN_WEATHER;
 
             lv_obj_set_style_border_color(
                 tile,
                 !known ? lv_color_hex(0x59303c)
                        : (on ? lv_color_hex(0x00cfff)
-                             : lv_color_hex(0x505078)),
+                             : (weather ? lv_color_hex(0x3d6a99)
+                                        : lv_color_hex(0x505078))),
                 0);
 
             lv_obj_t *icon = lv_obj_get_child(tile, 0);
