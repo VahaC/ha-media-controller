@@ -167,16 +167,80 @@ std::string forecast_text(const Entry &entry, uint8_t day) {
   return text;
 }
 
+/* What the card calls each Home Assistant weather state; defined below next
+ * to card_reading. Declared here because the hero and sub lines above need
+ * it first. */
+static std::string humanize_weather_condition(const std::string &condition);
+
+/* One forecast row as a large weather card writes it, in the T560 colours:
+ * the weekday in muted blue-grey, the high in orange and the low in blue.
+ * The `#rrggbb ...#` spans need `lv_label_set_recolor` on the label that
+ * draws them; without it they read as literal text. */
+std::string forecast_text_colored(const Entry &entry, uint8_t day) {
+  if (day >= entry.fc_count || entry.fc_dow[day] < 0 || entry.fc_dow[day] > 6)
+    return std::string();
+  std::string text = "#a9c3e0 ";
+  text += WEEKDAYS[entry.fc_dow[day]];
+  text += "# #f5a83d ";
+  text += format_temperature(entry.fc_high[day]);
+  text += "#";
+  if (!std::isnan(entry.fc_low[day])) {
+    text += "/#8fb8e8 ";
+    text += format_temperature(entry.fc_low[day]);
+    text += "#";
+  }
+  return text;
+}
+
+/* The hero temperature of a large weather card, the way the T560 panel draws
+ * it: the current temperature large, on its own line. Empty until the first
+ * state answer, and "--" when the answer carried no reading at all. */
+std::string weather_hero(const Entry &entry) {
+  if (!entry_is_known(entry))
+    return std::string();
+  if (!std::isnan(entry.weather_temp))
+    return format_temperature(entry.weather_temp);
+  if (humanize_weather_condition(entry.state).empty() && std::isnan(entry.weather_humidity))
+    return "--";
+  return std::string();
+}
+
+/* The line under the hero: the condition with the humidity where one is
+ * reported, the same " / " separator card_reading uses, for the same reason:
+ * the Roboto face this firmware builds only carries the glyphs it was built
+ * with. */
+std::string weather_sub(const Entry &entry) {
+  if (!entry_is_known(entry))
+    return std::string();
+  const bool has_humidity = !std::isnan(entry.weather_humidity);
+  const std::string condition = humanize_weather_condition(entry.state);
+  if (!condition.empty() && has_humidity) {
+    return condition + " / " +
+           std::to_string(static_cast<int>(entry.weather_humidity + 0.5f)) + "%";
+  }
+  if (!condition.empty())
+    return condition;
+  if (has_humidity)
+    return std::to_string(static_cast<int>(entry.weather_humidity + 0.5f)) + "%";
+  return std::string();
+}
+
 bool entry_is_known(const Entry &entry) {
   return !entry.state.empty() && entry.state != "unavailable" && entry.state != "unknown";
+}
+
+bool entry_is_reading(const Entry &entry) {
+  /* A weather block and a sensor block are readings rather than controls:
+   * a tap on them acts on nothing, exactly like the T560 panel. */
+  return entry.domain == DOMAIN_WEATHER || entry.domain == DOMAIN_SENSOR;
 }
 
 bool entry_is_on(const Entry &entry) {
   if (!entry_is_known(entry))
     return false;
-  /* A weather block and a sensor block are readings rather than controls:
-   * they are never on, so they never draw the active border a button does. */
-  if (entry.domain == DOMAIN_WEATHER || entry.domain == DOMAIN_SENSOR)
+  /* A reading is never on, so it never draws the active border a button
+   * does. */
+  if (entry_is_reading(entry))
     return false;
   /* A blind is on when it is not shut: Home Assistant reports `open`,
    * `closed`, `opening` and `closing`. One that is opening is on its way to

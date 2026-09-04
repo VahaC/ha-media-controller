@@ -631,11 +631,6 @@ script:
   # rather than a native API call, and the entity comes from flash rather than
   # from a substitution.
 
-  # -- Every action a widget performs on Home Assistant goes through here,
-  # -- so a refused call cannot vanish silently the way it used to: the
-  # -- answer is logged, once per outcome, at debug for success and warning
-  # -- for anything else. An http_request on ESP-IDF answers synchronously,
-  # -- so the script parameters below are still alive when it does. --
   - id: ha_action
     mode: parallel
     max_runs: 6
@@ -657,27 +652,7 @@ script:
                   Authorization: !lambda return id(auth_header).c_str();
                   Content-Type: "application/json"
                 body: !lambda return payload;
-                capture_response: true
-                # -- A service answer is `[]`: two bytes, and this is the
-                # -- ceiling with room to spare. --
-                max_response_buffer_size: 512
-                on_response:
-                  then:
-                    - lambda: |-
-                        if (response->status_code == 200) {
-                          ESP_LOGD("action", "%s.%s ok",
-                                   domain.c_str(), service.c_str());
-                        } else {
-                          ESP_LOGW("action", "%s.%s HTTP %d: %s",
-                                   domain.c_str(), service.c_str(),
-                                   response->status_code, payload.c_str());
-                        }
-                on_error:
-                  then:
-                    - lambda: |-
-                        ESP_LOGW("action", "%s.%s request failed: %s",
-                                 domain.c_str(), service.c_str(),
-                                 payload.c_str());
+                capture_response: false
 
   - id: cmd_prev
     mode: parallel
@@ -813,7 +788,6 @@ script:
       entity: string
     then:
       - lambda: |-
-          ESP_LOGD("action", "toggle %s", entity.c_str());
           if (entity.find('.') == std::string::npos) return;
           id(ha_action)->execute(
               std::string("homeassistant"), std::string("toggle"),
@@ -1632,9 +1606,13 @@ script:
             //    panel. A card whose element has not arrived yet keeps the
             //    default and is corrected by the rebuild the registry poll
             //    triggers. --
+            bool is_reading =
+                entry != nullptr &&
+                media_controller_grid::entry_is_reading(*entry);
             bool actionable =
-                entry == nullptr || entry->togglable || entry->dimmable ||
-                entry->settable_temp;
+                !is_reading &&
+                (entry == nullptr || entry->togglable || entry->dimmable ||
+                 entry->settable_temp);
             if (actionable) {
               lv_obj_add_flag(tile, LV_OBJ_FLAG_CLICKABLE);
             }
@@ -1645,29 +1623,50 @@ script:
             // -- The palette of the room page, which apply_theme deliberately
             //    does not touch: the four fixed buttons are not themed
             //    either, and a card that repainted itself would be a second
-            //    owner for a colour that already has one. --
+            //    owner for a colour that already has one. A weather block
+            //    wears its own sky rather than the off grey, the way the
+            //    T560 panel draws it: it is information, not a switch left
+            //    off. --
+            bool is_weather =
+                entry != nullptr &&
+                entry->domain == media_controller_grid::DOMAIN_WEATHER;
             lv_obj_set_style_pad_all(tile, 0, 0);
             lv_obj_set_style_radius(tile, card.w() >= 2 ? 18 : 12, 0);
-            lv_obj_set_style_bg_color(tile, lv_color_hex(0x303050), 0);
-            lv_obj_set_style_bg_grad_color(tile, lv_color_hex(0x11111f), 0);
+            lv_obj_set_style_bg_color(tile,
+                                      is_weather ? lv_color_hex(0x2e5d8f)
+                                                 : lv_color_hex(0x303050),
+                                      0);
+            lv_obj_set_style_bg_grad_color(tile,
+                                           is_weather ? lv_color_hex(0x122540)
+                                                      : lv_color_hex(0x11111f),
+                                           0);
             lv_obj_set_style_bg_grad_dir(tile, LV_GRAD_DIR_VER, 0);
             lv_obj_set_style_bg_opa(tile, LV_OPA_COVER, 0);
             lv_obj_set_style_border_width(tile, 2, 0);
-            lv_obj_set_style_border_color(tile, lv_color_hex(0x505078), 0);
-            lv_obj_set_style_bg_color(tile, lv_color_hex(0x151526),
-                                      LV_STATE_PRESSED);
-            lv_obj_set_style_bg_grad_color(tile, lv_color_hex(0x272742),
-                                           LV_STATE_PRESSED);
-            lv_obj_set_style_border_color(tile, lv_color_hex(0x00cfff),
-                                          LV_STATE_PRESSED);
+            lv_obj_set_style_border_color(tile,
+                                          is_weather ? lv_color_hex(0x6fb3e8)
+                                                     : lv_color_hex(0x505078),
+                                          0);
+            // -- A pressed face only where a press acts: a reading never
+            //    shows one, because a tap on it acts on nothing. --
+            if (actionable) {
+              lv_obj_set_style_bg_color(tile, lv_color_hex(0x151526),
+                                        LV_STATE_PRESSED);
+              lv_obj_set_style_bg_grad_color(tile, lv_color_hex(0x272742),
+                                             LV_STATE_PRESSED);
+              lv_obj_set_style_border_color(tile, lv_color_hex(0x00cfff),
+                                            LV_STATE_PRESSED);
+            }
 
             // -- The artwork. A stored icon wins; without one the domain
             //    decides, which is what makes a card useful before anybody
             //    has opened the editor. A switch borrows the fan and a
             //    thermostat the air conditioner, the way the T560 panel
-            //    does; a blind has its own picture. A sensor names none: it
-            //    draws its value as type rather than artwork, again the way
-            //    the T560 panel does. Never scaled at draw time: each of
+            //    does; a blind has its own picture. A sensor or a weather
+            //    block names none where it counts: the icon object below
+            //    stays hidden unless a person chose one in the editor, and
+            //    the card draws its value as type rather than artwork, again
+            //    the way the T560 panel does. Never scaled at draw time: each of
             //    these is a 40x40 asset of its own, because this build sets
             //    LV_COLOR_16_SWAP and LVGL cannot transform a swapped
             //    RGB565 source. --
@@ -1719,22 +1718,32 @@ script:
             // --
             uint8_t forecast_rows =
                 media_controller_grid::card_forecast_rows(card, entry);
+            // -- A large weather card draws the T560 headed layout: the name
+            //    on top, the hero temperature large beneath it, the condition
+            //    line under the hero and the coming days at the bottom. A
+            //    compact weather block keeps the compact layout every reading
+            //    shares. --
+            bool weather_large = is_weather && labelled && !compact;
 
             const lv_font_t *room_font = id(roboto_16)->get_lv_font();
             int line_h = lv_font_get_line_height(room_font);
             int tile_h = card.h() * 60 - 6;
+            int tile_w = card.w() * 60 - 6;
 
             lv_obj_t *icon = lv_image_create(tile);
             lv_image_set_src(icon, art->get_lv_image_dsc());
             lv_obj_remove_flag(icon, LV_OBJ_FLAG_CLICKABLE);
             // -- No icon where the value is the picture: on a compact card
             //    54 px hold the name and the value and nothing else, and on
-            //    a sensor card the value with its unit says more than a lamp
-            //    ever could — unless a person chose an icon for it in the
-            //    editor, which wins. The object stays — child 0 is the icon
-            //    on every card, and the refresh below walks children by
-            //    index. --
-            bool hide_icon = compact || (sensor_card && card.icon == 0);
+            //    a sensor or a weather card the reading says more than
+            //    artwork ever could — the T560 panel draws no icon-table
+            //    artwork on a reading either — unless a person chose an
+            //    icon for it in the editor, which wins. The object stays —
+            //    child 0 is the icon on every card, and the refresh below
+            //    walks children by index. --
+            bool hide_icon =
+                compact ||
+                ((sensor_card || is_weather) && card.icon == 0);
             if (hide_icon) {
               lv_obj_add_flag(icon, LV_OBJ_FLAG_HIDDEN);
             }
@@ -1761,10 +1770,48 @@ script:
             //    child order in media_controller_grid.h. It is created empty
             //    because the registry arriving and the state arriving are two
             //    different polls, and refresh_room_cards fills it: the
-            //    reading on a thermostat, weather, sensor or cover card, and
-            //    ON/OFF on a light or switch card. --
+            //    reading on a thermostat, sensor or cover card, and ON/OFF
+            //    on a light or switch card. A large weather card instead
+            //    carries the hero temperature in child 1 and the condition
+            //    line in child 2, the way the T560 panel stacks them. --
             lv_obj_t *reading = nullptr;
-            if (reads || compact) {
+            lv_obj_t *weather_sub = nullptr;
+            if (weather_large) {
+              const lv_font_t *hero_font =
+                  tile_w >= 174 ? id(roboto_36)->get_lv_font()
+                                : id(roboto_30)->get_lv_font();
+              int hero_line = lv_font_get_line_height(hero_font);
+              int name_bottom = 4 + line_h + 2;
+              int forecast_top = forecast_rows > 0
+                                     ? tile_h - 4 -
+                                           (46 + (forecast_rows - 1) * 20 +
+                                            line_h)
+                                     : tile_h - 4;
+              int total = hero_line + 4 + line_h;
+              int slack = forecast_top - name_bottom - total;
+              int hero_y = name_bottom + (slack > 0 ? slack / 2 : 0);
+
+              reading = lv_label_create(tile);
+              lv_label_set_long_mode(reading, LV_LABEL_LONG_DOT);
+              lv_obj_set_width(reading, tile_w - 16);
+              lv_obj_set_style_text_align(reading, LV_TEXT_ALIGN_CENTER, 0);
+              lv_obj_set_style_text_font(reading, hero_font, 0);
+              lv_obj_set_style_text_color(reading, lv_color_hex(0xffffff), 0);
+              lv_label_set_text(reading, "");
+              lv_obj_align(reading, LV_ALIGN_TOP_MID, 0, hero_y);
+
+              weather_sub = lv_label_create(tile);
+              lv_label_set_long_mode(weather_sub, LV_LABEL_LONG_DOT);
+              lv_obj_set_width(weather_sub, tile_w - 16);
+              lv_obj_set_style_text_align(weather_sub, LV_TEXT_ALIGN_CENTER,
+                                          0);
+              lv_obj_set_style_text_font(weather_sub, room_font, 0);
+              lv_obj_set_style_text_color(weather_sub,
+                                          lv_color_hex(0xcfe3f7), 0);
+              lv_label_set_text(weather_sub, "");
+              lv_obj_align(weather_sub, LV_ALIGN_TOP_MID, 0,
+                           hero_y + hero_line + 4);
+            } else if (reads || compact) {
               reading = lv_label_create(tile);
               lv_label_set_long_mode(reading, LV_LABEL_LONG_DOT);
               lv_obj_set_width(reading, card.w() * 60 - 16);
@@ -1787,14 +1834,21 @@ script:
 
             // -- One label per forecast row, created empty: the registry
             //    arriving, the state arriving and the forecast arriving are
-            //    three different polls, and refresh_room_cards fills them. --
+            //    three different polls, and refresh_room_cards fills them.
+            //    On a weather card the rows draw in the T560 colours — the
+            //    weekday muted, the high orange, the low blue — through
+            //    recolor spans (see forecast_text_colored). --
             for (uint8_t row = 0; row < forecast_rows; row++) {
               lv_obj_t *forecast = lv_label_create(tile);
               lv_label_set_long_mode(forecast, LV_LABEL_LONG_DOT);
               lv_obj_set_width(forecast, card.w() * 60 - 16);
               lv_obj_set_style_text_align(forecast, LV_TEXT_ALIGN_CENTER, 0);
               lv_obj_set_style_text_font(forecast, id(roboto_16)->get_lv_font(), 0);
-              lv_obj_set_style_text_color(forecast, lv_color_hex(0x8f8fb4), 0);
+              lv_obj_set_style_text_color(forecast, weather_large ? lv_color_hex(0xa9c3e0)
+                                                                  : lv_color_hex(0x8f8fb4), 0);
+              if (weather_large) {
+                lv_label_set_recolor(forecast, true);
+              }
               lv_label_set_text(forecast, "");
               lv_obj_align(forecast, LV_ALIGN_BOTTOM_MID, 0,
                            -46 - (int) row * 20);
@@ -1818,6 +1872,14 @@ script:
                 //    at this size there is no second line to give. --
                 lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
                 lv_obj_align(name, LV_ALIGN_TOP_MID, 0, 4);
+              } else if (weather_large) {
+                // -- A reading is headed by its name, the way the T560 panel
+                //    draws it: the location first, then the current
+                //    conditions, then the coming days. Single line, so the
+                //    hero below never moves. --
+                lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+                lv_obj_set_style_text_color(name, lv_color_hex(0xf1f6fd), 0);
+                lv_obj_align(name, LV_ALIGN_TOP_MID, 0, 4);
               } else {
                 lv_obj_align(name, LV_ALIGN_BOTTOM_MID, 0, -6);
                 // -- A long name wraps onto a second line where the card
@@ -1831,7 +1893,7 @@ script:
                     (uint32_t) line_h;
                 if (lines != 2) {
                   lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
-                } else if (!sensor_card) {
+                } else if (!sensor_card && !weather_large) {
                   if (reading != nullptr) {
                     lv_obj_align(reading, LV_ALIGN_BOTTOM_MID, 0,
                                  -26 - line_h);
@@ -1848,11 +1910,15 @@ script:
               }
             }
 
-            // -- One callback for every card. Which card it is comes from the
-            //    index in the object's user data, and the entity behind it
-            //    from the registry, so nothing about a card is captured and
-            //    nothing goes stale when the registry moves under it. --
-            lv_obj_add_event_cb(tile, [](lv_event_t *e) {
+            // -- One callback per actionable card. Which card it is comes from
+            //    the index in the object's user data, and the entity behind
+            //    it from the registry, so nothing about a card is captured
+            //    and nothing goes stale when the registry moves under it. A
+            //    reading carries none at all: without CLICKABLE no press is
+            //    ever sent, and without a callback no tap can become a
+            //    service call even if one were. --
+            if (actionable) {
+              lv_obj_add_event_cb(tile, [](lv_event_t *e) {
               lv_obj_t *pressed =
                   (lv_obj_t *) lv_event_get_current_target(e);
               size_t index =
@@ -1945,14 +2011,12 @@ script:
                   // -- while the page was already sliding away, is not a
                   // -- tap. Neither is a tap on an element Home Assistant
                   // -- offered no `toggle` for: a thermostat that cannot be
-                  // -- turned off is a card that reads rather than acts. --
-                  ESP_LOGD("action", "tap rid=%08x tog=%d long=%d swipe=%d",
-                           (unsigned) placed[index].rid,
-                           (int) entry->togglable,
-                           (int) (bool) id(room_card_long_active),
-                           (int) (bool) id(switches_swipe_active));
+                  // -- turned off is a card that reads rather than acts. A
+                  // -- reading never toggles even if one were offered, the
+                  // -- way the T560 panel never acts on a weather block. --
                   if (!id(room_card_long_active) &&
-                      !id(switches_swipe_active) && entry->togglable) {
+                      !id(switches_swipe_active) && entry->togglable &&
+                      !media_controller_grid::entry_is_reading(*entry)) {
                     id(cmd_entity_toggle)->execute(entry->entity);
                   }
                   id(room_card_long_active) = false;
@@ -1961,6 +2025,7 @@ script:
                   break;
               }
             }, LV_EVENT_ALL, nullptr);
+            }
           }
 
           ESP_LOGD("room", "Built %u room card(s)",
@@ -1996,18 +2061,22 @@ script:
             bool on = known && media_controller_grid::entry_is_on(*entry);
             // -- A weather block and a sensor block wear their own sky
             //    rather than the off grey: they are information, not a
-            //    switch left off. --
+            //    switch left off. A weather block keeps the T560 sky border
+            //    it was built with; a sensor keeps the dimmer one. --
+            bool is_weather =
+                entry != nullptr &&
+                entry->domain == media_controller_grid::DOMAIN_WEATHER;
             bool reading =
                 entry != nullptr &&
-                (entry->domain == media_controller_grid::DOMAIN_WEATHER ||
-                 entry->domain == media_controller_grid::DOMAIN_SENSOR);
+                media_controller_grid::entry_is_reading(*entry);
 
             lv_obj_set_style_border_color(
                 tile,
                 !known ? lv_color_hex(0x59303c)
                        : (on ? lv_color_hex(0x00cfff)
-                             : (reading ? lv_color_hex(0x3d6a99)
-                                        : lv_color_hex(0x505078))),
+                             : (is_weather ? lv_color_hex(0x6fb3e8)
+                                : (reading ? lv_color_hex(0x3d6a99)
+                                           : lv_color_hex(0x505078)))),
                 0);
             // -- An active card reads at a glance: a wider accent border on
             //    top of the colour, the way the four fixed buttons glow. --
@@ -2021,11 +2090,12 @@ script:
               lv_obj_set_style_img_opa(icon, known ? LV_OPA_COVER : 90, 0);
             }
 
-            // -- The value line under the name. Child 1 on every labelled
-            //    card of a known domain and on a compact sensor or weather
-            //    card; see the child order in media_controller_grid.h: the
-            //    reading on a thermostat, weather, sensor or cover card, and
-            //    ON/OFF on a light or switch card.
+            // -- The value line. Child 1 on every labelled card of a known
+            //    domain and on a compact sensor or weather card; see the
+            //    child order in media_controller_grid.h: the reading on a
+            //    thermostat, sensor or cover card, ON/OFF on a light or
+            //    switch card, and the hero temperature on a large weather
+            //    card, with the condition line in child 2 beneath it.
             // --
             // -- The guard is "has this element ever been answered", not
             //    "is the new reading empty". Skipping an empty reading would
@@ -2033,8 +2103,33 @@ script:
             //    setpoint it used to have; skipping until the first answer
             //    is what actually stops a card being blanked before the poll
             //    has said anything about it. --
-            if (media_controller_grid::card_shows_reading(cards[i], entry) ||
-                media_controller_grid::card_shows_compact(cards[i], entry)) {
+            bool weather_large =
+                is_weather &&
+                media_controller_grid::card_is_labelled(cards[i]) &&
+                !media_controller_grid::card_shows_compact(cards[i], entry);
+            if (weather_large) {
+              lv_obj_t *hero = lv_obj_get_child(tile, 1);
+              lv_obj_t *sub = lv_obj_get_child(tile, 2);
+              if (hero != NULL && entry != nullptr &&
+                  !entry->state.empty()) {
+                std::string hero_text =
+                    media_controller_grid::weather_hero(*entry);
+                // -- Written unconditionally, the way the reading is: an
+                //    empty string keeps the hero blank until the state poll
+                //    answers, and overwrites a stale one the moment it
+                //    does. --
+                lv_label_set_text(hero, hero_text.c_str());
+              }
+              if (sub != NULL && entry != nullptr &&
+                  !entry->state.empty()) {
+                lv_label_set_text(
+                    sub,
+                    media_controller_grid::weather_sub(*entry).c_str());
+              }
+            } else if (media_controller_grid::card_shows_reading(cards[i],
+                                                                  entry) ||
+                       media_controller_grid::card_shows_compact(cards[i],
+                                                                 entry)) {
               lv_obj_t *reading = lv_obj_get_child(tile, 1);
               if (reading != NULL && !entry->state.empty()) {
                 lv_label_set_text(
@@ -2056,20 +2151,22 @@ script:
               }
             }
 
-            // -- The coming days on a large weather card, children 2 and up;
-            //    see the child order in media_controller_grid.h. Written
-            //    unconditionally, the way the reading is: an empty string
-            //    keeps a row blank until its forecast poll answers, and
-            //    overwrites a stale one the moment it does. --
+            // -- The coming days on a large weather card, children 3 and up
+            //    (child 1 is the hero, child 2 the condition); see the child
+            //    order in media_controller_grid.h. Written unconditionally,
+            //    the way the reading is: an empty string keeps a row blank
+            //    until its forecast poll answers, and overwrites a stale one
+            //    the moment it does. --
             uint8_t forecast_rows =
                 media_controller_grid::card_forecast_rows(cards[i], entry);
             for (uint8_t row = 0; row < forecast_rows; row++) {
-              lv_obj_t *forecast = lv_obj_get_child(tile, 2 + (int32_t) row);
+              lv_obj_t *forecast = lv_obj_get_child(tile, 3 + (int32_t) row);
               if (forecast == NULL)
                 break;
               std::string text;
               if (entry != nullptr && !entry->state.empty())
-                text = media_controller_grid::forecast_text(*entry, row);
+                text = media_controller_grid::forecast_text_colored(*entry,
+                                                                     row);
               lv_label_set_text(forecast, text.c_str());
             }
           }

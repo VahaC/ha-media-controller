@@ -219,14 +219,24 @@ struct Entry {
  * the second walks the children by index, so the rule lives here once
  * instead of being written down twice:
  *
- *   child 0     the icon, on every card (hidden on a compact card and on a
- *               sensor card, where the value is what the card is for);
+ *   child 0     the icon, on every card (hidden on a compact card, on a
+ *               sensor card, and on a weather card, where the value is what
+ *               the card is for — unless a person chose an icon for it in
+ *               the editor, which wins);
  *   child 1     the value, on every labelled card but an unknown one: the
- *               reading on a thermostat, weather, sensor or cover card, and
- *               ON/OFF on a light or switch card;
- *   children 2.. the daily forecast rows, on a large weather card only;
+ *               reading on a thermostat, sensor or cover card, and ON/OFF
+ *               on a light or switch card. On a large weather card it is the
+ *               hero temperature instead (see weather_hero);
+ *   child 2     on a large weather card, the condition with the humidity
+ *               (see weather_sub); on any other labelled card, the first of
+ *               the children below — which, weather aside, is the name;
+ *   children 3.. the daily forecast rows, on a large weather card only
+ *               (children 2.. on every other card shape, where they never
+ *               exist and the name follows the value directly);
  *   last child  the name, on any labelled card and on a compact card
- *               that has room for it beside the value.
+ *               that has room for it beside the value. On a large weather
+ *               card it heads the card from the top; on every other card it
+ *               sits at the bottom.
  */
 bool card_is_labelled(const Card &card);
 bool card_shows_reading(const Card &card, const Entry *entry);
@@ -256,9 +266,21 @@ uint8_t card_forecast_rows(const Card &card, const Entry *entry);
  * as on, and only `closed` reads as off. */
 bool entry_is_known(const Entry &entry);
 bool entry_is_on(const Entry &entry);
+/* Whether this element is a reading rather than a control: a weather block
+ * or a sensor block. A tap on one acts on nothing, exactly like the T560
+ * panel — it never shows a pressed state and never calls a service. */
+bool entry_is_reading(const Entry &entry);
 /* One forecast row as a card writes it ("Sat 22°/14°", or the high alone
  * where no low was reported). Empty when the card holds no such day. */
 std::string forecast_text(const Entry &entry, uint8_t day);
+/* The same row in the T560 colours (weekday muted, high orange, low blue),
+ * as `#rrggbb ...#` spans for a label with recolor enabled. */
+std::string forecast_text_colored(const Entry &entry, uint8_t day);
+/* The hero temperature and the condition line of a large weather card, the
+ * way the T560 panel draws them: the temperature large on its own line, the
+ * condition with the humidity beneath it. */
+std::string weather_hero(const Entry &entry);
+std::string weather_sub(const Entry &entry);
 /* The line such a card draws under its name: ON/OFF on a light or a
  * switch, because "on" is the whole of what the person came to see there;
  * the temperature the room is at and, while the thermostat is running, the

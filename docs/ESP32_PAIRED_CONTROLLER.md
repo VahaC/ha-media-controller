@@ -367,7 +367,7 @@ reports the outcome on `GET /api/entities`.
 | `light` | toggle | sweeps brightness | icon and a tap |
 | `switch` | toggle | — | icon and a tap |
 | `climate` | toggle | sweeps the setpoint | icon and a tap |
-| `weather` | — (a reading) | — | icon |
+| `weather` | — (a reading, never a button) | — | value, name where it fits |
 | `sensor` | — (a reading) | — | value, name where it fits |
 
 A `cover` element is drawn as a card with no action, because no cover card is
@@ -379,8 +379,12 @@ make the firmware contract-incompatible. See **Registry entries** in
 
 A card two cells square or larger carries its name; a thermostat carries a
 reading above the name as well — the temperature the room is at and the
-setpoint, as `21.5° / 22°`. A weather block carries the condition and the
-temperature, and a sensor block its value with its unit, as `21.5 °C`. A
+setpoint, as `21.5° / 22°`. A large weather block is headed by its name, the
+way the T560 panel draws it: the hero temperature large beneath it, the
+condition with the humidity under the hero, and the coming days at the bottom
+with the high in orange and the low in blue. It wears the same sky background
+as the T560 reading. A sensor block carries its value with its unit, as
+`21.5 °C`. A
 thermostat that is **off** shows the room temperature alone: that number is
 true either way, and the setpoint it used to be heading for is not. The
 card's border already says which of the two it is.
@@ -410,6 +414,9 @@ moment it runs.
 
 A tap does nothing on an element Home Assistant offered no `toggle` for — a
 thermostat that cannot be turned off is a card that reads rather than acts.
+A reading never acts at all: a weather or a sensor card is not clickable, has
+no pressed face and carries no event callback, so a tap on it cannot become a
+service call — the same contract the T560 panel keeps.
 
 ### Where the layout lives
 
