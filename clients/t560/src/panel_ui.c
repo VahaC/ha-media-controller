@@ -270,6 +270,18 @@ typedef struct {
      * reported no position — either because it has not answered yet or
      * because this cover has none to report. */
     gint position;
+    /* A weather block. The condition is owned and NULL while unknown; the
+     * temperature is NAN and the humidity is -1 while unknown. It is a
+     * reading rather than a control: a tap on it acts on nothing. */
+    gchar *weather_condition;
+    gdouble weather_temperature;
+    gint weather_humidity;
+    /* The daily forecast, and when it was fetched. Empty until Home Assistant
+     * has answered a forecast request once; drawn only where the card is
+     * large enough for a row. */
+    PanelWeatherDay forecast[PANEL_WEATHER_FORECAST_MAX];
+    guint forecast_count;
+    gint64 forecast_at;
     /* The colour the user chose for this card, and whether they chose one. */
     guint accent;
     gboolean has_accent;
@@ -464,7 +476,8 @@ static const struct {
     {"desk-led-strip", "/com/vahac/t560/icons/desk-led-strip.png"},
     {"fan", "/com/vahac/t560/icons/fan.png"},
     {"ac", "/com/vahac/t560/icons/ac.png"},
-    {"blind", "/com/vahac/t560/icons/blind.png"}
+    {"blind", "/com/vahac/t560/icons/blind.png"},
+    {"weather", "/com/vahac/t560/icons/weather.png"}
 };
 
 static const gchar *icon_resource(const gchar *name)
@@ -492,6 +505,8 @@ static const gchar *icon_for_domain(const gchar *domain)
         return "ac";
     if (g_strcmp0(domain, "cover") == 0)
         return "blind";
+    if (g_strcmp0(domain, "weather") == 0)
+        return "weather";
     return "light-2";
 }
 
@@ -638,6 +653,44 @@ static gchar *format_temperature(gdouble value)
     if (fabs(value - round(value)) < 0.05)
         return g_strdup_printf("%.0f°", round(value));
     return g_strdup_printf("%.1f°", value);
+}
+
+/* Whether this card is a weather block rather than a control. It never
+ * toggles, never adjusts, and never shows a pressed state: a tap on it acts
+ * on nothing. */
+static gboolean card_is_weather(const PanelRoomCard *card)
+{
+    return card->entity != NULL &&
+           g_strcmp0(card->entity->domain, "weather") == 0;
+}
+
+/* A Home Assistant weather state ("sunny", "partlycloudy", "clear-night")
+ * as a card writes it ("Sunny", "Partlycloudy", "Clear night"). The payload
+ * names no vocabulary beyond the state itself, so separators become spaces
+ * and each word is capitalised; anything unknown is still drawn rather than
+ * dropped. */
+static gchar *humanize_weather_condition(const gchar *condition)
+{
+    if (condition == NULL || *condition == '\0')
+        return NULL;
+
+    GString *out = g_string_new(NULL);
+    gboolean capitalize = TRUE;
+    const gchar *p = condition;
+    while (*p != '\0') {
+        gunichar c = g_utf8_get_char(p);
+        if (c == (gunichar)'_' || c == (gunichar)'-' || c == (gunichar)' ') {
+            g_string_append_c(out, ' ');
+            capitalize = TRUE;
+        } else if (capitalize) {
+            g_string_append_unichar(out, g_unichar_toupper(c));
+            capitalize = FALSE;
+        } else {
+            g_string_append_unichar(out, c);
+        }
+        p = g_utf8_next_char(p);
+    }
+    return g_string_free(out, FALSE);
 }
 
 /* The ADJUST hit region: the top-right corner, the same size whatever the
@@ -2073,6 +2126,34 @@ static gchar *card_reading(const PanelRoomCard *card)
         return g_strdup(card->active ? "OPEN" : "CLOSED");
     }
 
+    /* A weather block says what the sky is doing and how warm it is. It is
+     * a reading rather than a control: ON and OFF would be the wrong words
+     * here, and so would an empty line while Home Assistant has answered. */
+    if (g_strcmp0(card->entity->domain, "weather") == 0) {
+        gboolean has_temp = !isnan(card->weather_temperature);
+        gboolean has_humidity = card->weather_humidity >= 0;
+        gchar *condition = humanize_weather_condition(card->weather_condition);
+        gchar *reading = NULL;
+
+        if (has_temp && condition != NULL) {
+            gchar *temp = format_temperature(card->weather_temperature);
+            reading = g_strdup_printf("%s %s", temp, condition);
+            g_free(temp);
+        } else if (has_temp)
+            reading = format_temperature(card->weather_temperature);
+        else if (condition != NULL)
+            reading = g_strdup(condition);
+        else if (has_humidity)
+            reading = g_strdup_printf("%d%%", card->weather_humidity);
+        if (has_humidity && reading != NULL && (has_temp || condition != NULL)) {
+            gchar *with_humidity = g_strdup_printf("%s · %d%%", reading, card->weather_humidity);
+            g_free(reading);
+            reading = with_humidity;
+        }
+        g_free(condition);
+        return reading;
+    }
+
     if (!card->entity->target_temperature)
         return NULL;
 
@@ -2115,8 +2196,10 @@ static void draw_room_card(PanelUi *ui, cairo_t *cr, PangoLayout *layout,
     gdouble radius = MIN(27.0, MIN(width, height) / 3.2);
     gdouble mix = card->active_mix;
     gboolean unassigned = card->entity == NULL;
+    /* A weather block is a reading rather than a button: it never shows a
+     * pressed state, because a tap on it acts on nothing. */
     gboolean pressed = index == ui->room_pressed_index &&
-                       !ui->room_pressed_adjust;
+                       !ui->room_pressed_adjust && !card_is_weather(card);
 
     guint start = pressed ? colors->card_down_start : colors->card_start;
     guint end = pressed ? colors->card_down_end : colors->card_end;
@@ -2211,8 +2294,10 @@ static void draw_room_card(PanelUi *ui, cairo_t *cr, PangoLayout *layout,
 
     if (height >= 108.0) {
         gchar *reading = unassigned ? NULL : card_reading(card);
+        gboolean weather = !unassigned && card_is_weather(card);
         const gchar *state = unassigned ? card->rid
                              : reading != NULL ? reading
+                             : weather ? "--"
                              : !card->state_known ? "--"
                              : card->active ? "ON" : "OFF";
         gint state_size = (gint)CLAMP(height / 11.0, 9.0, 13.0);
@@ -2223,6 +2308,35 @@ static void draw_room_card(PanelUi *ui, cairo_t *cr, PangoLayout *layout,
                   unassigned ? 0x52657cU : mix_color(0x8fa9c7U, lit, mix),
                   1.0, x + pad, content_bottom, text_width);
         g_free(reading);
+
+        /* The daily forecast, as many rows as the card has room for. Drawn
+         * bottom-up like everything else on this card, so a card that fits
+         * two rows draws two and a taller one draws more; the artwork above
+         * takes whatever is left. */
+        if (weather && card->forecast_count > 0) {
+            gdouble row_height = state_size + 5.0;
+            for (guint i = 0; i < card->forecast_count; i++) {
+                if (content_bottom - row_height < y + pad)
+                    break;
+                gchar *high = format_temperature(card->forecast[i].high);
+                gchar *row;
+                if (card->forecast[i].has_low) {
+                    gchar *low = format_temperature(card->forecast[i].low);
+                    row = g_strdup_printf("%s %s/%s", card->forecast[i].day,
+                                          high, low);
+                    g_free(low);
+                } else {
+                    row = g_strdup_printf("%s %s", card->forecast[i].day,
+                                          high);
+                }
+                g_free(high);
+                content_bottom -= row_height;
+                card_text(cr, layout, row, state_size, TRUE,
+                          mix_color(0x8fa9c7U, lit, mix),
+                          1.0, x + pad, content_bottom, text_width);
+                g_free(row);
+            }
+        }
     }
 
     if (!unassigned) {
@@ -2409,7 +2523,7 @@ static void start_card_animation(PanelUi *ui, PanelRoomCard *card,
 }
 
 static gboolean room_area_pressed(GtkWidget *widget, GdkEventButton *event,
-                                  gpointer user_data)
+                                   gpointer user_data)
 {
     PanelUi *ui = user_data;
     gint index = room_card_at(ui, event->x, event->y);
@@ -2421,6 +2535,12 @@ static gboolean room_area_pressed(GtkWidget *widget, GdkEventButton *event,
         const PanelRoomCard *card = g_ptr_array_index(ui->room_cards, index);
         GdkRectangle region;
 
+        /* A weather block is a reading rather than a button: a finger down
+         * on it leaves no pressed state behind. */
+        if (card_is_weather(card)) {
+            ui->room_pressed_index = -1;
+            return TRUE;
+        }
         if (card_is_adjustable(card)) {
             card_adjust_region(card, &region);
             ui->room_pressed_adjust =
@@ -2453,6 +2573,9 @@ static gboolean room_area_released(GtkWidget *widget, GdkEventButton *event,
     if (index != pressed || card->entity == NULL)
         return TRUE;
 
+    /* A weather block never acts: it is a reading, not a button. */
+    if (card_is_weather(card))
+        return TRUE;
     if (on_adjust && card_is_adjustable(card))
         open_room_sheet(ui, pressed);
     else
@@ -2466,6 +2589,7 @@ static void room_card_free(gpointer data)
 
     g_free(card->rid);
     g_free(card->icon);
+    g_free(card->weather_condition);
     g_free(card);
 }
 
@@ -2546,6 +2670,11 @@ static void room_cards_rebuild(PanelUi *ui)
         card->setpoint = NAN;
         card->ambient = NAN;
         card->position = -1;
+        card->weather_condition = NULL;
+        card->weather_temperature = NAN;
+        card->weather_humidity = -1;
+        card->forecast_count = 0;
+        card->forecast_at = 0;
         card->icon = g_strdup(
             placed->icon != NULL
                 ? placed->icon
@@ -3587,6 +3716,16 @@ void panel_ui_set_room(PanelUi *ui, guint index, const PanelRoomState *state)
         card->ambient = state->ambient;
     if (state->position >= 0)
         card->position = CLAMP(state->position, 0, 100);
+    /* A weather block keeps its own reading. An absent condition clears the
+     * last one rather than leaving a stale sky on the card. */
+    if (card_is_weather(card)) {
+        g_free(card->weather_condition);
+        card->weather_condition = state->weather_condition != NULL
+                                      ? g_strdup(state->weather_condition)
+                                      : NULL;
+        card->weather_temperature = state->weather_temperature;
+        card->weather_humidity = state->weather_humidity;
+    }
 
     if (card->active != state->active || !card->state_known) {
         card->active = state->active;
@@ -3620,6 +3759,36 @@ void panel_ui_set_room(PanelUi *ui, guint index, const PanelRoomState *state)
         }
         ui->changing_room_adjustment = FALSE;
     }
+}
+
+void panel_ui_set_room_forecast(PanelUi *ui, guint index,
+                                const PanelWeatherDay *days, guint count)
+{
+    g_return_if_fail(ui->room_cards != NULL);
+    g_return_if_fail(days != NULL || count == 0);
+    g_return_if_fail(index < ui->room_cards->len);
+
+    PanelRoomCard *card = g_ptr_array_index(ui->room_cards, index);
+
+    /* A rebuild drops the cards and with them the forecast: only a card
+     * that still names the same registry element may keep one. */
+    if (card->entity == NULL ||
+        g_strcmp0(card->entity->domain, "weather") != 0)
+        return;
+    card->forecast_count = MIN(count, (guint)PANEL_WEATHER_FORECAST_MAX);
+    for (guint i = 0; i < card->forecast_count; i++)
+        card->forecast[i] = days[i];
+    card->forecast_at = g_get_monotonic_time();
+    invalidate_card(ui, card);
+}
+
+gint64 panel_ui_room_forecast_at(PanelUi *ui, guint index)
+{
+    g_return_val_if_fail(ui->room_cards != NULL, 0);
+    g_return_val_if_fail(index < ui->room_cards->len, 0);
+
+    return ((const PanelRoomCard *)g_ptr_array_index(ui->room_cards,
+                                                     index))->forecast_at;
 }
 
 /* Two stack children answer to one page name. "player" is what navigation

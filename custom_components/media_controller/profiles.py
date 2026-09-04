@@ -72,10 +72,11 @@ SWITCH_DOMAIN = "switch"
 CLIMATE_DOMAIN = "climate"
 COVER_DOMAIN = "cover"
 
-# The domains a client can draw a card for today. Every other domain a user
-# may put in the registry — weather — is carried with an empty control list
-# until its card exists, and a client ignores an element whose domain it
-# cannot draw. So is a domain that is no longer a group at all.
+# The domains a client can draw a control for today. A weather element is
+# carried with an empty control list and drawn as a reading rather than a
+# control — see docs/CONTRACT.md, Weather blocks — so it stays out of this
+# tuple. A client ignores an element whose domain it cannot draw. So is a
+# domain that is no longer a group at all.
 # See docs/CONTRACT.md, Registry entries.
 CARD_DOMAINS = (LIGHT_DOMAIN, SWITCH_DOMAIN, CLIMATE_DOMAIN, COVER_DOMAIN)
 
@@ -242,6 +243,8 @@ T560 = ClientProfile(
         CONTROL_BRIGHTNESS,
         CONTROL_COLOR_TEMP,
         CONTROL_TARGET_TEMPERATURE,
+        CONTROL_POSITION,
+        CONTROL_STOP,
     ),
 )
 
@@ -321,10 +324,11 @@ def normalize_capabilities(
     Clients render from the result and never parse `supported_color_modes`
     themselves; the ESP32 could not, and the panel must not duplicate the rule.
 
-    A domain no client can draw a card for yet returns no controls at all,
-    rather than a toggle nothing would render. The element still travels in
-    the payload carrying its domain, so a client that learns the card later
-    finds it already there.
+    A domain no client can draw a control for yet returns no controls at
+    all, rather than a toggle nothing would render. The element still
+    travels in the payload carrying its domain, so a client that learns the
+    card later finds it already there. Weather keeps the empty list even
+    with its block: the block is a reading, not a control.
     """
     if domain == SWITCH_DOMAIN:
         return {CAP_CONTROLS: (CONTROL_TOGGLE,)}

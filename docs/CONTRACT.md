@@ -8,7 +8,7 @@ Treat this file as the change-control surface: a change to anything below
 affects released devices in the field. A change to code that is not described
 here affects one component only.
 
-Contract version: **8** (matches integration `1.2.x`).
+Contract version: **7** (matches integration `1.4.x`).
 
 Every version so far has been purely additive. Version 2 added the config
 sensor and let proxy lights forward colour temperature. Version 3 added two
@@ -93,6 +93,21 @@ The T560 panel draws the card as of this version. The paired ESP32 does not
 yet, and by the rule below it is entitled not to: it ignores an element whose
 domain it cannot draw, exactly as every panel did with `climate` between
 version 6 and version 7.
+
+The last card in that series is the **weather block**. A `weather` element
+still carries an empty `controls` list, because there is nothing to act on:
+no new control name is introduced and no field is added to the payload,
+because the condition is the entity state itself and the temperature and
+humidity arrive as ordinary attributes of the entity a client already polls.
+What changes is only what a client draws: a block with the forecast — the
+condition and the temperature, with the humidity where it is reported —
+instead of a button that answers nothing. A tap on it acts on nothing, it
+never shows a pressed state, and it never opens the adjustment sheet.
+
+Both panels draw the block: the T560 panel and the paired ESP32 firmware
+alike. A client that cannot draw a domain still ignores that element, as the
+rule below allows — it is just that no maintained client is such a client
+for weather any more.
 
 That is deliberate, and the rule that makes it possible is already written
 below: **a client that does not know a value in `controls` ignores it, and a
@@ -397,8 +412,8 @@ client profile allows, in any of the groups below, and removes them again.
   from the target's capabilities. A client renders from it and never parses
   `supported_color_modes` or `supported_features` itself. As of this version
   `light`, `switch`, `climate` and `cover` produce controls; `weather` is
-  carried with an empty list, because the card that would draw it is not
-  written yet, as is any domain that is no longer a group.
+  carried with an empty list and drawn as a reading rather than a control —
+  see **Weather blocks** below — as is any domain that is no longer a group.
 - `min_kelvin` and `max_kelvin` appear only when `controls` contains
   `color_temp`, as in `slots`.
 - `min_temp`, `max_temp` and `target_temp_step` appear only when `controls`
@@ -424,7 +439,7 @@ The groups, in payload order:
 | Switches | `switch` | yes |
 | Climate | `climate` | yes, since version 7 |
 | Covers | `cover` | yes, since version 8 |
-| Weather | `weather` | no |
+| Weather | `weather` | yes, as a reading |
 
 A "no" in that column is not a promise that the element is useless: it still
 travels, still carries its `rid`, and is still stored in the layout a person
@@ -549,6 +564,46 @@ A card whose element gives no `position` still draws and still toggles, and a
 card that gives none of the three is drawn as a reading rather than a
 control — the honest thing to show for a cover this integration can offer no
 action on.
+
+### Weather blocks
+
+A `weather` element carries an empty `controls` list, because there is
+nothing to act on: no new control name is introduced and no field is added
+to the payload.
+
+```json
+{
+  "rid": "9d2e7a41",
+  "entity": "weather.home",
+  "name": "Home",
+  "domain": "weather",
+  "controls": []
+}
+```
+
+The condition is the entity state itself (`sunny`, `partlycloudy`, ...),
+and the temperature and humidity are ordinary attributes of the entity a
+client already polls. A client reads them the way it already reads a lamp's
+brightness or a room's temperature, and draws the temperature with a bare
+degree sign: the payload names no unit, because a unit is not a capability.
+
+Where the card is large enough, the block lists the coming days beneath the
+current reading — the weekday with the high and the low, one row per day,
+as many rows as fit. The days come from the `weather.get_forecasts`
+service, which each client asks itself no oftener than every half hour:
+slow-moving data needs no faster poll, and the payload carries none of it,
+so this adds no field and no version.
+
+What a client draws is its own business, and the two panels differ:
+
+| Client | Tap | Beyond a tap |
+| --- | --- | --- |
+| T560 panel | Nothing; the block is a reading, not a button | Nothing; it never opens the adjustment sheet |
+| ESP32-S3 panel | Nothing; the block is a reading, not a button | Nothing; a long press moves no value |
+| ESP32-S3 controller | — | Not a panel; it reads `slots` and is sent no `entities` |
+
+A block whose entity reports no temperature still draws and still reads:
+it says the condition alone, or the humidity alone, rather than nothing.
 
 ### What version 6 breaks
 

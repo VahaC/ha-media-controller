@@ -18,5 +18,6 @@
     <file>icons/desk-lamp.png</file>
     <file>icons/desk-led-strip.png</file>
     <file>icons/blind.png</file>
+    <file>icons/weather.png</file>
   </gresource>
 </gresources>

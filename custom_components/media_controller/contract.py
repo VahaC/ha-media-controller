@@ -24,7 +24,7 @@ from typing import Any
 # change that raises the number in that document, and never separately: a
 # client compares the two sides against each other, so a constant that has
 # drifted from the document is worse than no constant at all.
-CONTRACT_VERSION = 8
+CONTRACT_VERSION = 7
 
 # What a payload or a report that names no contract version is taken to
 # speak. Every version of the contract before this one was silent about it,

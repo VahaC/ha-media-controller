@@ -4,6 +4,7 @@
 #include "esphome/components/network/util.h"
 #include "esphome/core/log.h"
 
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -16,7 +17,7 @@ static const char *const TAG = "room_grid";
  * the T560 panel; the two builds do not carry the same set, which is exactly
  * why `GET /api/entities` reports it rather than the editor writing it down a
  * second time. */
-const char *const ICON_NAMES[] = {"light-1", "light-2", "fan", "ac"};
+const char *const ICON_NAMES[] = {"light-1", "light-2", "fan", "ac", "weather"};
 const size_t ICON_COUNT = sizeof(ICON_NAMES) / sizeof(ICON_NAMES[0]);
 
 /* The default card. Two cells square is the smallest size that still holds an
@@ -72,6 +73,8 @@ static uint8_t domain_from_name(const char *domain) {
     return DOMAIN_SWITCH;
   if (strcmp(domain, "climate") == 0)
     return DOMAIN_CLIMATE;
+  if (strcmp(domain, "weather") == 0)
+    return DOMAIN_WEATHER;
   return DOMAIN_OTHER;
 }
 
@@ -83,6 +86,8 @@ static const char *domain_to_name(uint8_t domain) {
       return "switch";
     case DOMAIN_CLIMATE:
       return "climate";
+    case DOMAIN_WEATHER:
+      return "weather";
     default:
       return "other";
   }
@@ -114,7 +119,34 @@ static float parse_number(const std::string &text) {
 bool card_is_labelled(const Card &card) { return card.w() >= 2 && card.h() >= 2; }
 
 bool card_shows_reading(const Card &card, const Entry *entry) {
-  return entry != nullptr && entry->domain == DOMAIN_CLIMATE && card_is_labelled(card);
+  return entry != nullptr &&
+         (entry->domain == DOMAIN_CLIMATE || entry->domain == DOMAIN_WEATHER) &&
+         card_is_labelled(card);
+}
+
+/* A large weather card lists the coming days under its current reading, as
+ * many rows as it has cells for: a 2x3 card fits two rows and a taller one
+ * more, up to FORECAST_DAYS. Anything smaller, or anything but weather,
+ * gets none — there is no room a row could honestly fit in. */
+uint8_t card_forecast_rows(const Card &card, const Entry *entry) {
+  if (entry == nullptr || entry->domain != DOMAIN_WEATHER || !card_is_labelled(card))
+    return 0;
+  if (card.h() < 3)
+    return 0;
+  const uint8_t rows = static_cast<uint8_t>(card.h() - 1);
+  return rows > FORECAST_DAYS ? FORECAST_DAYS : rows;
+}
+
+static const char *const WEEKDAYS[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+
+std::string forecast_text(const Entry &entry, uint8_t day) {
+  if (day >= entry.fc_count || entry.fc_dow[day] < 0 || entry.fc_dow[day] > 6)
+    return std::string();
+  std::string text = WEEKDAYS[entry.fc_dow[day]];
+  text += " " + format_temperature(entry.fc_high[day]);
+  if (!std::isnan(entry.fc_low[day]))
+    text += "/" + format_temperature(entry.fc_low[day]);
+  return text;
 }
 
 bool entry_is_known(const Entry &entry) {
@@ -124,12 +156,63 @@ bool entry_is_known(const Entry &entry) {
 bool entry_is_on(const Entry &entry) {
   if (!entry_is_known(entry))
     return false;
+  /* A weather block is a reading rather than a control: it is never on, so
+   * it never draws the active border a button does. */
+  if (entry.domain == DOMAIN_WEATHER)
+    return false;
   return entry.domain == DOMAIN_CLIMATE ? entry.state != "off" : entry.state == "on";
+}
+
+/* A Home Assistant weather state ("sunny", "partlycloudy", "clear-night")
+ * as a card writes it ("Sunny", "Partlycloudy", "Clear night"). The payload
+ * names no vocabulary beyond the state itself, so separators become spaces
+ * and each word is capitalised; anything unknown is still drawn rather than
+ * dropped. */
+static std::string humanize_weather_condition(const std::string &condition) {
+  std::string out;
+  bool capitalize = true;
+  for (char c : condition) {
+    if (c == '_' || c == '-' || c == ' ') {
+      out += ' ';
+      capitalize = true;
+    } else if (capitalize) {
+      out += static_cast<char>(toupper(static_cast<unsigned char>(c)));
+      capitalize = false;
+    } else {
+      out += c;
+    }
+  }
+  return out;
 }
 
 std::string card_reading(const Entry &entry) {
   if (!entry_is_known(entry))
     return std::string();
+
+  /* A weather block says what the sky is doing and how warm it is. It is a
+   * reading rather than a control: ON and OFF would be the wrong words
+   * here. The slash before the humidity is the same one a thermostat uses
+   * below, for the same reason: the Roboto face this firmware builds only
+   * carries the glyphs it was built with. */
+  if (entry.domain == DOMAIN_WEATHER) {
+    const bool has_temp = !std::isnan(entry.weather_temp);
+    const bool has_humidity = !std::isnan(entry.weather_humidity);
+    const std::string condition = humanize_weather_condition(entry.state);
+    std::string reading;
+    if (has_temp && !condition.empty())
+      reading = format_temperature(entry.weather_temp) + " " + condition;
+    else if (has_temp)
+      reading = format_temperature(entry.weather_temp);
+    else if (!condition.empty())
+      reading = condition;
+    else if (has_humidity)
+      reading = std::to_string(static_cast<int>(entry.weather_humidity + 0.5f)) + "%";
+    if (has_humidity && !reading.empty() && (has_temp || !condition.empty())) {
+      reading += " / " +
+                 std::to_string(static_cast<int>(entry.weather_humidity + 0.5f)) + "%";
+    }
+    return reading;
+  }
 
   /* The room first and the setpoint after it, which is the order a
    * thermostat is read in. The separator is a slash and not an arrow
@@ -314,6 +397,9 @@ bool MediaControllerGrid::ingest_entities(const std::string &attributes) {
         entry.temp_step = 0.5f;
       entry.ambient = NAN;
       entry.setpoint = NAN;
+      entry.weather_temp = NAN;
+      entry.weather_humidity = NAN;
+      entry.fc_count = 0;
       entry.pct = 50.0f;
       entry.direction = 1;
       parsed.push_back(std::move(entry));
@@ -353,6 +439,14 @@ bool MediaControllerGrid::ingest_entities(const std::string &attributes) {
       entry.state = previous->state;
       entry.ambient = previous->ambient;
       entry.setpoint = previous->setpoint;
+      entry.weather_temp = previous->weather_temp;
+      entry.weather_humidity = previous->weather_humidity;
+      entry.fc_count = previous->fc_count;
+      for (uint8_t day = 0; day < previous->fc_count && day < FORECAST_DAYS; day++) {
+        entry.fc_dow[day] = previous->fc_dow[day];
+        entry.fc_high[day] = previous->fc_high[day];
+        entry.fc_low[day] = previous->fc_low[day];
+      }
       entry.pct = previous->pct;
       entry.direction = previous->direction;
     }
@@ -621,6 +715,7 @@ void MediaControllerGrid::restore_finished(bool ok, const std::string &document,
 std::vector<size_t> MediaControllerGrid::polled_order_() const {
   std::vector<size_t> plain;
   std::vector<size_t> thermostats;
+  std::vector<size_t> weather;
 
   for (size_t i = 0; i < this->entries_.size(); i++) {
     const Entry &entry = this->entries_[i];
@@ -639,21 +734,31 @@ std::vector<size_t> MediaControllerGrid::polled_order_() const {
      * ones that render three fields instead of one. Two template loops keep
      * the *request* small — a loop over a list of entity IDs is about twenty
      * bytes an entity, and writing each entity into three function calls
-     * would be a hundred and thirty. */
-    (entry.domain == DOMAIN_CLIMATE ? thermostats : plain).push_back(i);
+     * would be a hundred and thirty. Weather blocks are a third group for
+     * the same reason: the condition plus two attributes. */
+    if (entry.domain == DOMAIN_CLIMATE)
+      thermostats.push_back(i);
+    else if (entry.domain == DOMAIN_WEATHER)
+      weather.push_back(i);
+    else
+      plain.push_back(i);
   }
   plain.insert(plain.end(), thermostats.begin(), thermostats.end());
+  plain.insert(plain.end(), weather.begin(), weather.end());
   return plain;
 }
 
 std::string MediaControllerGrid::state_request() const {
   std::string plain;
   std::string thermostats;
+  std::string weather;
   size_t count = 0;
 
   for (const size_t index : this->polled_order_()) {
     const Entry &entry = this->entries_[index];
-    std::string &list = entry.domain == DOMAIN_CLIMATE ? thermostats : plain;
+    std::string &list = entry.domain == DOMAIN_CLIMATE  ? thermostats
+                        : entry.domain == DOMAIN_WEATHER ? weather
+                                                         : plain;
     if (!list.empty())
       list += ',';
     list += '\'';
@@ -673,7 +778,9 @@ std::string MediaControllerGrid::state_request() const {
    * A thermostat renders three fields where everything else renders one:
    * the mode, the temperature the room is at, and the setpoint. They are
    * separated by `~` inside a card and by `|` between cards, and neither
-   * character occurs in a Home Assistant state or in a number. */
+   * character occurs in a Home Assistant state or in a number. A weather
+   * block renders three fields of its own: the condition, the temperature
+   * and the humidity. */
   std::string tmpl;
   if (!plain.empty())
     tmpl += "{% for e in [" + plain + "] %}{{ states(e) }}|{% endfor %}";
@@ -681,6 +788,11 @@ std::string MediaControllerGrid::state_request() const {
     tmpl += "{% for e in [" + thermostats +
             "] %}{{ states(e) }}~{{ state_attr(e,'current_temperature') }}"
             "~{{ state_attr(e,'temperature') }}|{% endfor %}";
+  }
+  if (!weather.empty()) {
+    tmpl += "{% for e in [" + weather +
+            "] %}{{ states(e) }}~{{ state_attr(e,'temperature') }}"
+            "~{{ state_attr(e,'humidity') }}|{% endfor %}";
   }
 
   JsonDocument doc;
@@ -706,25 +818,195 @@ void MediaControllerGrid::apply_states(const std::string &rendered) {
     const std::string field = rendered.substr(at, end - at);
     at = end + 1;
 
-    if (entry.domain != DOMAIN_CLIMATE) {
+    if (entry.domain != DOMAIN_CLIMATE && entry.domain != DOMAIN_WEATHER) {
       entry.state = field;
       continue;
     }
 
     const size_t first = field.find('~');
     if (first == std::string::npos) {
-      /* Not the shape a thermostat was asked for. Take it as a bare state
-       * rather than discarding it: the card still reads as on or off. */
+      /* Not the shape that was asked for. Take it as a bare state rather
+       * than discarding it: a thermostat card still reads as on or off, and
+       * a weather block still names the sky. */
       entry.state = field;
       continue;
     }
     const size_t second = field.find('~', first + 1);
     entry.state = field.substr(0, first);
-    entry.ambient = parse_number(
+    const std::string middle =
         field.substr(first + 1, second == std::string::npos ? std::string::npos
-                                                            : second - first - 1));
+                                                            : second - first - 1);
+    const std::string last =
+        second == std::string::npos ? std::string() : field.substr(second + 1);
+    if (entry.domain == DOMAIN_WEATHER) {
+      entry.weather_temp = parse_number(middle);
+      entry.weather_humidity = parse_number(last);
+      continue;
+    }
+    entry.ambient = parse_number(middle);
     if (second != std::string::npos)
-      entry.setpoint = parse_number(field.substr(second + 1));
+      entry.setpoint = parse_number(last);
+  }
+}
+
+// ------------------------------------------------------- the forecast
+
+/* Days since the civil date, Howard Hinnant's algorithm. Only the weekday
+ * is read out of it: 1970-01-01 was a Thursday, so the remainder against
+ * that anchor is the day of the week. */
+static int64_t days_from_civil(int year, unsigned month, unsigned day) {
+  year -= month <= 2 ? 1 : 0;
+  const int64_t era = (year >= 0 ? year : year - 399) / 400;
+  const unsigned yoe = static_cast<unsigned>(year - era * 400);
+  const unsigned doy = (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1;
+  const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  return era * 146097 + static_cast<int64_t>(doe) - 719468;
+}
+
+/* The weekday of an ISO "YYYY-MM-DD" date, 0 for Sunday, or -1 for
+ * anything that is not one. The forecast answers carry full timestamps;
+ * only the date part is read. */
+static int8_t weekday_from_date(const std::string &text) {
+  if (text.size() < 10 || text[4] != '-' || text[7] != '-')
+    return -1;
+  for (uint8_t i = 0; i < 10; i++) {
+    if (i == 4 || i == 7)
+      continue;
+    if (text[i] < '0' || text[i] > '9')
+      return -1;
+  }
+  const int year = (text[0] - '0') * 1000 + (text[1] - '0') * 100 +
+                   (text[2] - '0') * 10 + (text[3] - '0');
+  const unsigned month =
+      static_cast<unsigned>((text[5] - '0') * 10 + (text[6] - '0'));
+  const unsigned day =
+      static_cast<unsigned>((text[8] - '0') * 10 + (text[9] - '0'));
+  if (month < 1 || month > 12 || day < 1 || day > 31)
+    return -1;
+  const int64_t days = days_from_civil(year, month, day);
+  int dow = static_cast<int>((4 + days) % 7);
+  if (dow < 0)
+    dow += 7;
+  return static_cast<int8_t>(dow);
+}
+
+/* One flat value out of one flat forecast object. Forecast items carry no
+ * nesting, so the value runs to the next comma or closing brace; a string
+ * runs to its closing quote. Anything else reads as absent. */
+static float forecast_number(const std::string &item, const char *key) {
+  const std::string quoted = std::string("\"") + key + "\"";
+  const size_t at = item.find(quoted);
+  if (at == std::string::npos)
+    return NAN;
+  const size_t colon = item.find(':', at + quoted.size());
+  if (colon == std::string::npos)
+    return NAN;
+  char *end = nullptr;
+  const float value = strtof(item.c_str() + colon + 1, &end);
+  return end == item.c_str() + colon + 1 ? NAN : value;
+}
+
+static std::string forecast_string(const std::string &item, const char *key) {
+  const std::string quoted = std::string("\"") + key + "\"";
+  const size_t at = item.find(quoted);
+  if (at == std::string::npos)
+    return std::string();
+  const size_t colon = item.find(':', at + quoted.size());
+  if (colon == std::string::npos)
+    return std::string();
+  const size_t open = item.find('"', colon + 1);
+  if (open == std::string::npos)
+    return std::string();
+  const size_t close = item.find('"', open + 1);
+  if (close == std::string::npos)
+    return std::string();
+  return item.substr(open + 1, close - open - 1);
+}
+
+std::string MediaControllerGrid::forecast_request() const {
+  JsonDocument doc;
+  JsonObject root = doc.to<JsonObject>();
+  JsonArray ids = root["entity_id"].to<JsonArray>();
+
+  /* At most two: a day-by-day answer is kilobytes per entity, and the
+   * response buffer is not the place to find that out. A house with more
+   * weather blocks than that still converges — the next poll names the
+   * next ones. */
+  uint8_t count = 0;
+  for (const auto &entry : this->entries_) {
+    if (entry.domain != DOMAIN_WEATHER || count >= 2)
+      continue;
+    bool drawn = false;
+    for (const auto &card : this->cards_) {
+      if (card.rid == entry.rid) {
+        drawn = true;
+        break;
+      }
+    }
+    if (!drawn)
+      continue;
+    ids.add(entry.entity);
+    count++;
+  }
+  if (count == 0)
+    return std::string();
+
+  root["type"] = "daily";
+  std::string out;
+  serialize_to(doc, &out);
+  return out;
+}
+
+void MediaControllerGrid::apply_forecast(const std::string &body) {
+  for (auto &entry : this->entries_) {
+    if (entry.domain != DOMAIN_WEATHER)
+      continue;
+
+    /* The answer is keyed by entity ID, so each element reads the forecast
+     * that follows its own name rather than the first array in the body. */
+    const std::string needle = "\"" + entry.entity + "\"";
+    const size_t named = body.find(needle);
+    if (named == std::string::npos)
+      continue;
+    const size_t listed = body.find("\"forecast\"", named);
+    if (listed == std::string::npos)
+      continue;
+    const size_t opened = body.find('[', listed);
+    if (opened == std::string::npos)
+      continue;
+
+    /* Forecast items are flat objects, so each one runs from its opening
+     * brace to the next closing brace. The first item is today, which the
+     * card already shows as its current reading; the rows start with the
+     * day after it. */
+    uint8_t kept = 0;
+    uint8_t seen = 0;
+    size_t pos = opened + 1;
+    while (kept < FORECAST_DAYS) {
+      const size_t obj = body.find('{', pos);
+      if (obj == std::string::npos)
+        break;
+      const size_t shut = body.find(']', pos);
+      if (shut != std::string::npos && shut < obj)
+        break;
+      const size_t close = body.find('}', obj + 1);
+      if (close == std::string::npos)
+        break;
+      pos = close + 1;
+      seen++;
+      if (seen == 1)
+        continue;
+      const std::string item = body.substr(obj, close - obj + 1);
+      const int8_t dow = weekday_from_date(forecast_string(item, "datetime"));
+      const float high = forecast_number(item, "temperature");
+      if (dow < 0 || std::isnan(high))
+        continue;
+      entry.fc_dow[kept] = dow;
+      entry.fc_high[kept] = high;
+      entry.fc_low[kept] = forecast_number(item, "templow");
+      kept++;
+    }
+    entry.fc_count = kept;
   }
 }
 

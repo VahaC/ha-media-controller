@@ -216,7 +216,8 @@ static void handle_entities(PanelWeb *web, SoupServerMessage *message)
     json_builder_set_member_name(builder, "icons");
     json_builder_begin_array(builder);
     static const gchar *ICONS[] = {"light-1", "light-2", "desk-lamp",
-                                   "desk-led-strip", "fan", "ac", "blind"};
+                                   "desk-led-strip", "fan", "ac", "blind",
+                                   "weather"};
     for (guint i = 0; i < G_N_ELEMENTS(ICONS); i++)
         json_builder_add_string_value(builder, ICONS[i]);
     json_builder_end_array(builder);

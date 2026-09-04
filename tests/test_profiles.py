@@ -33,8 +33,8 @@ class CapabilityTests(unittest.TestCase):
         self.assertNotIn("min_kelvin", capabilities)
 
     def test_a_domain_with_no_card_yet_gets_no_controls(self) -> None:
-        # `weather` is the one registry group left with no card written yet,
-        # so it is already there when one is; `media_player` is a group no
+        # `weather` is drawn as a reading rather than a control, so it keeps
+        # the empty list even with its block; `media_player` is a group no
         # longer offered and `sensor` was never one, and both stand for any
         # domain that reaches this rule by accident. All must produce no
         # controls rather than a toggle nothing honours.

@@ -71,6 +71,11 @@ static const uint16_t GRID_CELL_PX = 60;
  * would have nothing to put in it. */
 static const uint8_t MAX_CARDS = GRID_COLUMNS * GRID_ROWS;
 
+/* How many days after today a weather block keeps. The card draws as many
+ * rows as it has room for, up to this; a day that reports no low still
+ * draws, with the high alone. */
+static const uint8_t FORECAST_DAYS = 5;
+
 /* The version written into the layout document, shared with the T560 panel.
  * A document naming another one is refused rather than guessed at: reading a
  * format this build does not know would quietly move somebody's cards. */
@@ -92,6 +97,9 @@ enum CardDomain : uint8_t {
   /* Contract version 7. A thermostat is drawn like the other two; what
    * differs is what its card says and what a long press moves. */
   DOMAIN_CLIMATE = 3,
+  /* A weather block. It carries no controls at all — the empty list — and
+   * is drawn as a reading rather than something a tap acts on. */
+  DOMAIN_WEATHER = 4,
 };
 
 /* One card, in the shape that goes to flash.
@@ -168,6 +176,19 @@ struct Entry {
    * call per sweep tick would put a radio thermostat on the air ten times a
    * second for a value nobody has finished choosing. */
   float setpoint;
+  /* A weather block. The condition is `state` itself ("sunny",
+   * "partlycloudy", ...); the temperature and humidity arrive with the same
+   * poll. Both are NAN until Home Assistant has answered once. */
+  float weather_temp;
+  float weather_humidity;
+  /* The daily forecast behind a weather block: up to FORECAST_DAYS days
+   * after today, each a weekday and a high, with a low of NAN where none
+   * was reported. Empty until a forecast poll has answered once; drawn only
+   * where the card is large enough for a row. */
+  uint8_t fc_count;
+  int8_t fc_dow[5];
+  float fc_high[5];
+  float fc_low[5];
   /* Where the brightness sweep of a long press is, in percent. It is local
    * and deliberately not read back: the same value the four fixed buttons
    * kept, for the same reason — a light reports the brightness it reached,
@@ -184,11 +205,16 @@ struct Entry {
  * instead of being written down twice:
  *
  *   child 0     the icon, on every card;
- *   child 1     the reading, on a labelled thermostat card only;
+ *   child 1     the reading, on a labelled thermostat or weather card only;
+ *   children 2.. the daily forecast rows, on a large weather card only;
  *   last child  the name, on any labelled card.
  */
 bool card_is_labelled(const Card &card);
 bool card_shows_reading(const Card &card, const Entry *entry);
+/* How many forecast rows this card was built with: large weather cards get
+ * one per cell past the second, up to FORECAST_DAYS, and everything else
+ * gets none. */
+uint8_t card_forecast_rows(const Card &card, const Entry *entry);
 
 /* Whether Home Assistant has said anything about this element at all, and
  * whether what it said means "on".
@@ -202,9 +228,13 @@ bool card_shows_reading(const Card &card, const Entry *entry);
  * — and every one of them but "off" is a thermostat that is running. */
 bool entry_is_known(const Entry &entry);
 bool entry_is_on(const Entry &entry);
+/* One forecast row as a card writes it ("Sat 22°/14°", or the high alone
+ * where no low was reported). Empty when the card holds no such day. */
+std::string forecast_text(const Entry &entry, uint8_t day);
 /* The line such a card draws under its name: the temperature the room is at
  * and, while the thermostat is running, the setpoint after it — the order a
- * thermostat is read in.
+ * thermostat is read in. A weather block says the condition and how warm it
+ * is instead, with the humidity where one is reported.
  *
  * Empty means "there is nothing to say", which includes a thermostat that is
  * off and reports no room temperature, and the caller **writes** that empty
@@ -316,6 +346,15 @@ class MediaControllerGrid final : public AsyncWebHandler, public Component {
   std::string state_request() const;
   /* Takes the rendered answer apart and stores one state per element. */
   void apply_states(const std::string &rendered);
+  /* The body of one `weather.get_forecasts` request for the drawn weather
+   * entities, at most two: a day-by-day answer is kilobytes, and the
+   * response buffer is not the place to find that out. Empty when no
+   * weather card is drawn, which is the caller's signal to skip the poll
+   * entirely. */
+  std::string forecast_request() const;
+  /* Takes one forecast answer apart and stores the coming days per element,
+   * today skipped: the card already shows the current reading. */
+  void apply_forecast(const std::string &body);
 
   /* The skin on screen, pushed from the firmware YAML: the editor's picker
    * has to show what is being drawn, not what Home Assistant last mentioned.

@@ -7,7 +7,7 @@
  * Assistant in the status report, which is what shows the software version on
  * the panel's device, and it is the user agent of every request. Keep it in
  * step with pkgver in packaging/APKBUILD. */
-#define T560_PANEL_VERSION "0.5.0"
+#define T560_PANEL_VERSION "0.6.0"
 
 /* The version of docs/CONTRACT.md this build implements.
  *
@@ -16,7 +16,7 @@
  * The panel sends it in every status report and reads the integration's own
  * out of the config sensor, so each half can tell that the other is behind.
  * Raise it in the same change that raises the number in that document. */
-#define T560_PANEL_CONTRACT_VERSION 8
+#define T560_PANEL_CONTRACT_VERSION 7
 
 /* How many registry elements this panel will hold. The integration sends its
  * own `entity_limit` and the T560 profile's is the same number; this is the

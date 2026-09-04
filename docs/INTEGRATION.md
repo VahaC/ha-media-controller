@@ -146,10 +146,9 @@ percentage — where the cover reports one — and a STOP button, which is what 
 blind that takes ten seconds to travel actually needs. The paired ESP32 has no
 cover card yet and ignores those elements until it does.
 
-Weather can be added now, but no client draws a card for it yet and it is
-ignored until one does — it becomes a card in a contract version of its own,
-so a panel gains it when it is updated and never breaks on a payload that
-carries one it does not know. See [ROOM_SLOTS.md](ROOM_SLOTS.md).
+Weather is drawn as a reading block on both panels: the condition and the
+temperature, with the humidity where it is reported. A tap on it acts on
+nothing. See [ROOM_SLOTS.md](ROOM_SLOTS.md).
 
 The room controls of an ESP32 running the **classic** firmware are the exception
 to all of this. They are still four numbered slots, they live on the source

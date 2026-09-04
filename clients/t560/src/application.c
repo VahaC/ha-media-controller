@@ -57,6 +57,10 @@ typedef struct {
     /* Where the round-robin over the room cards reached. See
      * poll_room_cards. */
     guint room_poll_cursor;
+    /* Whether a forecast request is still in flight. One at a time: the
+     * forecast moves slowly and every weather card converges within a few
+     * poll cycles of starting anyway. */
+    gboolean forecast_pending;
     /* The layout editor this panel serves, or NULL when it is switched off
      * in config.ini or its port could not be bound. The room page works
      * either way; only the editing does not. */
@@ -716,6 +720,11 @@ static void update_playlists(PanelApplication *application, JsonObject *state)
  * `state_known` is for; here an unavailable entity is simply not on. */
 static gboolean room_is_active(const PanelEntity *entity, const gchar *state)
 {
+    /* A weather block is a reading rather than a control: it is never on,
+     * so it never draws the active gradient a button does. */
+    if (entity != NULL && g_strcmp0(entity->domain, "weather") == 0) {
+        return FALSE;
+    }
     /* A blind is on when it is not shut. Home Assistant reports `open`,
      * `closed`, `opening` and `closing`; one that is opening is on its way to
      * being open and is drawn as on, and one that is closing is still open
@@ -745,18 +754,37 @@ static void update_room(PanelApplication *application, guint index,
         return;
     JsonObject *attributes = json_state_attributes(state);
     const PanelEntity *entity = configured_room(application, (gint)index);
+    const gchar *raw_state = json_object_string(state, "state", "");
+    gboolean is_weather = entity != NULL &&
+                          g_strcmp0(entity->domain, "weather") == 0;
     PanelRoomState reported = {
-        .active = room_is_active(entity,
-                                 json_object_string(state, "state", "")),
+        .active = room_is_active(entity, raw_state),
         .brightness_percent = -1,
         .color_temp_kelvin = -1,
         .min_color_temp_kelvin = 0,
         .max_color_temp_kelvin = 0,
         .setpoint = NAN,
         .ambient = NAN,
-        .position = -1
+        .position = -1,
+        .weather_condition = NULL,
+        .weather_temperature = NAN,
+        .weather_humidity = -1
     };
     gdouble value = 0.0;
+
+    /* A weather block costs no extra request either: the condition is the
+     * state itself and the temperature and humidity are attributes of the
+     * same document the card was already polled with. */
+    if (is_weather) {
+        if (!g_str_equal(raw_state, "unavailable") &&
+            !g_str_equal(raw_state, "unknown") && *raw_state != '\0')
+            reported.weather_condition = raw_state;
+        if (json_object_number(attributes, "temperature", &value))
+            reported.weather_temperature = value;
+        if (json_object_number(attributes, "humidity", &value) &&
+            value >= 0.0)
+            reported.weather_humidity = CLAMP((gint)(value + 0.5), 0, 100);
+    }
 
     if (json_object_number(attributes, "brightness", &value) && value >= 0.0) {
         reported.brightness_percent =
@@ -1215,6 +1243,170 @@ static void poll_room_cards(PanelApplication *application)
                                     count;
 }
 
+/* The daily forecast behind a weather block. Slow-moving data: each weather
+ * entity is asked at most every forty-five minutes, through the ordinary
+ * service channel and naming that entity alone — never the full state list
+ * AGENTS.md forbids. */
+#define PANEL_FORECAST_INTERVAL_US (45 * 60 * G_USEC_PER_SEC)
+
+typedef struct {
+    PanelApplication *application;
+    guint index;
+    gchar *entity;
+} ForecastRequest;
+
+/* The first "forecast" array anywhere under this answer. The service wraps
+ * it per entity — {"weather.home": {"forecast": [...]}} — and the entity a
+ * request named is the only one this panel looks for, so the first array
+ * found is the answer. */
+static JsonArray *find_forecast_array(JsonObject *object)
+{
+    GList *members = json_object_get_members(object);
+    JsonArray *found = NULL;
+
+    for (GList *item = members; item != NULL && found == NULL;
+         item = item->next) {
+        JsonNode *node = json_object_get_member(object, item->data);
+        if (node == NULL)
+            continue;
+        if (JSON_NODE_HOLDS_ARRAY(node) &&
+            g_strcmp0(item->data, "forecast") == 0) {
+            found = json_node_get_array(node);
+        } else if (JSON_NODE_HOLDS_OBJECT(node)) {
+            found = find_forecast_array(json_node_get_object(node));
+        }
+    }
+    g_list_free(members);
+    return found;
+}
+
+/* The coming days out of one forecast answer. The first entry is today,
+ * which the card already shows as its current reading, so the rows start
+ * with the day after it — as many as there are data and room for. */
+static guint collect_forecast_days(JsonObject *root, PanelWeatherDay *days)
+{
+    JsonArray *forecast = find_forecast_array(root);
+    guint count = 0;
+
+    if (forecast == NULL)
+        return 0;
+    for (guint i = 1, length = json_array_get_length(forecast);
+         i < length && count < PANEL_WEATHER_FORECAST_MAX; i++) {
+        JsonNode *node = json_array_get_element(forecast, i);
+        JsonObject *item;
+        const gchar *datetime;
+        gdouble high = 0.0;
+        gdouble low = 0.0;
+        GDateTime *when;
+        gchar *day;
+
+        if (node == NULL || !JSON_NODE_HOLDS_OBJECT(node))
+            continue;
+        item = json_node_get_object(node);
+        datetime = json_object_string(item, "datetime", NULL);
+        if (datetime == NULL ||
+            !json_object_number(item, "temperature", &high))
+            continue;
+        when = g_date_time_new_from_iso8601(datetime, NULL);
+        if (when == NULL)
+            continue;
+        day = g_date_time_format(when, "%a");
+        g_date_time_unref(when);
+        if (day == NULL)
+            continue;
+        g_strlcpy(days[count].day, day, sizeof(days[count].day));
+        g_free(day);
+        days[count].high = high;
+        if (json_object_number(item, "templow", &low)) {
+            days[count].low = low;
+            days[count].has_low = TRUE;
+        } else {
+            days[count].low = 0.0;
+            days[count].has_low = FALSE;
+        }
+        count++;
+    }
+    return count;
+}
+
+static void forecast_finished(guint status_code, GBytes *body,
+                              const GError *error, gpointer user_data)
+{
+    ForecastRequest *request = user_data;
+    PanelApplication *application = request->application;
+
+    application->forecast_pending = FALSE;
+    if (error == NULL && status_code == 200 && body != NULL &&
+        application->ui != NULL) {
+        gsize length = 0;
+        const gchar *data = g_bytes_get_data(body, &length);
+        JsonParser *parser = json_parser_new();
+
+        if (json_parser_load_from_data(parser, data, (gssize)length, NULL) &&
+            JSON_NODE_HOLDS_OBJECT(json_parser_get_root(parser))) {
+            PanelWeatherDay days[PANEL_WEATHER_FORECAST_MAX];
+            guint count = collect_forecast_days(
+                json_node_get_object(json_parser_get_root(parser)), days);
+
+            /* A rebuild in between may have moved the cards: only the card
+             * that still names this entity may keep the answer. */
+            if (count > 0) {
+                const PanelEntity *entity = panel_ui_card_entity(
+                    application->ui, request->index);
+                if (entity != NULL &&
+                    g_strcmp0(entity->entity, request->entity) == 0)
+                    panel_ui_set_room_forecast(application->ui,
+                                               request->index, days, count);
+            }
+        }
+        g_object_unref(parser);
+    }
+    g_free(request->entity);
+    g_free(request);
+}
+
+/* One weather entity per poll cycle, and only one whose forecast is older
+ * than the interval above. A page of weather blocks still converges within
+ * minutes of starting, and a house with one asks one small question every
+ * forty-five minutes. */
+static void maybe_poll_forecast(PanelApplication *application, gint64 now)
+{
+    guint count;
+
+    if (application->forecast_pending || application->ui == NULL)
+        return;
+    count = panel_ui_card_count(application->ui);
+    for (guint i = 0; i < count; i++) {
+        const PanelEntity *entity = panel_ui_card_entity(application->ui, i);
+        gchar *json;
+        ForecastRequest *request;
+
+        if (entity == NULL || g_strcmp0(entity->domain, "weather") != 0)
+            continue;
+        if (panel_ui_room_forecast_at(application->ui, i) != 0 &&
+            now - panel_ui_room_forecast_at(application->ui, i) <
+                PANEL_FORECAST_INTERVAL_US)
+            continue;
+        /* Entity IDs name [a-z0-9_.] and nothing that needs escaping. */
+        json = g_strdup_printf("{\"entity_id\":\"%s\",\"type\":\"daily\"}",
+                               entity->entity);
+        request = g_new0(ForecastRequest, 1);
+        request->application = application;
+        request->index = i;
+        request->entity = g_strdup(entity->entity);
+        if (home_assistant_client_call_service(application->client, "weather",
+                                               "get_forecasts", json,
+                                               forecast_finished, request)) {
+            application->forecast_pending = TRUE;
+        } else {
+            g_free(request->entity);
+            g_free(request);
+        }
+        g_free(json);
+        return;
+    }
+}
+
 /* ------------------------------------------------------- layout editor */
 
 /* Where Home Assistant keeps this panel's copy of its own arrangement. It is
@@ -1460,6 +1652,7 @@ static gboolean poll_states(gpointer user_data)
             now + (gint64)application->config->playlist_poll_interval_ms * 1000;
     }
     poll_room_cards(application);
+    maybe_poll_forecast(application, now);
 
     /* Every request was rejected before it started, so no callback will run
      * to report the outcome. */

@@ -350,6 +350,13 @@ globals:
     type: std::string
     restore_value: false
 
+  # -- The body of one weather.get_forecasts request, built the same way:
+  # -- the poll asks the component whether a weather card is drawn, and only
+  # -- then sends it. --
+  - id: pending_forecast_body
+    type: std::string
+    restore_value: false
+
   # -- Set while a long press is sweeping a card's brightness, so the release
   # -- that ends it does not also toggle the light. The four fixed buttons of
   # -- the interface keep one of these per button; the grid has one, because
@@ -489,6 +496,15 @@ globals:
   # -- five seconds, and a lamp switched here refreshes immediately because the
   # -- button asks for it. --
   - id: last_room_poll_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+
+  # -- The forecast moves slowly: one request every half hour, on top of the
+  # -- first one as soon as a weather card is drawn. An http_request blocks
+  # -- the main loop, so this never runs oftener no matter how many weather
+  # -- blocks a page holds. --
+  - id: last_forecast_poll_ms
     type: uint32_t
     restore_value: false
     initial_value: "0"
@@ -1169,6 +1185,44 @@ script:
                               ESP_LOGW("room", "State template HTTP %d",
                                        response->status_code);
 
+  # -- The daily forecast behind the weather blocks. One request names every
+  # -- drawn weather entity the component reports, and the answer is parsed
+  # -- with no JSON library, the way the registry is: a day-by-day answer is
+  # -- kilobytes, and this device has no kilobytes to spend on a document. --
+  - id: poll_room_forecast
+    mode: restart
+    then:
+      - lambda: id(pending_forecast_body) = id(room_grid)->forecast_request();
+      - if:
+          condition:
+            lambda: |-
+              return !id(ha_token).empty() &&
+                     !id(pending_forecast_body).empty();
+          then:
+            - http_request.post:
+                url: "${ha_url}/api/services/weather/get_forecasts"
+                request_headers:
+                  Authorization: !lambda return id(auth_header).c_str();
+                  Content-Type: "application/json"
+                body: !lambda return id(pending_forecast_body);
+                capture_response: true
+                # -- Two entities at most, five days each: well under this,
+                # -- and an answer that overflows is cut off mid-flight, which
+                # -- the parse reads as fewer days rather than an error. --
+                max_response_buffer_size: 8192
+                on_response:
+                  then:
+                    - if:
+                        condition:
+                          lambda: return response->status_code == 200;
+                        then:
+                          - lambda: id(room_grid)->apply_forecast(body);
+                          - script.execute: refresh_room_cards
+                        else:
+                          - lambda: |-
+                              ESP_LOGW("room", "Forecast HTTP %d",
+                                       response->status_code);
+
   # -- The config sensor names every other entity, so it is requested every
   # -- cycle rather than as rarely as a layout alone would need: it is also
   # -- the channel Home Assistant turns the screen off through, and a button
@@ -1343,6 +1397,7 @@ script:
                                       id(pending_attributes))) {
                                 id(rebuild_room_grid)->execute();
                                 id(last_room_poll_ms) = 0;
+                                id(last_forecast_poll_ms) = 0;
                               }
 
   - id: refresh_queue
@@ -1622,6 +1677,11 @@ script:
             else if (card.icon == 2) art = id(card_icon_light2);
             else if (card.icon == 3) art = id(card_icon_fan);
             else if (card.icon == 4) art = id(card_icon_ac);
+            else if (card.icon == 5) art = id(card_icon_weather);
+            else if (entry != nullptr &&
+                     entry->domain == media_controller_grid::DOMAIN_WEATHER) {
+              art = id(card_icon_weather);
+            }
             else if (entry != nullptr &&
                      (entry->domain == media_controller_grid::DOMAIN_SWITCH ||
                       entry->domain == media_controller_grid::DOMAIN_CLIMATE)) {
@@ -1635,12 +1695,22 @@ script:
             //    a tap, and everything it has to say needs two. --
             bool labelled = media_controller_grid::card_is_labelled(card);
             bool reads = media_controller_grid::card_shows_reading(card, entry);
+            // -- Large weather cards list the coming days under the current
+            //    reading, as many rows as the card has cells for. The count
+            //    is a fact about the card's size, so the refresh below
+            //    builds the same children back by asking the same question.
+            // --
+            uint8_t forecast_rows =
+                media_controller_grid::card_forecast_rows(card, entry);
 
             lv_obj_t *icon = lv_image_create(tile);
             lv_image_set_src(icon, art->get_lv_image_dsc());
             lv_obj_remove_flag(icon, LV_OBJ_FLAG_CLICKABLE);
             lv_obj_align(icon, LV_ALIGN_CENTER, 0,
-                         !labelled ? 0 : (reads ? -20 : -12));
+                         !labelled
+                             ? 0
+                             : (-12 - (reads ? 8 : 0) -
+                                (int) forecast_rows * 20));
 
             // -- Child 1 on a labelled thermostat card and nowhere else; see
             //    the child order in media_controller_grid.h. It is created
@@ -1655,6 +1725,21 @@ script:
               lv_obj_set_style_text_color(reading, lv_color_hex(0x8f8fb4), 0);
               lv_label_set_text(reading, "");
               lv_obj_align(reading, LV_ALIGN_BOTTOM_MID, 0, -26);
+            }
+
+            // -- One label per forecast row, created empty: the registry
+            //    arriving, the state arriving and the forecast arriving are
+            //    three different polls, and refresh_room_cards fills them. --
+            for (uint8_t row = 0; row < forecast_rows; row++) {
+              lv_obj_t *forecast = lv_label_create(tile);
+              lv_label_set_long_mode(forecast, LV_LABEL_LONG_DOT);
+              lv_obj_set_width(forecast, card.w() * 60 - 16);
+              lv_obj_set_style_text_align(forecast, LV_TEXT_ALIGN_CENTER, 0);
+              lv_obj_set_style_text_font(forecast, id(roboto_16)->get_lv_font(), 0);
+              lv_obj_set_style_text_color(forecast, lv_color_hex(0x8f8fb4), 0);
+              lv_label_set_text(forecast, "");
+              lv_obj_align(forecast, LV_ALIGN_BOTTOM_MID, 0,
+                           -46 - (int) row * 20);
             }
 
             if (labelled) {
@@ -1832,8 +1917,9 @@ script:
 
             // -- A thermostat says a temperature where everything else says
             //    nothing: "on" is not what a person came to a thermostat
-            //    for. Child 1, and only on a labelled thermostat card; see
-            //    the child order in media_controller_grid.h.
+            //    for, and a weather block names the sky. Child 1, and only
+            //    on a labelled thermostat or weather card; see the child
+            //    order in media_controller_grid.h.
             // --
             // -- The guard is "has this element ever been answered", not
             //    "is the new reading empty". Skipping an empty reading would
@@ -1848,6 +1934,23 @@ script:
                     reading,
                     media_controller_grid::card_reading(*entry).c_str());
               }
+            }
+
+            // -- The coming days on a large weather card, children 2 and up;
+            //    see the child order in media_controller_grid.h. Written
+            //    unconditionally, the way the reading is: an empty string
+            //    keeps a row blank until its forecast poll answers, and
+            //    overwrites a stale one the moment it does. --
+            uint8_t forecast_rows =
+                media_controller_grid::card_forecast_rows(cards[i], entry);
+            for (uint8_t row = 0; row < forecast_rows; row++) {
+              lv_obj_t *forecast = lv_obj_get_child(tile, 2 + (int32_t) row);
+              if (forecast == NULL)
+                break;
+              std::string text;
+              if (entry != nullptr && !entry->state.empty())
+                text = media_controller_grid::forecast_text(*entry, row);
+              lv_label_set_text(forecast, text.c_str());
             }
           }
 
@@ -2039,6 +2142,17 @@ interval:
             id(poll_room_states)->execute();
           }
 
+          // -- The forecast behind the weather blocks: at once when there
+          //    is something to ask for, then every half hour. The clock
+          //    does not start until the component names an entity, so a
+          //    page with no weather on it never pays for one. --
+          if (!id(ha_token).empty() &&
+              (id(last_forecast_poll_ms) == 0 ||
+               now - id(last_forecast_poll_ms) >= 1800000)) {
+            id(last_forecast_poll_ms) = now;
+            id(poll_room_forecast)->execute();
+          }
+
           // -- Fetch as soon as the config sensor has named the playlists
           //    entity, then on its own interval. The clock does not start
           //    until there is something to ask for, so a freshly paired
@@ -2085,6 +2199,12 @@ image:
   - platform: file
     file: "${asset_base_url}/ac.png"
     id: card_icon_ac
+    resize: 40x40
+    type: RGB
+    transparency: alpha_channel
+  - platform: file
+    file: "${asset_base_url}/weather.png"
+    id: card_icon_weather
     resize: 40x40
     type: RGB
     transparency: alpha_channel

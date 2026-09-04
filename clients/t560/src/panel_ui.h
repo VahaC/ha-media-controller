@@ -91,6 +91,17 @@ void panel_ui_set_editor_url(PanelUi *ui, const gchar *url);
  * last knew rather than being blanked by an attribute the entity does not
  * have: -1 for the two integers, 0 for the Kelvin bounds, NAN for the two
  * temperatures. */
+/* One daily forecast row a weather block draws when the card is large
+ * enough for it: the weekday and the high, with the low where one was
+ * reported. */
+#define PANEL_WEATHER_FORECAST_MAX 5
+typedef struct {
+    gchar day[8];
+    gdouble high;
+    gdouble low;
+    gboolean has_low;
+} PanelWeatherDay;
+
 typedef struct {
     gboolean active;
     gint brightness_percent;
@@ -106,9 +117,22 @@ typedef struct {
      * position. A cover that reports none is not half anything: it is open
      * or closed, and the card says so in words. */
     gint position;
+    /* A weather block. The condition is the entity state itself ("sunny",
+     * "partlycloudy", ...) and NULL while unknown; the temperature is NAN
+     * while unknown and the humidity is -1 while unknown. A weather card is
+     * a reading rather than a control: it never toggles and never adjusts. */
+    const gchar *weather_condition;
+    gdouble weather_temperature;
+    gint weather_humidity;
 } PanelRoomState;
 
 void panel_ui_set_room(PanelUi *ui, guint index, const PanelRoomState *state);
+/* The daily forecast behind one weather block, and when it was fetched. A
+ * fetch is slow-moving data, so the application asks at most this often and
+ * the card draws as many rows as it has room for. */
+void panel_ui_set_room_forecast(PanelUi *ui, guint index,
+                                const PanelWeatherDay *days, guint count);
+gint64 panel_ui_room_forecast_at(PanelUi *ui, guint index);
 void panel_ui_show_page(PanelUi *ui, const gchar *page, const gchar *title);
 /* Chooses how the whole interface is drawn, not only the player page: the
  * navigation bar and the room page follow the skin too. Safe to call before
