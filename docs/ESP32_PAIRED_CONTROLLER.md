@@ -366,7 +366,7 @@ reports the outcome on `GET /api/entities`.
 | `switch` | toggle | — | icon and a tap |
 | `climate` | toggle | sweeps the setpoint | icon and a tap |
 | `weather` | — (a reading) | — | icon |
-| `sensor` | — (a reading) | — | icon |
+| `sensor` | — (a reading) | — | value, name where it fits |
 
 A `cover` element is drawn as a card with no action, because no cover card is
 written for it **here** yet: contract version 8 adds the cover card and the
@@ -385,7 +385,14 @@ true either way, and the setpoint it used to be heading for is not. The
 card's border already says which of the two it is.
 At one cell there is 54 px of paint and room for the icon or the name but not
 both, and the icon is the half that still says what the card is; that rule is
-the same for every card type.
+the same for every card type but one. A sensor below two cells in either
+direction carries no icon: the name goes on top and the value under it, and
+where both do not fit the name is dropped and the value stays, because the
+value outranks the name.
+A long name wraps onto a second line where the card has room for it, rather
+than being ellipsized where it does not have to be. Exactly two lines are
+kept; what sits above the name moves up by one line with it, and where even
+that does not fit the name stays on one line.
 
 A thermostat's setpoint sweep is **not** sent per tick, unlike a light's
 brightness. The value moves on the device while the finger is down and goes to

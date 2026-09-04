@@ -399,6 +399,34 @@ class RegistryPayloadTests(unittest.TestCase):
         self.assertEqual(attributes["entities"][0]["controls"], [])
         self.assertEqual(attributes["entities"][0]["domain"], "weather")
 
+    def test_a_sensor_travels_with_no_controls_and_no_bounds(self) -> None:
+        """A sensor block is a reading: empty controls, and no bound of any
+        kind travels beside them — neither Kelvin nor setpoint ones. The
+        value and its unit arrive with the poll, never in the payload."""
+        attributes = self._panel(
+            entities=(
+                transformations.EntityPayload(
+                    rid="b71f0c2e",
+                    entity="sensor.kitchen_temperature",
+                    name="Кухня",
+                    domain="sensor",
+                ),
+            )
+        ).as_attributes()
+        element = attributes["entities"][0]
+        self.assertEqual(element["controls"], [])
+        self.assertEqual(element["domain"], "sensor")
+        self.assertEqual(element["name"], "Кухня")
+        for key in (
+            "min_kelvin",
+            "max_kelvin",
+            "min_temp",
+            "max_temp",
+            "target_temp_step",
+        ):
+            with self.subTest(key=key):
+                self.assertNotIn(key, element)
+
     def test_a_thermostat_carries_its_setpoint_bounds(self) -> None:
         attributes = self._panel(
             entities=(

@@ -1694,10 +1694,17 @@ script:
             // -- A one-cell card is 54 px of paint and has room for the icon
             //    or the name, not both. The icon is the half that still says
             //    what the card is at a glance. That rule is the same for
-            //    every card type: a thermostat at one cell is a picture and
+            //    every card type but one: a sensor at one cell says its
+            //    value, with the name where it fits beside it — see
+            //    `compact` below. A thermostat at one cell is a picture and
             //    a tap, and everything it has to say needs two. --
             bool labelled = media_controller_grid::card_is_labelled(card);
             bool reads = media_controller_grid::card_shows_reading(card, entry);
+            // -- A sensor below the labelled size still says its value: the
+            //    name goes on top and the value under it, and where both do
+            //    not fit the name is dropped and the value stays, because
+            //    the value outranks the name. --
+            bool compact = media_controller_grid::card_shows_compact(card, entry);
             // -- Large weather cards list the coming days under the current
             //    reading, as many rows as the card has cells for. The count
             //    is a fact about the card's size, so the refresh below
@@ -1706,29 +1713,60 @@ script:
             uint8_t forecast_rows =
                 media_controller_grid::card_forecast_rows(card, entry);
 
+            const lv_font_t *room_font = id(roboto_16)->get_lv_font();
+            int line_h = lv_font_get_line_height(room_font);
+            int tile_h = card.h() * 60 - 6;
+
             lv_obj_t *icon = lv_image_create(tile);
             lv_image_set_src(icon, art->get_lv_image_dsc());
             lv_obj_remove_flag(icon, LV_OBJ_FLAG_CLICKABLE);
-            lv_obj_align(icon, LV_ALIGN_CENTER, 0,
-                         !labelled
-                             ? 0
-                             : (-12 - (reads ? 8 : 0) -
-                                (int) forecast_rows * 20));
+            if (compact) {
+              // -- No icon on a compact sensor card: at 54 px there is room
+              //    for the name and the value and nothing else, and the
+              //    value is what the card is for. The object stays — child
+              //    0 is the icon on every card, and the refresh below walks
+              //    children by index. --
+              lv_obj_add_flag(icon, LV_OBJ_FLAG_HIDDEN);
+            }
+            int icon_y = !labelled ? 0
+                                   : (-12 - (reads ? 8 : 0) -
+                                      (int) forecast_rows * 20);
+            lv_obj_align(icon, LV_ALIGN_CENTER, 0, icon_y);
 
-            // -- Child 1 on a labelled thermostat, weather or sensor card
-            //    and nowhere else; see the child order in
+            // -- Decided before anything it places is created: the value
+            //    needs one line and the name needs one, and where both do
+            //    not fit the name is dropped and the value stays. --
+            bool show_name = true;
+            int value_y = 0;
+            if (compact) {
+              int need = 4 + line_h + 2 + line_h + 4;
+              show_name = need <= tile_h;
+              int zone_top = show_name ? 4 + line_h + 2 : 4;
+              int zone_bottom = tile_h - 4;
+              int slack = zone_bottom - zone_top - line_h;
+              value_y = zone_top + (slack > 0 ? slack / 2 : 0);
+            }
+
+            // -- Child 1 on a labelled thermostat, weather or sensor card,
+            //    and on a compact sensor card; see the child order in
             //    media_controller_grid.h. It is created empty because the
             //    registry arriving and the state arriving are two different
             //    polls, and refresh_room_cards fills it. --
-            if (reads) {
-              lv_obj_t *reading = lv_label_create(tile);
+            lv_obj_t *reading = nullptr;
+            if (reads || compact) {
+              reading = lv_label_create(tile);
               lv_label_set_long_mode(reading, LV_LABEL_LONG_DOT);
               lv_obj_set_width(reading, card.w() * 60 - 16);
               lv_obj_set_style_text_align(reading, LV_TEXT_ALIGN_CENTER, 0);
-              lv_obj_set_style_text_font(reading, id(roboto_16)->get_lv_font(), 0);
-              lv_obj_set_style_text_color(reading, lv_color_hex(0x8f8fb4), 0);
+              lv_obj_set_style_text_font(reading, room_font, 0);
+              lv_obj_set_style_text_color(reading, compact ? lv_color_hex(0xffffff)
+                                                           : lv_color_hex(0x8f8fb4), 0);
               lv_label_set_text(reading, "");
-              lv_obj_align(reading, LV_ALIGN_BOTTOM_MID, 0, -26);
+              if (compact) {
+                lv_obj_align(reading, LV_ALIGN_TOP_MID, 0, value_y);
+              } else {
+                lv_obj_align(reading, LV_ALIGN_BOTTOM_MID, 0, -26);
+              }
             }
 
             // -- One label per forecast row, created empty: the registry
@@ -1746,20 +1784,52 @@ script:
                            -46 - (int) row * 20);
             }
 
-            if (labelled) {
+            if (labelled || (compact && show_name)) {
               lv_obj_t *name = lv_label_create(tile);
-              lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+              lv_label_set_long_mode(name, LV_LABEL_LONG_WRAP);
               lv_obj_set_width(name, card.w() * 60 - 16);
               lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, 0);
               // -- roboto_16 and not montserrat: a registry name is whatever
               //    the user typed, and the Roboto faces in this build carry
               //    the Cyrillic glyphs the built-in fonts do not. --
-              lv_obj_set_style_text_font(name, id(roboto_16)->get_lv_font(), 0);
+              lv_obj_set_style_text_font(name, room_font, 0);
               lv_obj_set_style_text_color(name, lv_color_hex(0xd8d8f0), 0);
               lv_label_set_text(name, entry != nullptr && !entry->name.empty()
                                           ? entry->name.c_str()
                                           : "—");
-              lv_obj_align(name, LV_ALIGN_BOTTOM_MID, 0, -6);
+              if (compact) {
+                // -- On top, single line: the value below outranks it, and
+                //    at this size there is no second line to give. --
+                lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+                lv_obj_align(name, LV_ALIGN_TOP_MID, 0, 4);
+              } else {
+                lv_obj_align(name, LV_ALIGN_BOTTOM_MID, 0, -6);
+                // -- A long name wraps onto a second line where the card
+                //    has room for it, rather than being ellipsized where it
+                //    does not have to be. Exactly two lines are kept: the
+                //    name identifies the card, it is not the content. What
+                //    sits above it moves up by one line with it. --
+                lv_obj_update_layout(name);
+                uint32_t lines =
+                    (lv_obj_get_height(name) + (uint32_t) line_h - 1) /
+                    (uint32_t) line_h;
+                if (lines != 2) {
+                  lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+                } else {
+                  if (reading != nullptr) {
+                    lv_obj_align(reading, LV_ALIGN_BOTTOM_MID, 0,
+                                 -26 - line_h);
+                  }
+                  for (uint8_t row = 0; row < forecast_rows; row++) {
+                    lv_obj_t *day = lv_obj_get_child(tile, 2 + (int32_t) row);
+                    if (day == nullptr) break;
+                    lv_obj_align(day, LV_ALIGN_BOTTOM_MID, 0,
+                                 -46 - (int) row * 20 - line_h);
+                  }
+                  icon_y -= line_h;
+                  lv_obj_align(icon, LV_ALIGN_CENTER, 0, icon_y);
+                }
+              }
             }
 
             // -- One callback for every card. Which card it is comes from the
@@ -1931,8 +2001,8 @@ script:
             //    nothing: "on" is not what a person came to a thermostat
             //    for, a weather block names the sky, and a sensor block its
             //    value with its unit. Child 1, and only on a labelled
-            //    thermostat, weather or sensor card; see the child order in
-            //    media_controller_grid.h.
+            //    thermostat, weather or sensor card, or a compact sensor
+            //    card; see the child order in media_controller_grid.h.
             // --
             // -- The guard is "has this element ever been answered", not
             //    "is the new reading empty". Skipping an empty reading would
@@ -1940,7 +2010,8 @@ script:
             //    setpoint it used to have; skipping until the first answer
             //    is what actually stops a card being blanked before the poll
             //    has said anything about it. --
-            if (media_controller_grid::card_shows_reading(cards[i], entry)) {
+            if (media_controller_grid::card_shows_reading(cards[i], entry) ||
+                media_controller_grid::card_shows_compact(cards[i], entry)) {
               lv_obj_t *reading = lv_obj_get_child(tile, 1);
               if (reading != NULL && !entry->state.empty()) {
                 lv_label_set_text(

@@ -213,14 +213,21 @@ struct Entry {
  * the second walks the children by index, so the rule lives here once
  * instead of being written down twice:
  *
- *   child 0     the icon, on every card;
+ *   child 0     the icon, on every card (hidden on a compact sensor card,
+ *               where 54 px hold the name and the value and nothing else);
  *   child 1     the reading, on a labelled thermostat, weather or sensor
- *               card only;
+ *               card, and on a compact sensor card;
  *   children 2.. the daily forecast rows, on a large weather card only;
- *   last child  the name, on any labelled card.
+ *   last child  the name, on any labelled card and on a compact sensor card
+ *               that has room for it beside the value.
  */
 bool card_is_labelled(const Card &card);
 bool card_shows_reading(const Card &card, const Entry *entry);
+/* Whether this card is a sensor too small for the labelled layout above:
+ * 1x1, 2x1 and every other card below two cells in either direction. It
+ * still says its value — under the name where the name fits beside it, and
+ * alone where it does not — because the value outranks the name. */
+bool card_shows_compact(const Card &card, const Entry *entry);
 /* How many forecast rows this card was built with: large weather cards get
  * one per cell past the second, up to FORECAST_DAYS, and everything else
  * gets none. */

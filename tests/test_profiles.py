@@ -45,6 +45,25 @@ class CapabilityTests(unittest.TestCase):
                     (),
                 )
 
+    def test_sensor_is_a_reading_not_a_control(self) -> None:
+        # No attribute a sensor reports — neither its unit nor its device
+        # class — is a capability a card could act on, so none of it may
+        # leak into the payload beside the empty control list.
+        capabilities = profiles.normalize_capabilities(
+            "sensor",
+            {"unit_of_measurement": "°C", "device_class": "temperature"},
+        )
+        self.assertEqual(capabilities["controls"], ())
+        for key in (
+            "min_kelvin",
+            "max_kelvin",
+            "min_temp",
+            "max_temp",
+            "target_temp_step",
+        ):
+            with self.subTest(key=key):
+                self.assertNotIn(key, capabilities)
+
     def test_the_drawable_domains_are_named(self) -> None:
         # Contract version 7 adds the third and version 8 the fourth. Each
         # remaining group joins this tuple in a version of its own.

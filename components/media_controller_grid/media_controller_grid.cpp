@@ -129,6 +129,10 @@ bool card_shows_reading(const Card &card, const Entry *entry) {
          card_is_labelled(card);
 }
 
+bool card_shows_compact(const Card &card, const Entry *entry) {
+  return entry != nullptr && entry->domain == DOMAIN_SENSOR && !card_is_labelled(card);
+}
+
 /* A large weather card lists the coming days under its current reading, as
  * many rows as it has cells for: a 2x3 card fits two rows and a taller one
  * more, up to FORECAST_DAYS. Anything smaller, or anything but weather,

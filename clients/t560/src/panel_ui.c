@@ -27,6 +27,11 @@
  * the bottom row is never cut off. */
 #define PANEL_ROOM_CARD_GAP 6
 
+/* How much body a headed reading card keeps when its name wraps onto two
+ * lines: enough for the hero value and its line. Below this the name stays
+ * on one line and is ellipsized instead. */
+#define PANEL_ROOM_NAME_MIN_BODY 48.0
+
 /* The two sizes a card icon is tinted at. The large one is what the room page
  * always drew; the small one exists because a card may be a single cell, and
  * scaling a pixbuf on every frame is not something this tablet can afford. */
@@ -2874,21 +2879,126 @@ static void draw_room_card(PanelUi *ui, cairo_t *cr, PangoLayout *layout,
                          : (gint)CLAMP(height / 6.4, 11.0, 23.0);
     gdouble name_height = card_text_height(layout, name, name_size, TRUE,
                                            text_width);
+    /* A one-cell-tall sensor card still says its value: the middle of the
+     * card carries no icon for a reading, so the value goes there, compact,
+     * below the name as on a headed card. Taller cards draw the hero body
+     * instead. */
+    gboolean compact_value = !unassigned && height < 108.0 &&
+                             card_is_sensor(card) &&
+                             card->sensor_value != NULL &&
+                             *card->sensor_value != '\0';
+    /* A long name wraps onto a second line where the card has room for it,
+     * rather than being ellipsized where it does not have to be. The layout
+     * already wraps words and ellipsizes after the first line, so WORD_CHAR
+     * is what also breaks one long word, and height -2 caps the name at two
+     * lines: it identifies the card, it is not the content. A card that will
+     * draw its value compact keeps the name on one line so that both fit. */
+    pango_layout_set_wrap(layout, PANGO_WRAP_WORD_CHAR);
+    pango_layout_set_height(layout, -2);
+    gdouble wrapped_height = card_text_height(layout, name, name_size, TRUE,
+                                              text_width);
+    pango_layout_set_wrap(layout, PANGO_WRAP_WORD);
+    pango_layout_set_height(layout, -1);
     gdouble body_top = y + pad;
+
+    /* The state line a button card draws above its name, measured here so
+     * the wrap decision below knows how much room the state needs. Drawn
+     * later, where it always was. */
+    gchar *state_reading = NULL;
+    const gchar *state_text = NULL;
+    gint state_size = 0;
+    gdouble state_height = 0.0;
+    gboolean has_state_line = !reading_headed && height >= 108.0;
+    if (has_state_line) {
+        state_reading = unassigned ? NULL : card_reading(card);
+        state_text = unassigned ? card->rid
+                     : state_reading != NULL ? state_reading
+                     : !card->state_known ? "--"
+                     : card->active ? "ON" : "OFF";
+        state_size = (gint)CLAMP(height / 11.0, 9.0, 13.0);
+        state_height = card_text_height(layout, state_text, state_size,
+                                        TRUE, text_width);
+    }
+
+    /* Only where nothing drawn now is lost to it: a headed card keeps room
+     * for its hero, and a button card keeps its state line and an icon it
+     * already shows. */
+    gboolean wrap_name = FALSE;
+    if (!compact_value && wrapped_height > name_height) {
+        if (reading_headed) {
+            wrap_name = bottom_edge - (body_top + wrapped_height + 6.0) >=
+                        PANEL_ROOM_NAME_MIN_BODY;
+        } else {
+            gdouble bottom_after = bottom_edge - wrapped_height -
+                                   (has_state_line ? state_height + 4.0
+                                                   : 0.0);
+            gdouble available = bottom_after - (y + pad);
+            const PanelIconSet *icons =
+                unassigned ? NULL : icon_set(ui, card->icon);
+            wrap_name = icons == NULL ||
+                        available >= PANEL_ROOM_ICON_SMALL + 4.0;
+        }
+        if (wrap_name) {
+            pango_layout_set_wrap(layout, PANGO_WRAP_WORD_CHAR);
+            pango_layout_set_height(layout, -2);
+            name_height = wrapped_height;
+        }
+    }
+
+    /* The compact value is measured before the name is placed, because the
+     * value outranks it: where both do not fit, the name is dropped and the
+     * value stays. */
+    gchar *compact_text = NULL;
+    gdouble compact_height = 0.0;
+    gint compact_size = 0;
+    gboolean show_name = TRUE;
+    if (compact_value) {
+        compact_text = card_reading(card);
+        if (compact_text != NULL) {
+            compact_size =
+                (gint)CLAMP(MIN(height / 5.0, width / 7.0), 10.0, 20.0);
+            compact_height = card_text_height(layout, compact_text,
+                                              compact_size, TRUE, text_width);
+            if (y + pad + compact_height + 3.0 + name_height > bottom_edge)
+                show_name = FALSE;
+        }
+    }
 
     /* Drawn from the bottom up, so that a card too small for everything
      * loses the least important thing first: the state, then the icon. The
-     * name is what identifies the card and is never dropped. */
-    gdouble content_bottom = bottom_edge - name_height;
+     * one exception is the compact sensor value below, which outranks even
+     * the name. */
+    gdouble content_bottom = bottom_edge - (show_name ? name_height : 0.0);
     if (reading_headed) {
         card_text(cr, layout, name, name_size, TRUE, 0xf1f6fdU, 1.0,
                   x + pad, y + pad, text_width);
         body_top = y + pad + name_height + 6.0;
         content_bottom = bottom_edge;
-    } else {
+    } else if (show_name) {
+        /* A compact sensor value sits below the name, so the name stays on
+         * top where a headed card has it. Every other small card keeps the
+         * name at the bottom, above nothing. */
+        gdouble name_top =
+            compact_text != NULL ? y + pad : content_bottom;
         card_text(cr, layout, name, name_size, TRUE,
                   unassigned ? 0x52657cU : 0xf1f6fdU, 1.0, x + pad,
-                  content_bottom, text_width);
+                  name_top, text_width);
+    }
+    pango_layout_set_wrap(layout, PANGO_WRAP_WORD);
+    pango_layout_set_height(layout, -1);
+
+    /* The value on a one-cell-tall sensor card, centred in the zone below
+     * the name, or the whole card where the name was dropped. */
+    if (compact_text != NULL) {
+        gdouble zone_top =
+            show_name ? y + pad + name_height + 3.0 : y + pad;
+        gdouble value_top =
+            zone_top + MAX(0.0, (bottom_edge - zone_top - compact_height) /
+                                    2.0);
+
+        card_text(cr, layout, compact_text, compact_size, TRUE, 0xffffffU,
+                  1.0, x + pad, value_top, text_width);
+        g_free(compact_text);
     }
 
     if (height >= 108.0) {
@@ -2896,32 +3006,24 @@ static void draw_room_card(PanelUi *ui, cairo_t *cr, PangoLayout *layout,
          * line: a weather block its hero, condition and chart, a sensor
          * block its value with its unit. */
         if (reading_headed) {
-            gint state_size =
+            gint body_state_size =
                 (gint)CLAMP(MIN(height / 11.0, width / 20.0), 9.0, 18.0);
             gdouble body_y = body_top - pad;
 
             if (card_is_sensor(card))
                 draw_sensor_body(cr, layout, card, x, body_y, pad,
-                                 text_width, &content_bottom, state_size);
+                                 text_width, &content_bottom,
+                                 body_state_size);
             else
                 draw_weather_body(cr, layout, card, x, body_y, pad,
-                                  text_width, &content_bottom, state_size);
+                                  text_width, &content_bottom,
+                                  body_state_size);
         } else {
-            gchar *reading = unassigned ? NULL : card_reading(card);
-            const gchar *state = unassigned ? card->rid
-                                 : reading != NULL ? reading
-                                 : !card->state_known ? "--"
-                                 : card->active ? "ON" : "OFF";
-            gint state_size = (gint)CLAMP(height / 11.0, 9.0, 13.0);
-            gdouble state_height = card_text_height(layout, state,
-                                                    state_size, TRUE,
-                                                    text_width);
-
             content_bottom -= state_height + 4.0;
-            card_text(cr, layout, state, state_size, TRUE,
+            card_text(cr, layout, state_text, state_size, TRUE,
                       unassigned ? 0x52657cU : mix_color(0x8fa9c7U, lit, mix),
                       1.0, x + pad, content_bottom, text_width);
-            g_free(reading);
+            g_free(state_reading);
         }
     }
 

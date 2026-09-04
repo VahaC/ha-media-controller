@@ -263,6 +263,33 @@ static void test_sensor_element_is_read(void)
     panel_layout_clear(&layout);
 }
 
+/* The closed control list holds for the new group too: a name this build
+ * has never heard of is ignored rather than acted on, so a sensor stays a
+ * reading however new the integration on the other end is. */
+static void test_sensor_with_unknown_control_is_still_a_reading(void)
+{
+    PanelLayout layout = {0};
+    gchar *failure = NULL;
+    gchar *attributes = g_strdup_printf(
+        "%s,\"entities\":[{\"rid\":\"b71f0c2e\","
+        "\"entity\":\"sensor.kitchen_temperature\",\"name\":\"Kitchen\","
+        "\"domain\":\"sensor\",\"controls\":[\"frobnicator\"]}]",
+        CONTROLLER_ENTITIES);
+
+    g_assert_true(parse(attributes, &layout, &failure));
+    g_assert_cmpuint(entity_count(&layout), ==, 1);
+    g_assert_cmpstr(entity_at(&layout, 0)->domain, ==, "sensor");
+    g_assert_false(entity_at(&layout, 0)->togglable);
+    g_assert_false(entity_at(&layout, 0)->brightness);
+    g_assert_false(entity_at(&layout, 0)->color_temperature);
+    g_assert_false(entity_at(&layout, 0)->target_temperature);
+    g_assert_false(entity_at(&layout, 0)->position);
+    g_assert_false(entity_at(&layout, 0)->stoppable);
+
+    g_free(attributes);
+    panel_layout_clear(&layout);
+}
+
 /* A thermostat that can be turned off and nothing else. The card still
  * draws and still toggles; it simply has no setpoint to open. */
 static void test_climate_without_a_setpoint(void)
@@ -867,6 +894,8 @@ void panel_config_tests_register(void)
     g_test_add_func("/config/climate", test_climate_element_is_read);
     g_test_add_func("/config/cover", test_cover_element_is_read);
     g_test_add_func("/config/sensor", test_sensor_element_is_read);
+    g_test_add_func("/config/sensor-unknown-control",
+                    test_sensor_with_unknown_control_is_still_a_reading);
     g_test_add_func("/config/cover-no-position",
                     test_cover_without_a_position);
     g_test_add_func("/config/climate-toggle-only",

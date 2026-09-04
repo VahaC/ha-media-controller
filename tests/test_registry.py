@@ -114,6 +114,25 @@ class GroupTests(unittest.TestCase):
             [element.rid for element in ordered], ["a", "b", "c", "d"]
         )
 
+    def test_sensors_group_is_offered(self) -> None:
+        group = registry.group_by_slug("sensors")
+        assert group is not None
+        self.assertEqual(group.domain, "sensor")
+        self.assertIn("sensor", registry.GROUP_DOMAINS)
+
+    def test_a_sensor_sorts_after_weather(self) -> None:
+        """Payload order: lights, then weather, then sensors."""
+        ordered = registry.sort_entries(
+            [
+                entry("s", "sensor.kitchen_temperature"),
+                entry("w", "weather.home"),
+                entry("a", "light.desk"),
+            ]
+        )
+        self.assertEqual(
+            [element.rid for element in ordered], ["a", "w", "s"]
+        )
+
     def test_an_unknown_domain_sorts_last_and_is_kept(self) -> None:
         """A registry written by a newer build stays readable by this one."""
         ordered = registry.sort_entries(
@@ -209,6 +228,34 @@ class GroupEditingTests(unittest.TestCase):
             registry.group_selection(self.registry, "light"), ["light.desk"]
         )
         self.assertEqual(registry.group_selection(self.registry, "cover"), [])
+
+    def test_a_sensor_is_added_and_removed_like_any_group(self) -> None:
+        added, _ = registry.replace_group(
+            self.registry,
+            "sensor",
+            ["sensor.kitchen_temperature"],
+            rid_source=counter_rids(),
+        )
+        sensor = next(
+            element
+            for element in added
+            if element.target_entity_id == "sensor.kitchen_temperature"
+        )
+        self.assertEqual(sensor.domain, "sensor")
+        # Lights before switches before sensors: payload order, not form order.
+        self.assertEqual(
+            [element.target_entity_id for element in added],
+            ["light.desk", "switch.fan", "sensor.kitchen_temperature"],
+        )
+
+        removed, retired = registry.replace_group(
+            added, "sensor", [], rid_source=counter_rids()
+        )
+        self.assertEqual(retired, [sensor.rid])
+        self.assertNotIn(
+            "sensor.kitchen_temperature",
+            [element.target_entity_id for element in removed],
+        )
 
 
 class EmptyRegistryTests(unittest.TestCase):
