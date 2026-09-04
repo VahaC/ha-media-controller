@@ -192,7 +192,7 @@ static void test_climate_element_is_read(void)
     panel_layout_clear(&layout);
 }
 
-/* Contract version 8: the cover card. A cover carries no bounds of its own
+/* Contract version 7: the cover card. A cover carries no bounds of its own
  * — a position is a percentage — so the controls are the whole of it. */
 static void test_cover_element_is_read(void)
 {

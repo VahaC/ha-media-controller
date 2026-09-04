@@ -106,7 +106,7 @@ next time somebody tidied theirs. The integration also records the target's
 entity-registry row ID, so the element follows its entity through exactly that
 rename.
 
-### Decision 6, rewritten: six groups, drawable one at a time
+### Decision 6, rewritten: six groups with client-specific rendering
 
 The original decision was `light` and `switch` only, with no `climate`, no
 `cover` and no `fan`. The registry widens the part of that which was about
@@ -120,13 +120,13 @@ took up a place. An element of that domain stored by an older build is retired
 the next time its panel is saved.
 Two of them have no card, because they need none: they are readings, not
 controls. `controls` is the closed list `toggle`, `brightness`, `color_temp`,
-`target_temperature`, `position`, `stop`; as of contract version 8 `light`,
+`target_temperature`, `position`, `stop`; in contract version 7 `light`,
 `switch`, `climate` and `cover` resolve to something in it and `weather` and
 `sensor` are carried with an empty list. A client ignores an element whose
 domain it cannot draw — the same rule that already covers an unknown control
-name, and the rule that lets one card type be released at a time, per client:
-the cover card is on the T560 as of version 8 and not yet on the paired
-ESP32, and neither of them breaks on the other's payload.
+name. The cover card is available on the T560 and not yet on the paired ESP32;
+both clients still speak contract version 7 and neither breaks on the other's
+payload.
 
 ### Why proxies and not direct entities — on the classic firmware
 

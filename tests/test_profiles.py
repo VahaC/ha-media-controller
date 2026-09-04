@@ -65,8 +65,8 @@ class CapabilityTests(unittest.TestCase):
                 self.assertNotIn(key, capabilities)
 
     def test_the_drawable_domains_are_named(self) -> None:
-        # Contract version 7 adds the third and version 8 the fourth. Each
-        # remaining group joins this tuple in a version of its own.
+        # Contract version 7 adds climate and cover to the two original
+        # actionable domains; weather and sensors are read-only blocks.
         self.assertEqual(
             profiles.CARD_DOMAINS, ("light", "switch", "climate", "cover")
         )

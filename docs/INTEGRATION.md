@@ -141,11 +141,11 @@ toggled with a tap and its setpoint is moved on the tablet's adjust sheet or
 by a long press on the ESP32; both panels show what the room is at and what it
 is set to.
 
-Covers have a card on the **tablet**, as of contract version 8. A tap opens or
-closes the blind, and its ADJUST corner carries how far open it is as a
-percentage — where the cover reports one — and a STOP button, which is what a
-blind that takes ten seconds to travel actually needs. The paired ESP32 has no
-cover card yet and ignores those elements until it does.
+Covers are part of contract version 7 and have a card on the **tablet**. A tap
+opens or closes the blind, and its ADJUST corner carries how far open it is as
+a percentage — where the cover reports one — and a STOP button, which is what
+a blind that takes ten seconds to travel actually needs. The paired ESP32 has
+no cover card yet and ignores those elements, as the contract permits.
 
 Weather is drawn as a reading block on both panels: the condition and the
 temperature, with the humidity where it is reported. A tap on it acts on

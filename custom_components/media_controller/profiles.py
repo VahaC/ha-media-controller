@@ -16,10 +16,10 @@ CONTROL_BRIGHTNESS = "brightness"
 CONTROL_COLOR_TEMP = "color_temp"
 # A single setpoint a card can move. Added in contract version 7 with the
 # climate card; a client that does not know the name ignores it, which is
-# what lets one card type ship at a time.
+# what lets clients implement different subsets safely.
 CONTROL_TARGET_TEMPERATURE = "target_temperature"
-# How far open something is, as a percentage a card can drag. Added in
-# contract version 8 with the cover card, alongside `stop`.
+# How far open something is, as a percentage a card can drag. Part of
+# contract version 7 with the cover card, alongside `stop`.
 CONTROL_POSITION = "position"
 # Halting something that is moving. It is an action rather than a value, and
 # it is the one control a blind needs that no other card type has: a blind

@@ -64,13 +64,11 @@ proxies are the only way it can follow a change made in the Home Assistant UI,
 and a registry it cannot read would be of no use to it. It is sent no
 `entities` block, exactly as it is sent no `settings` and no `commands`.
 
-Version 7 is additive again, and it is the first of a series: it teaches the
-registry one new **card type**. Version 6 accepted six groups of entities and
-drew two of them, `light` and `switch`; every other group travelled with an
-empty `controls` list, waiting for the card that would draw it. Version 7
-writes the first of those cards, for `climate`, and nothing else. The
-remaining groups — `cover` and `weather` — still travel with an empty list and
-are still ignored by every client.
+Version 7 is additive again. It defines the current registry card vocabulary:
+`climate` and `cover` controls, and read-only `weather` and `sensor` blocks,
+alongside the existing `light` and `switch` cards. A client may implement only
+the domains and controls its hardware and interface can draw; it ignores the
+rest without rejecting the payload.
 
 The sixth group, `media_player`, is no longer offered: a panel already plays
 from a media player of its own, chosen on the same page and drawn by the
@@ -80,23 +78,15 @@ still ignores one it cannot draw — so nothing about this version moves. A
 `media_player` element stored by an older build is retired the next time its
 panel is saved.
 
-Version 8 is the next card in that series, and the only thing it adds: the
-**cover card**. A `cover` element resolves to as many as three controls —
-`toggle`, and the two names this version introduces, `position` and `stop` —
-and a blind, a shutter or an awning becomes something a panel can act on
-rather than a tile that answers nothing. Nothing else moves: no field is
-added to the payload, because how far open a cover is arrives as an ordinary
-attribute of the entity a client already polls. `weather` and `sensor` are
-now the only groups still travelling with an empty list, and both are drawn
-as readings rather than controls — see **Weather blocks** and **Sensor
-blocks** below.
+The **cover card** is part of version 7. A `cover` element resolves to as many
+as three controls — `toggle`, `position` and `stop` — and a blind, a shutter
+or an awning becomes something a client can act on rather than a tile that
+answers nothing. How far open a cover is adds no field to the payload: it
+arrives as an ordinary attribute of the entity a client already polls. The
+T560 panel draws the cover card; the paired ESP32 currently ignores the
+domain, as the client rule above permits.
 
-The T560 panel draws the card as of this version. The paired ESP32 does not
-yet, and by the rule below it is entitled not to: it ignores an element whose
-domain it cannot draw, exactly as every panel did with `climate` between
-version 6 and version 7.
-
-The last card in that series is the **weather block**. A `weather` element
+The **weather block** is also part of version 7. A `weather` element
 still carries an empty `controls` list, because there is nothing to act on:
 no new control name is introduced and no field is added to the payload,
 because the condition is the entity state itself and the temperature and
@@ -113,12 +103,10 @@ for weather any more.
 
 That is deliberate, and the rule that makes it possible is already written
 below: **a client that does not know a value in `controls` ignores it, and a
-client that cannot draw a domain ignores that element.** So each card type is
-its own version and its own release. A panel running version 6 that is handed
-a version 7 payload reads a `climate` element whose `controls` contains a name
-it has never heard of, ignores the name, and behaves exactly as it did before;
-nothing else in the payload moved. The type is drawn on a panel when that
-panel is updated, and not before.
+client that cannot draw a domain ignores that element.** A panel running
+version 6 that is handed a version 7 payload ignores the names and domains it
+does not know and otherwise keeps working. Clients that both report contract
+version 7 may still draw different subsets of the registry.
 
 What version 7 adds, precisely:
 
@@ -127,7 +115,10 @@ What version 7 adds, precisely:
 - three keys beside it — `min_temp`, `max_temp` and `target_temp_step` —
   present only when `controls` contains `target_temperature`, exactly as
   `min_kelvin` and `max_kelvin` are present only with `color_temp`;
-- `climate` moves from "no card" to "card" in the group table.
+- two cover controls, `position` and `stop`; the current position remains an
+  ordinary state attribute rather than part of the config payload;
+- `climate` and `cover` gain actionable card definitions, while `weather` and
+  `sensor` are defined as read-only blocks.
 
 `toggle` is **not** new and means on a thermostat what it has always meant:
 the element can be turned off and on again. See **Climate cards** below.
@@ -320,13 +311,12 @@ Real attributes, not an encoded string. Rules a client must follow:
   have no proxies; see **Registry entries** below.
 - Unconfigured slots are **omitted**. Render what arrives, in `slot` order, and
   handle an empty `slots` list.
-- `controls` is a closed list in both blocks: `toggle`, `brightness`,
-  `color_temp`, `target_temperature`. An unknown value must be ignored, not
-  treated as an error, so that a future control can be added without breaking
-  released clients. This is the rule one card type at a time depends on: a
-  client that was released before a control existed keeps working when it
-  arrives. `slots` never carries `target_temperature` — the classic ESP32
-  firmware's four buttons are lights and switches, fixed while compiling.
+- `controls` uses the closed vocabulary `toggle`, `brightness`, `color_temp`,
+  `target_temperature`, `position`, `stop`. An unknown value must be ignored,
+  not treated as an error, so that a future control can be added without
+  breaking released clients. `target_temperature`, `position` and `stop`
+  appear only in `entities`; the classic ESP32 firmware's fixed `slots` are
+  lights and switches.
 - `min_kelvin` and `max_kelvin` are present only when `controls` contains
   `color_temp`.
 - `min_temp`, `max_temp` and `target_temp_step` are present only when
@@ -441,14 +431,14 @@ The groups, in payload order:
 | Lights | `light` | yes |
 | Switches | `switch` | yes |
 | Climate | `climate` | yes, since version 7 |
-| Covers | `cover` | yes, since version 8 |
+| Covers | `cover` | yes, in version 7 |
 | Weather | `weather` | yes, as a reading |
 | Sensors | `sensor` | yes, as a reading |
 
-A "no" in that column is not a promise that the element is useless: it still
-travels, still carries its `rid`, and is still stored in the layout a person
-arranged. It only means no client draws a control for it yet. Each remaining
-row becomes a "yes" in a version of its own.
+The table describes the contract vocabulary, not a requirement that every
+client draw every domain. A client ignores a domain it cannot draw, so the
+T560 and paired ESP32 may implement different subsets while both speak
+contract version 7.
 
 ### Climate cards
 
@@ -515,10 +505,9 @@ this integration can offer no action on.
 
 ### Cover cards
 
-New in version 8, and the whole of what that version adds. A `cover` element
-is resolved the way a `climate` one is: the integration reads the cover's
-feature bits and sends the controls a card may draw, and a client never
-inspects `supported_features` itself.
+Part of version 7. A `cover` element is resolved the way a `climate` one is:
+the integration reads the cover's feature bits and sends the controls a card
+may draw, and a client never inspects `supported_features` itself.
 
 ```json
 {
