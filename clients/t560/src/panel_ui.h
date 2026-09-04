@@ -128,6 +128,13 @@ typedef struct {
     const gchar *weather_condition;
     gdouble weather_temperature;
     gint weather_humidity;
+    /* A sensor block. The value is the entity state itself ("21.5", "on",
+     * ...) and NULL while unknown; the unit is the entity's
+     * `unit_of_measurement` attribute and NULL where none is reported. Like
+     * a weather block it is a reading rather than a control: it never
+     * toggles and never adjusts. */
+    const gchar *sensor_value;
+    const gchar *sensor_unit;
 } PanelRoomState;
 
 void panel_ui_set_room(PanelUi *ui, guint index, const PanelRoomState *state);

@@ -65,16 +65,18 @@ class RegistryGroup:
     domain: str
 
 
-# In payload order. The form has a reading order of its own. Only the first
-# three have cards in any client today; the rest are accepted so that the
-# registry is already carrying them when a card is written, and a client
-# ignores an element whose domain it cannot draw.
+# In payload order. Lights, switches, climate and covers draw controls; weather
+# and sensors are carried with an empty control list and drawn as readings
+# rather than controls — see docs/CONTRACT.md, Weather blocks and Sensor
+# blocks. A client ignores an element whose domain it cannot draw, so a group
+# added here cannot break a client already in the field.
 GROUPS: tuple[RegistryGroup, ...] = (
     RegistryGroup("lights", "light"),
     RegistryGroup("switches", "switch"),
     RegistryGroup("climate", "climate"),
     RegistryGroup("covers", "cover"),
     RegistryGroup("weather", "weather"),
+    RegistryGroup("sensors", "sensor"),
 )
 
 # Groups that were offered once and are not any more. Their elements are

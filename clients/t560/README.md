@@ -68,6 +68,11 @@ is ever written by hand is an optional set of fallbacks.
   Assistant is configured in, and the card draws the number and a degree sign.
   A thermostat costs no extra polling: the two numbers are attributes of the
   state document the card is already polled with.
+- **Sensor blocks**. A sensor card is a reading, not a button: it shows the
+  name and the value with its unit — `21.5 °C` — the bare value where the
+  entity reports no unit. A tap on it acts on nothing. A sensor costs no
+  extra polling: the value is the state itself and the unit is an attribute
+  of the state document the card is already polled with.
 - **A layout editor the panel serves itself**, on port 8730 by default, so
   the grid is arranged from a phone or a desktop rather than on a tablet with
   no keyboard. It has no password; see [The layout

@@ -60,6 +60,7 @@
         "description": "{profile} draws one tile for every entity listed here, named as Home Assistant names it. Each list both adds and removes: an entity you clear is deleted and does not come back with the same identity. {remaining} of {entity_limit} places are free.",
         "data": {
           "weather": "Weather",
+          "sensors": "Sensors",
           "lights": "Lights",
           "switches": "Switches",
           "climate": "Climate devices",
@@ -122,6 +123,7 @@
         "data": {
           "controller_entry_id": "Media player source",
           "weather": "Weather",
+          "sensors": "Sensors",
           "lights": "Lights",
           "switches": "Switches",
           "climate": "Climate devices",

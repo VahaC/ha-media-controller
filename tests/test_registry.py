@@ -88,7 +88,7 @@ class GroupTests(unittest.TestCase):
     def test_every_group_maps_to_one_domain(self) -> None:
         self.assertEqual(
             [group.domain for group in registry.GROUPS],
-            ["light", "switch", "climate", "cover", "weather"],
+            ["light", "switch", "climate", "cover", "weather", "sensor"],
         )
 
     def test_a_retired_group_is_no_longer_offered(self) -> None:

@@ -75,6 +75,8 @@ static uint8_t domain_from_name(const char *domain) {
     return DOMAIN_CLIMATE;
   if (strcmp(domain, "weather") == 0)
     return DOMAIN_WEATHER;
+  if (strcmp(domain, "sensor") == 0)
+    return DOMAIN_SENSOR;
   return DOMAIN_OTHER;
 }
 
@@ -88,6 +90,8 @@ static const char *domain_to_name(uint8_t domain) {
       return "climate";
     case DOMAIN_WEATHER:
       return "weather";
+    case DOMAIN_SENSOR:
+      return "sensor";
     default:
       return "other";
   }
@@ -120,7 +124,8 @@ bool card_is_labelled(const Card &card) { return card.w() >= 2 && card.h() >= 2;
 
 bool card_shows_reading(const Card &card, const Entry *entry) {
   return entry != nullptr &&
-         (entry->domain == DOMAIN_CLIMATE || entry->domain == DOMAIN_WEATHER) &&
+         (entry->domain == DOMAIN_CLIMATE || entry->domain == DOMAIN_WEATHER ||
+          entry->domain == DOMAIN_SENSOR) &&
          card_is_labelled(card);
 }
 
@@ -156,9 +161,9 @@ bool entry_is_known(const Entry &entry) {
 bool entry_is_on(const Entry &entry) {
   if (!entry_is_known(entry))
     return false;
-  /* A weather block is a reading rather than a control: it is never on, so
-   * it never draws the active border a button does. */
-  if (entry.domain == DOMAIN_WEATHER)
+  /* A weather block and a sensor block are readings rather than controls:
+   * they are never on, so they never draw the active border a button does. */
+  if (entry.domain == DOMAIN_WEATHER || entry.domain == DOMAIN_SENSOR)
     return false;
   return entry.domain == DOMAIN_CLIMATE ? entry.state != "off" : entry.state == "on";
 }
@@ -204,6 +209,18 @@ static std::string humanize_weather_condition(const std::string &condition) {
 std::string card_reading(const Entry &entry) {
   if (!entry_is_known(entry))
     return std::string();
+
+  /* A sensor block says its value with its unit: the name on the card says
+   * what it is, this line says what it reads. A sensor that reported no
+   * unit, or one whose state is not a number at all, still draws the bare
+   * value rather than nothing. */
+  if (entry.domain == DOMAIN_SENSOR) {
+    if (entry.state.empty())
+      return std::string();
+    if (!entry.sensor_unit.empty())
+      return entry.state + " " + entry.sensor_unit;
+    return entry.state;
+  }
 
   /* A weather block says what the sky is doing and how warm it is. It is a
    * reading rather than a control: ON and OFF would be the wrong words
@@ -457,6 +474,7 @@ bool MediaControllerGrid::ingest_entities(const std::string &attributes) {
       entry.setpoint = previous->setpoint;
       entry.weather_temp = previous->weather_temp;
       entry.weather_humidity = previous->weather_humidity;
+      entry.sensor_unit = previous->sensor_unit;
       entry.fc_count = previous->fc_count;
       for (uint8_t day = 0; day < previous->fc_count && day < FORECAST_DAYS; day++) {
         entry.fc_dow[day] = previous->fc_dow[day];
@@ -732,6 +750,7 @@ std::vector<size_t> MediaControllerGrid::polled_order_() const {
   std::vector<size_t> plain;
   std::vector<size_t> thermostats;
   std::vector<size_t> weather;
+  std::vector<size_t> sensors;
 
   for (size_t i = 0; i < this->entries_.size(); i++) {
     const Entry &entry = this->entries_[i];
@@ -751,16 +770,20 @@ std::vector<size_t> MediaControllerGrid::polled_order_() const {
      * the *request* small — a loop over a list of entity IDs is about twenty
      * bytes an entity, and writing each entity into three function calls
      * would be a hundred and thirty. Weather blocks are a third group for
-     * the same reason: the condition plus two attributes. */
+     * the same reason: the condition plus two attributes. Sensor blocks are
+     * a fourth: the value plus its unit. */
     if (entry.domain == DOMAIN_CLIMATE)
       thermostats.push_back(i);
     else if (entry.domain == DOMAIN_WEATHER)
       weather.push_back(i);
+    else if (entry.domain == DOMAIN_SENSOR)
+      sensors.push_back(i);
     else
       plain.push_back(i);
   }
   plain.insert(plain.end(), thermostats.begin(), thermostats.end());
   plain.insert(plain.end(), weather.begin(), weather.end());
+  plain.insert(plain.end(), sensors.begin(), sensors.end());
   return plain;
 }
 
@@ -768,12 +791,14 @@ std::string MediaControllerGrid::state_request() const {
   std::string plain;
   std::string thermostats;
   std::string weather;
+  std::string sensors;
   size_t count = 0;
 
   for (const size_t index : this->polled_order_()) {
     const Entry &entry = this->entries_[index];
     std::string &list = entry.domain == DOMAIN_CLIMATE  ? thermostats
                         : entry.domain == DOMAIN_WEATHER ? weather
+                        : entry.domain == DOMAIN_SENSOR  ? sensors
                                                          : plain;
     if (!list.empty())
       list += ',';
@@ -796,7 +821,7 @@ std::string MediaControllerGrid::state_request() const {
    * separated by `~` inside a card and by `|` between cards, and neither
    * character occurs in a Home Assistant state or in a number. A weather
    * block renders three fields of its own: the condition, the temperature
-   * and the humidity. */
+   * and the humidity. A sensor block renders two: the value and its unit. */
   std::string tmpl;
   if (!plain.empty())
     tmpl += "{% for e in [" + plain + "] %}{{ states(e) }}|{% endfor %}";
@@ -809,6 +834,10 @@ std::string MediaControllerGrid::state_request() const {
     tmpl += "{% for e in [" + weather +
             "] %}{{ states(e) }}~{{ state_attr(e,'temperature') }}"
             "~{{ state_attr(e,'humidity') }}|{% endfor %}";
+  }
+  if (!sensors.empty()) {
+    tmpl += "{% for e in [" + sensors +
+            "] %}{{ states(e) }}~{{ state_attr(e,'unit_of_measurement') }}|{% endfor %}";
   }
 
   JsonDocument doc;
@@ -834,7 +863,8 @@ void MediaControllerGrid::apply_states(const std::string &rendered) {
     const std::string field = rendered.substr(at, end - at);
     at = end + 1;
 
-    if (entry.domain != DOMAIN_CLIMATE && entry.domain != DOMAIN_WEATHER) {
+    if (entry.domain != DOMAIN_CLIMATE && entry.domain != DOMAIN_WEATHER &&
+        entry.domain != DOMAIN_SENSOR) {
       entry.state = field;
       continue;
     }
@@ -842,8 +872,9 @@ void MediaControllerGrid::apply_states(const std::string &rendered) {
     const size_t first = field.find('~');
     if (first == std::string::npos) {
       /* Not the shape that was asked for. Take it as a bare state rather
-       * than discarding it: a thermostat card still reads as on or off, and
-       * a weather block still names the sky. */
+       * than discarding it: a thermostat card still reads as on or off, a
+       * weather block still names the sky, and a sensor block still names
+       * its value. */
       entry.state = field;
       continue;
     }
@@ -857,6 +888,16 @@ void MediaControllerGrid::apply_states(const std::string &rendered) {
     if (entry.domain == DOMAIN_WEATHER) {
       entry.weather_temp = parse_number(middle);
       entry.weather_humidity = parse_number(last);
+      continue;
+    }
+    if (entry.domain == DOMAIN_SENSOR) {
+      /* Home Assistant renders a missing attribute as "None": no unit, not
+       * a unit called None. */
+      entry.sensor_unit =
+          (middle.empty() || middle == "None" || middle == "unknown" ||
+           middle == "unavailable")
+              ? std::string()
+              : middle;
       continue;
     }
     entry.ambient = parse_number(middle);

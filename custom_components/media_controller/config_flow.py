@@ -176,6 +176,7 @@ def _slot_fields(profile: ClientProfile) -> dict[Any, Any]:
 # one page of settings, and a group this list forgets is simply shown last.
 FORM_GROUP_ORDER: tuple[str, ...] = (
     "weather",
+    "sensors",
     "lights",
     "switches",
     "climate",

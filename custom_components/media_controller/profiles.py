@@ -71,12 +71,13 @@ LIGHT_DOMAIN = "light"
 SWITCH_DOMAIN = "switch"
 CLIMATE_DOMAIN = "climate"
 COVER_DOMAIN = "cover"
+SENSOR_DOMAIN = "sensor"
 
-# The domains a client can draw a control for today. A weather element is
-# carried with an empty control list and drawn as a reading rather than a
-# control — see docs/CONTRACT.md, Weather blocks — so it stays out of this
-# tuple. A client ignores an element whose domain it cannot draw. So is a
-# domain that is no longer a group at all.
+# The domains a client can draw a control for today. A weather element and a
+# sensor element are carried with an empty control list and drawn as a reading
+# rather than a control — see docs/CONTRACT.md, Weather blocks and Sensor
+# blocks — so both stay out of this tuple. A client ignores an element whose
+# domain it cannot draw. So is a domain that is no longer a group at all.
 # See docs/CONTRACT.md, Registry entries.
 CARD_DOMAINS = (LIGHT_DOMAIN, SWITCH_DOMAIN, CLIMATE_DOMAIN, COVER_DOMAIN)
 
@@ -327,8 +328,8 @@ def normalize_capabilities(
     A domain no client can draw a control for yet returns no controls at
     all, rather than a toggle nothing would render. The element still
     travels in the payload carrying its domain, so a client that learns the
-    card later finds it already there. Weather keeps the empty list even
-    with its block: the block is a reading, not a control.
+    card later finds it already there. Weather and sensor keep the empty list
+    even with their blocks: each block is a reading, not a control.
     """
     if domain == SWITCH_DOMAIN:
         return {CAP_CONTROLS: (CONTROL_TOGGLE,)}

@@ -124,10 +124,11 @@ other: the device keeps its token, its device, and its entity IDs.
 ### Room entities
 
 A panel's room controls are a list with no fixed length. *Configure* shows
-every group on one page — Weather, Lights, Switches, Climate devices, Covers —
-each a selector holding everything in it: adding an entity to one adds a tile,
-clearing one removes it, and there is no numbered slot to run out of. One
-*Submit* saves the lot. A tile is named as Home Assistant names the entity.
+every group on one page — Weather, Sensors, Lights, Switches, Climate
+devices, Covers — each a selector holding everything in it: adding an entity
+to one adds a tile, clearing one removes it, and there is no numbered slot to
+run out of. One *Submit* saves the lot. A tile is named as Home Assistant
+names the entity.
 
 There is no group for media players: a panel plays from the source chosen at
 the top of the same page, and that is the player it draws.
@@ -148,7 +149,11 @@ cover card yet and ignores those elements until it does.
 
 Weather is drawn as a reading block on both panels: the condition and the
 temperature, with the humidity where it is reported. A tap on it acts on
-nothing. See [ROOM_SLOTS.md](ROOM_SLOTS.md).
+nothing.
+
+Sensors are drawn as a reading block on both panels: the name and the value
+with its unit — `21.5 °C` — the bare value where the entity reports no unit.
+A tap on it acts on nothing. See [ROOM_SLOTS.md](ROOM_SLOTS.md).
 
 The room controls of an ESP32 running the **classic** firmware are the exception
 to all of this. They are still four numbered slots, they live on the source

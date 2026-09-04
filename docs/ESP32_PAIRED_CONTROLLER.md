@@ -365,20 +365,24 @@ reports the outcome on `GET /api/entities`.
 | `light` | toggle | sweeps brightness | icon and a tap |
 | `switch` | toggle | — | icon and a tap |
 | `climate` | toggle | sweeps the setpoint | icon and a tap |
+| `weather` | — (a reading) | — | icon |
+| `sensor` | — (a reading) | — | icon |
 
-Everything else in the registry is drawn as a card with no action, because no
-card is written for it **here** yet: contract version 8 adds the cover card
-and the T560 draws it, this firmware does not, and a `cover` element reaches
-it carrying controls it ignores. Home Assistant says so — a panel behind the
+A `cover` element is drawn as a card with no action, because no cover card is
+written for it **here** yet: contract version 8 adds the cover card and the
+T560 draws it, this firmware does not, and a `cover` element reaches it
+carrying controls it ignores. Home Assistant says so — a panel behind the
 contract raises the repair issue described under **Version compatibility** —
 and the remedy is a firmware that draws the card, not a reflash of this one.
 See **Registry entries** in `docs/CONTRACT.md`.
 
 A card two cells square or larger carries its name; a thermostat carries a
 reading above the name as well — the temperature the room is at and the
-setpoint, as `21.5° / 22°`. A thermostat that is **off** shows the room
-temperature alone: that number is true either way, and the setpoint it used to
-be heading for is not. The card's border already says which of the two it is.
+setpoint, as `21.5° / 22°`. A weather block carries the condition and the
+temperature, and a sensor block its value with its unit, as `21.5 °C`. A
+thermostat that is **off** shows the room temperature alone: that number is
+true either way, and the setpoint it used to be heading for is not. The
+card's border already says which of the two it is.
 At one cell there is 54 px of paint and room for the icon or the name but not
 both, and the icon is the half that still says what the card is; that rule is
 the same for every card type.

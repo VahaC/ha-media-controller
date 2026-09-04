@@ -47,7 +47,7 @@ everything below.
 | 3 | ESP32 has no entry of its own | Its four slots stay on the controller config entry, where they already are |
 | 4 | A panel's room controls are an **unbounded registry grouped by domain**; the classic ESP32 keeps exactly four slots | Rewritten in version 6 — see below |
 | 5 | Every element has a stored label; empty falls back to `friendly_name` | The form stopped asking for one — a tile is named as Home Assistant names the entity |
-| 6 | The registry accepts **five groups**; `light`, `switch`, `climate` and `cover` have cards | Rewritten in version 6, extended one group at a time from version 7 — see below |
+| 6 | The registry accepts **six groups**; `light`, `switch`, `climate` and `cover` have cards, `weather` and `sensor` are readings | Rewritten in version 6, extended one group at a time from version 7 — see below |
 | 7 | The integration **normalizes capabilities** | Clients render from a plain list and never parse `supported_color_modes` |
 | 8 | Legacy **entity IDs** are preserved | Flashed ESP32 devices keep working without a reflash |
 
@@ -87,7 +87,7 @@ It cost the thing users actually asked for: a tablet that draws six tiles and
 no more, on a screen with room for far more than six.
 
 A panel now has a list with no fixed length. The form is one page of groups —
-Weather, Lights, Switches, Climate devices, Covers — each a single selector
+Weather, Sensors, Lights, Switches, Climate devices, Covers — each a single selector
 holding every entity in it, which both adds and removes. The
 only ceiling is the client profile's `entity_limit`: 100 for the tablet, 64
 for the paired ESP32. They differ because the tablet's registry is parsed by a
@@ -106,28 +106,27 @@ next time somebody tidied theirs. The integration also records the target's
 entity-registry row ID, so the element follows its entity through exactly that
 rename.
 
-### Decision 6, rewritten: five groups, drawable one at a time
+### Decision 6, rewritten: six groups, drawable one at a time
 
 The original decision was `light` and `switch` only, with no `climate`, no
 `cover` and no `fan`. The registry widens the part of that which was about
 *storage* and keeps the part that was about *drawing*.
 
-The form offers five groups and the payload carries each element's `domain`,
-so a thermostat, a cover or a weather entity can be added now. A media player
-is not among them: a panel plays from its source, which is a media player
-chosen on the same page, and a second one in the registry only took up a
-place. An element of that domain stored by an older build is retired the next
-time its panel is saved.
-One of them does not have a card yet. `controls` is the closed list
-`toggle`, `brightness`, `color_temp`, `target_temperature`, `position`,
-`stop`; as of contract version 8 `light`, `switch`, `climate` and `cover`
-resolve to something in it and `weather` is carried with an empty list. A
-client ignores an element whose domain it cannot draw — the same rule that
-already covers an unknown control name, and the rule that lets one card type
-be released at a time, per client: the cover card is on the T560 as of version
-8 and not yet on the paired ESP32, and neither of them breaks on the other's
-payload. Writing the last card needs no further contract change, because the
-elements are already there.
+The form offers six groups and the payload carries each element's `domain`,
+so a thermostat, a cover, a weather entity or a sensor can be added now. A
+media player is not among them: a panel plays from its source, which is a
+media player chosen on the same page, and a second one in the registry only
+took up a place. An element of that domain stored by an older build is retired
+the next time its panel is saved.
+Two of them have no card, because they need none: they are readings, not
+controls. `controls` is the closed list `toggle`, `brightness`, `color_temp`,
+`target_temperature`, `position`, `stop`; as of contract version 8 `light`,
+`switch`, `climate` and `cover` resolve to something in it and `weather` and
+`sensor` are carried with an empty list. A client ignores an element whose
+domain it cannot draw — the same rule that already covers an unknown control
+name, and the rule that lets one card type be released at a time, per client:
+the cover card is on the T560 as of version 8 and not yet on the paired
+ESP32, and neither of them breaks on the other's payload.
 
 ### Why proxies and not direct entities — on the classic firmware
 

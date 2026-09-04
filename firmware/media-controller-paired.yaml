@@ -1715,10 +1715,11 @@ script:
                              : (-12 - (reads ? 8 : 0) -
                                 (int) forecast_rows * 20));
 
-            // -- Child 1 on a labelled thermostat card and nowhere else; see
-            //    the child order in media_controller_grid.h. It is created
-            //    empty because the registry arriving and the state arriving
-            //    are two different polls, and refresh_room_cards fills it. --
+            // -- Child 1 on a labelled thermostat, weather or sensor card
+            //    and nowhere else; see the child order in
+            //    media_controller_grid.h. It is created empty because the
+            //    registry arriving and the state arriving are two different
+            //    polls, and refresh_room_cards fills it. --
             if (reads) {
               lv_obj_t *reading = lv_label_create(tile);
               lv_label_set_long_mode(reading, LV_LABEL_LONG_DOT);
@@ -1902,17 +1903,19 @@ script:
             bool known = entry != nullptr &&
                          media_controller_grid::entry_is_known(*entry);
             bool on = known && media_controller_grid::entry_is_on(*entry);
-            // -- A weather block wears its own sky rather than the off
-            //    grey: it is information, not a switch left off. --
-            bool weather =
+            // -- A weather block and a sensor block wear their own sky
+            //    rather than the off grey: they are information, not a
+            //    switch left off. --
+            bool reading =
                 entry != nullptr &&
-                entry->domain == media_controller_grid::DOMAIN_WEATHER;
+                (entry->domain == media_controller_grid::DOMAIN_WEATHER ||
+                 entry->domain == media_controller_grid::DOMAIN_SENSOR);
 
             lv_obj_set_style_border_color(
                 tile,
                 !known ? lv_color_hex(0x59303c)
                        : (on ? lv_color_hex(0x00cfff)
-                             : (weather ? lv_color_hex(0x3d6a99)
+                             : (reading ? lv_color_hex(0x3d6a99)
                                         : lv_color_hex(0x505078))),
                 0);
 
@@ -1926,9 +1929,10 @@ script:
 
             // -- A thermostat says a temperature where everything else says
             //    nothing: "on" is not what a person came to a thermostat
-            //    for, and a weather block names the sky. Child 1, and only
-            //    on a labelled thermostat or weather card; see the child
-            //    order in media_controller_grid.h.
+            //    for, a weather block names the sky, and a sensor block its
+            //    value with its unit. Child 1, and only on a labelled
+            //    thermostat, weather or sensor card; see the child order in
+            //    media_controller_grid.h.
             // --
             // -- The guard is "has this element ever been answered", not
             //    "is the new reading empty". Skipping an empty reading would

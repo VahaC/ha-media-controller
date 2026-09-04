@@ -86,8 +86,10 @@ Version 8 is the next card in that series, and the only thing it adds: the
 and a blind, a shutter or an awning becomes something a panel can act on
 rather than a tile that answers nothing. Nothing else moves: no field is
 added to the payload, because how far open a cover is arrives as an ordinary
-attribute of the entity a client already polls. `weather` is now the only
-group still travelling with an empty list.
+attribute of the entity a client already polls. `weather` and `sensor` are
+now the only groups still travelling with an empty list, and both are drawn
+as readings rather than controls — see **Weather blocks** and **Sensor
+blocks** below.
 
 The T560 panel draws the card as of this version. The paired ESP32 does not
 yet, and by the rule below it is entitled not to: it ignores an element whose
@@ -411,9 +413,10 @@ client profile allows, in any of the groups below, and removes them again.
   `target_temperature`, `position`, `stop`. It is resolved by the integration
   from the target's capabilities. A client renders from it and never parses
   `supported_color_modes` or `supported_features` itself. As of this version
-  `light`, `switch`, `climate` and `cover` produce controls; `weather` is
-  carried with an empty list and drawn as a reading rather than a control —
-  see **Weather blocks** below — as is any domain that is no longer a group.
+  `light`, `switch`, `climate` and `cover` produce controls; `weather` and
+  `sensor` are carried with an empty list and drawn as a reading rather than
+  a control — see **Weather blocks** and **Sensor blocks** below — as is any
+  domain that is no longer a group.
 - `min_kelvin` and `max_kelvin` appear only when `controls` contains
   `color_temp`, as in `slots`.
 - `min_temp`, `max_temp` and `target_temp_step` appear only when `controls`
@@ -440,6 +443,7 @@ The groups, in payload order:
 | Climate | `climate` | yes, since version 7 |
 | Covers | `cover` | yes, since version 8 |
 | Weather | `weather` | yes, as a reading |
+| Sensors | `sensor` | yes, as a reading |
 
 A "no" in that column is not a promise that the element is useless: it still
 travels, still carries its `rid`, and is still stored in the layout a person
@@ -605,6 +609,40 @@ What a client draws is its own business, and the two panels differ:
 
 A block whose entity reports no temperature still draws and still reads:
 it says the condition alone, or the humidity alone, rather than nothing.
+
+### Sensor blocks
+
+A `sensor` element carries an empty `controls` list, because there is
+nothing to act on: no new control name is introduced and no field is added
+to the payload.
+
+```json
+{
+  "rid": "b71f0c2e",
+  "entity": "sensor.kitchen_temperature",
+  "name": "Kitchen",
+  "domain": "sensor",
+  "controls": []
+}
+```
+
+The value is the entity state itself (`21.5`, `on`, ...), and the unit is the
+ordinary `unit_of_measurement` attribute of the entity a client already
+polls. A client reads them the way it already reads a lamp's brightness or
+a room's temperature, and draws the value followed by the unit where one is
+reported — `21.5 °C` — and the bare value where none is.
+
+What a client draws is its own business, and the two panels agree:
+
+| Client | Tap | Beyond a tap |
+| --- | --- | --- |
+| T560 panel | Nothing; the block is a reading, not a button | Nothing; it never opens the adjustment sheet |
+| ESP32-S3 panel | Nothing; the block is a reading, not a button | Nothing; a long press moves no value |
+| ESP32-S3 controller | — | Not a panel; it reads `slots` and is sent no `entities` |
+
+A block whose entity reports `unavailable` or `unknown` still draws: it says
+the name alone, rather than nothing. A tap on it acts on nothing, it never
+shows a pressed state, and it never opens the adjustment sheet.
 
 ### What version 6 breaks
 

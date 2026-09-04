@@ -720,9 +720,11 @@ static void update_playlists(PanelApplication *application, JsonObject *state)
  * `state_known` is for; here an unavailable entity is simply not on. */
 static gboolean room_is_active(const PanelEntity *entity, const gchar *state)
 {
-    /* A weather block is a reading rather than a control: it is never on,
-     * so it never draws the active gradient a button does. */
-    if (entity != NULL && g_strcmp0(entity->domain, "weather") == 0) {
+    /* A weather block and a sensor block are readings rather than
+     * controls: they are never on, so they never draw the active gradient
+     * a button does. */
+    if (entity != NULL && (g_strcmp0(entity->domain, "weather") == 0 ||
+                           g_strcmp0(entity->domain, "sensor") == 0)) {
         return FALSE;
     }
     /* A blind is on when it is not shut. Home Assistant reports `open`,
@@ -757,6 +759,8 @@ static void update_room(PanelApplication *application, guint index,
     const gchar *raw_state = json_object_string(state, "state", "");
     gboolean is_weather = entity != NULL &&
                           g_strcmp0(entity->domain, "weather") == 0;
+    gboolean is_sensor = entity != NULL &&
+                         g_strcmp0(entity->domain, "sensor") == 0;
     PanelRoomState reported = {
         .active = room_is_active(entity, raw_state),
         .brightness_percent = -1,
@@ -768,7 +772,9 @@ static void update_room(PanelApplication *application, guint index,
         .position = -1,
         .weather_condition = NULL,
         .weather_temperature = NAN,
-        .weather_humidity = -1
+        .weather_humidity = -1,
+        .sensor_value = NULL,
+        .sensor_unit = NULL
     };
     gdouble value = 0.0;
 
@@ -784,6 +790,17 @@ static void update_room(PanelApplication *application, guint index,
         if (json_object_number(attributes, "humidity", &value) &&
             value >= 0.0)
             reported.weather_humidity = CLAMP((gint)(value + 0.5), 0, 100);
+    }
+
+    /* A sensor block costs no extra request either: the value is the state
+     * itself and the unit is the `unit_of_measurement` attribute of the
+     * same document the card was already polled with. */
+    if (is_sensor) {
+        if (!g_str_equal(raw_state, "unavailable") &&
+            !g_str_equal(raw_state, "unknown") && *raw_state != '\0')
+            reported.sensor_value = raw_state;
+        reported.sensor_unit =
+            json_object_string(attributes, "unit_of_measurement", NULL);
     }
 
     if (json_object_number(attributes, "brightness", &value) && value >= 0.0) {

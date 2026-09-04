@@ -33,11 +33,11 @@ class CapabilityTests(unittest.TestCase):
         self.assertNotIn("min_kelvin", capabilities)
 
     def test_a_domain_with_no_card_yet_gets_no_controls(self) -> None:
-        # `weather` is drawn as a reading rather than a control, so it keeps
-        # the empty list even with its block; `media_player` is a group no
-        # longer offered and `sensor` was never one, and both stand for any
-        # domain that reaches this rule by accident. All must produce no
-        # controls rather than a toggle nothing honours.
+        # `weather` and `sensor` are drawn as readings rather than controls,
+        # so they keep the empty list even with their blocks; `media_player`
+        # is a group no longer offered and stands for any domain that reaches
+        # this rule by accident. All must produce no controls rather than a
+        # toggle nothing honours.
         for domain in ("media_player", "weather", "sensor"):
             with self.subTest(domain=domain):
                 self.assertEqual(

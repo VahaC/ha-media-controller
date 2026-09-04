@@ -100,6 +100,11 @@ enum CardDomain : uint8_t {
   /* A weather block. It carries no controls at all — the empty list — and
    * is drawn as a reading rather than something a tap acts on. */
   DOMAIN_WEATHER = 4,
+  /* A sensor block. It carries no controls at all — the empty list — and
+   * is drawn as a reading rather than something a tap acts on. The value
+   * is the entity state itself and the unit an attribute of the same poll,
+   * so like weather it needs no bounds beside the reading. */
+  DOMAIN_SENSOR = 5,
 };
 
 /* One card, in the shape that goes to flash.
@@ -181,6 +186,10 @@ struct Entry {
    * poll. Both are NAN until Home Assistant has answered once. */
   float weather_temp;
   float weather_humidity;
+  /* A sensor block. The value is `state` itself ("21.5", "on", ...) and the
+   * unit arrives with the same poll, as the entity's `unit_of_measurement`
+   * attribute. Empty until Home Assistant has answered once. */
+  std::string sensor_unit;
   /* The daily forecast behind a weather block: up to FORECAST_DAYS days
    * after today, each a weekday and a high, with a low of NAN where none
    * was reported. Empty until a forecast poll has answered once; drawn only
@@ -205,7 +214,8 @@ struct Entry {
  * instead of being written down twice:
  *
  *   child 0     the icon, on every card;
- *   child 1     the reading, on a labelled thermostat or weather card only;
+ *   child 1     the reading, on a labelled thermostat, weather or sensor
+ *               card only;
  *   children 2.. the daily forecast rows, on a large weather card only;
  *   last child  the name, on any labelled card.
  */

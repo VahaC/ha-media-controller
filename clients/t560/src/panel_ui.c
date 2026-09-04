@@ -276,6 +276,10 @@ typedef struct {
     gchar *weather_condition;
     gdouble weather_temperature;
     gint weather_humidity;
+    /* A sensor block. Both are owned and NULL while unknown. It is a
+     * reading rather than a control, exactly like a weather block. */
+    gchar *sensor_value;
+    gchar *sensor_unit;
     /* The daily forecast, and when it was fetched. Empty until Home Assistant
      * has answered a forecast request once; drawn only where the card is
      * large enough for a row. */
@@ -507,6 +511,10 @@ static const gchar *icon_for_domain(const gchar *domain)
         return "blind";
     if (g_strcmp0(domain, "weather") == 0)
         return "weather";
+    /* A sensor block draws its value as type rather than artwork, so it
+     * names no icon: icon_set() finds nothing and the card draws none. */
+    if (g_strcmp0(domain, "sensor") == 0)
+        return "sensor";
     return "light-2";
 }
 
@@ -662,6 +670,20 @@ static gboolean card_is_weather(const PanelRoomCard *card)
 {
     return card->entity != NULL &&
            g_strcmp0(card->entity->domain, "weather") == 0;
+}
+
+/* Whether this card is a sensor block rather than a control. Exactly the
+ * same contract as a weather block: a reading, never a button. */
+static gboolean card_is_sensor(const PanelRoomCard *card)
+{
+    return card->entity != NULL &&
+           g_strcmp0(card->entity->domain, "sensor") == 0;
+}
+
+/* Whether this card is any reading rather than a control. */
+static gboolean card_is_reading(const PanelRoomCard *card)
+{
+    return card_is_weather(card) || card_is_sensor(card);
 }
 
 /* A Home Assistant weather state ("sunny", "partlycloudy", "clear-night")
@@ -2313,6 +2335,18 @@ static gchar *card_reading(const PanelRoomCard *card)
     if (card->entity == NULL || !card->state_known)
         return NULL;
 
+    /* A sensor says its value with its unit: the name above says what it
+     * is, this line says what it reads. A sensor that has not answered yet
+     * falls through to the "--" the caller draws. */
+    if (g_strcmp0(card->entity->domain, "sensor") == 0) {
+        if (card->sensor_value == NULL || *card->sensor_value == '\0')
+            return NULL;
+        if (card->sensor_unit != NULL && *card->sensor_unit != '\0')
+            return g_strdup_printf("%s %s", card->sensor_value,
+                                   card->sensor_unit);
+        return g_strdup(card->sensor_value);
+    }
+
     /* A blind says how far open it is, and where it cannot, it says which of
      * the two ends it is at. ON and OFF are the fallback of last resort for
      * everything else on this page and would be the wrong words here. */
@@ -2676,6 +2710,50 @@ static void draw_weather_body(cairo_t *cr, PangoLayout *layout,
                            bottom - top);
 }
 
+/* A sensor block draws itself rather than borrowing the button's lines: the
+ * name above is the caller's, and the value with its unit is drawn here,
+ * large and centred, the way a weather block draws its hero temperature.
+ * Everything here must stay above *content_bottom. */
+static void draw_sensor_body(cairo_t *cr, PangoLayout *layout,
+                             const PanelRoomCard *card, gdouble x, gdouble y,
+                             gdouble pad, gdouble width,
+                             gdouble *content_bottom, gint state_size)
+{
+    gdouble top = y + pad;
+    gdouble bottom = *content_bottom;
+    gchar *hero = NULL;
+    gint hero_size;
+    gdouble hero_height;
+
+    if (card->sensor_value == NULL || *card->sensor_value == '\0') {
+        card_text(cr, layout, "--", state_size, TRUE, 0xcfe3f7U, 1.0,
+                  x + pad, top, width);
+        return;
+    }
+    if (card->sensor_unit != NULL && *card->sensor_unit != '\0')
+        hero = g_strdup_printf("%s %s", card->sensor_value,
+                               card->sensor_unit);
+    else
+        hero = g_strdup(card->sensor_value);
+
+    /* The value is the content, so its type grows with the card — unlike a
+     * button, a sensor block with a wall of empty space around small text
+     * is the bug, not the design. */
+    hero_size = (gint)CLAMP(MIN((bottom - top) / 2.2, width / 5.0),
+                            16.0, 44.0);
+    hero_height = card_text_height(layout, hero, hero_size, TRUE, width);
+    if (top + hero_height <= bottom) {
+        gdouble text_top = top + (bottom - top - hero_height) / 2.0;
+
+        card_text(cr, layout, hero, hero_size, TRUE, 0xffffffU, 1.0,
+                  x + pad, text_top, width);
+    } else {
+        card_text(cr, layout, hero, state_size, TRUE, 0xcfe3f7U, 1.0,
+                  x + pad, top, width);
+    }
+    g_free(hero);
+}
+
 static void draw_room_card(PanelUi *ui, cairo_t *cr, PangoLayout *layout,
                            const PanelRoomCard *card, gint index)
 {
@@ -2687,10 +2765,10 @@ static void draw_room_card(PanelUi *ui, cairo_t *cr, PangoLayout *layout,
     gdouble radius = MIN(27.0, MIN(width, height) / 3.2);
     gdouble mix = card->active_mix;
     gboolean unassigned = card->entity == NULL;
-    /* A weather block is a reading rather than a button: it never shows a
-     * pressed state, because a tap on it acts on nothing. */
+    /* A reading is never a button: it never shows a pressed state, because
+     * a tap on it acts on nothing. */
     gboolean pressed = index == ui->room_pressed_index &&
-                       !ui->room_pressed_adjust && !card_is_weather(card);
+                       !ui->room_pressed_adjust && !card_is_reading(card);
 
     guint start = pressed ? colors->card_down_start : colors->card_start;
     guint end = pressed ? colors->card_down_end : colors->card_end;
@@ -2701,11 +2779,11 @@ static void draw_room_card(PanelUi *ui, cairo_t *cr, PangoLayout *layout,
     guint border_active = colors->border_active;
     gdouble shadow_alpha = pressed ? 0.3 : 0.42;
 
-    /* A weather block wears its own sky rather than the off gradient: it
-     * is information, not a switch left off. The mix is pinned on so the
-     * sky and its border actually draw — the card is never "active" on its
-     * own. A colour the user chose still wins over it. */
-    if (!unassigned && !card->has_accent && card_is_weather(card)) {
+    /* A reading wears its own sky rather than the off gradient: it is
+     * information, not a switch left off. The mix is pinned on so the sky
+     * and its border actually draw — the card is never "active" on its own.
+     * A colour the user chose still wins over it. */
+    if (!unassigned && !card->has_accent && card_is_reading(card)) {
         start = 0x2e5d8fU;
         end = 0x122540U;
         active_start = 0x2e5d8fU;
@@ -2784,15 +2862,15 @@ static void draw_room_card(PanelUi *ui, cairo_t *cr, PangoLayout *layout,
     guint lit = card->has_accent ? card->accent : colors->border_active;
 
     const gchar *name = unassigned ? "Unassigned" : card->entity->name;
-    /* A weather block is headed by its name: location first, then the
-     * current conditions, then the coming days. Its type grows with the
-     * card — unlike a button, a forecast block is the content, so a wall
-     * of empty sky around 13-point text is the bug, not the design. */
-    gboolean weather_headed =
-        !unassigned && height >= 108.0 && card_is_weather(card);
-    gint name_size = weather_headed
+    /* A reading is headed by its name: location first, then the current
+     * conditions, then the coming days. Its type grows with the card —
+     * unlike a button, a forecast block is the content, so a wall of empty
+     * sky around 13-point text is the bug, not the design. */
+    gboolean reading_headed =
+        !unassigned && height >= 108.0 && card_is_reading(card);
+    gint name_size = reading_headed
                          ? (gint)CLAMP(MIN(height / 6.4, width / 12.0), 11.0,
-                                       30.0)
+                                        30.0)
                          : (gint)CLAMP(height / 6.4, 11.0, 23.0);
     gdouble name_height = card_text_height(layout, name, name_size, TRUE,
                                            text_width);
@@ -2802,7 +2880,7 @@ static void draw_room_card(PanelUi *ui, cairo_t *cr, PangoLayout *layout,
      * loses the least important thing first: the state, then the icon. The
      * name is what identifies the card and is never dropped. */
     gdouble content_bottom = bottom_edge - name_height;
-    if (weather_headed) {
+    if (reading_headed) {
         card_text(cr, layout, name, name_size, TRUE, 0xf1f6fdU, 1.0,
                   x + pad, y + pad, text_width);
         body_top = y + pad + name_height + 6.0;
@@ -2814,15 +2892,20 @@ static void draw_room_card(PanelUi *ui, cairo_t *cr, PangoLayout *layout,
     }
 
     if (height >= 108.0) {
-        /* A weather block draws its own body — hero, condition and chart —
-         * rather than the button's state line. */
-        if (weather_headed) {
+        /* A reading draws its own body rather than the button's state
+         * line: a weather block its hero, condition and chart, a sensor
+         * block its value with its unit. */
+        if (reading_headed) {
             gint state_size =
                 (gint)CLAMP(MIN(height / 11.0, width / 20.0), 9.0, 18.0);
             gdouble body_y = body_top - pad;
 
-            draw_weather_body(cr, layout, card, x, body_y, pad, text_width,
-                              &content_bottom, state_size);
+            if (card_is_sensor(card))
+                draw_sensor_body(cr, layout, card, x, body_y, pad,
+                                 text_width, &content_bottom, state_size);
+            else
+                draw_weather_body(cr, layout, card, x, body_y, pad,
+                                  text_width, &content_bottom, state_size);
         } else {
             gchar *reading = unassigned ? NULL : card_reading(card);
             const gchar *state = unassigned ? card->rid
@@ -2842,9 +2925,10 @@ static void draw_room_card(PanelUi *ui, cairo_t *cr, PangoLayout *layout,
         }
     }
 
-    /* Weather draws vector glyphs of its own in the body above; everything
-     * else takes its artwork from the icon table. */
-    if (!unassigned && !card_is_weather(card)) {
+    /* Weather draws vector glyphs of its own in the body above, and a
+     * sensor draws its value as type; everything else takes its artwork
+     * from the icon table. */
+    if (!unassigned && !card_is_reading(card)) {
         const PanelIconSet *icons = icon_set(ui, card->icon);
         gdouble available = content_bottom - (y + pad);
 
@@ -3040,9 +3124,9 @@ static gboolean room_area_pressed(GtkWidget *widget, GdkEventButton *event,
         const PanelRoomCard *card = g_ptr_array_index(ui->room_cards, index);
         GdkRectangle region;
 
-        /* A weather block is a reading rather than a button: a finger down
-         * on it leaves no pressed state behind. */
-        if (card_is_weather(card)) {
+        /* A reading is not a button: a finger down on it leaves no pressed
+         * state behind. */
+        if (card_is_reading(card)) {
             ui->room_pressed_index = -1;
             return TRUE;
         }
@@ -3078,8 +3162,8 @@ static gboolean room_area_released(GtkWidget *widget, GdkEventButton *event,
     if (index != pressed || card->entity == NULL)
         return TRUE;
 
-    /* A weather block never acts: it is a reading, not a button. */
-    if (card_is_weather(card))
+    /* A reading never acts: it is information, not a button. */
+    if (card_is_reading(card))
         return TRUE;
     if (on_adjust && card_is_adjustable(card))
         open_room_sheet(ui, pressed);
@@ -3095,6 +3179,8 @@ static void room_card_free(gpointer data)
     g_free(card->rid);
     g_free(card->icon);
     g_free(card->weather_condition);
+    g_free(card->sensor_value);
+    g_free(card->sensor_unit);
     g_free(card);
 }
 
@@ -3178,6 +3264,8 @@ static void room_cards_rebuild(PanelUi *ui)
         card->weather_condition = NULL;
         card->weather_temperature = NAN;
         card->weather_humidity = -1;
+        card->sensor_value = NULL;
+        card->sensor_unit = NULL;
         card->forecast_count = 0;
         card->forecast_at = 0;
         card->icon = g_strdup(
@@ -4230,6 +4318,18 @@ void panel_ui_set_room(PanelUi *ui, guint index, const PanelRoomState *state)
                                       : NULL;
         card->weather_temperature = state->weather_temperature;
         card->weather_humidity = state->weather_humidity;
+    }
+    /* A sensor block keeps its own reading. An absent value clears the last
+     * one rather than leaving a stale number on the card. */
+    if (card_is_sensor(card)) {
+        g_free(card->sensor_value);
+        g_free(card->sensor_unit);
+        card->sensor_value = state->sensor_value != NULL
+                                 ? g_strdup(state->sensor_value)
+                                 : NULL;
+        card->sensor_unit = state->sensor_unit != NULL
+                                ? g_strdup(state->sensor_unit)
+                                : NULL;
     }
 
     if (card->active != state->active || !card->state_known) {
