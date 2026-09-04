@@ -1469,6 +1469,16 @@ static void report_status(PanelApplication *application)
      * running a build older than the contract the integration speaks. */
     json_builder_set_member_name(builder, "contract_version");
     json_builder_add_int_value(builder, T560_PANEL_CONTRACT_VERSION);
+    /* Where this panel's own layout editor answers, so that Home Assistant
+     * can offer it on the panel's device page: the address is on the tablet
+     * and nowhere else, because the port is a local setting and the routable
+     * interface is the tablet's to know. A panel whose editor is switched
+     * off has no address, sends nothing, and the link disappears. */
+    const gchar *editor_url = panel_web_url(application->web);
+    if (editor_url != NULL) {
+        json_builder_set_member_name(builder, "editor_url");
+        json_builder_add_string_value(builder, editor_url);
+    }
     json_builder_set_member_name(builder, "page");
     json_builder_add_string_value(builder, application->current_page);
     json_builder_set_member_name(builder, "uptime_seconds");

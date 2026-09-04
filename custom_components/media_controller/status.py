@@ -143,22 +143,39 @@ class PanelStatusView(HomeAssistantView):
             )
 
         registration.state.apply_report(payload)
-        self._async_update_version(registration)
+        self._async_update_device(registration)
         return self.json({"status": STATUS_OK})
 
-    def _async_update_version(self, registration: PanelRegistration) -> None:
-        """Show the application version the tablet is running on its device.
+    def _async_update_device(self, registration: PanelRegistration) -> None:
+        """Put what a report says about the panel itself on its device.
 
-        It belongs on the device rather than in an entity: it is the same kind
-        of fact as the model, it is what tells you which tablet in a house is
-        behind, and it does not deserve a row in the history database.
+        Both facts here belong on the device rather than in an entity: they
+        are the same kind of fact as the model, and neither deserves a row in
+        the history database.
+
+        * the application version is what tells you which tablet in a house is
+          behind;
+        * the editor address becomes the link on the device page, so the way
+          to the panel's own layout editor is where somebody looking at that
+          panel already is, instead of a port they have to remember.
         """
-        version = registration.state.status.app_version
-        if not version:
-            return
+        status = registration.state.status
         registry = dr.async_get(self._hass)
         device = registry.async_get_device(
             identifiers={(DOMAIN, registration.entry_id)}
         )
-        if device is not None and device.sw_version != version:
-            registry.async_update_device(device.id, sw_version=version)
+        if device is None:
+            return
+
+        changes: dict[str, Any] = {}
+        if status.app_version and device.sw_version != status.app_version:
+            changes["sw_version"] = status.app_version
+        # A panel that serves no editor — a tablet with `web_port=0`, or a
+        # client that has none at all — reports no address, and the link is
+        # then taken off the device rather than left pointing at a port
+        # nothing answers on.
+        configuration_url = status.editor_url or None
+        if device.configuration_url != configuration_url:
+            changes["configuration_url"] = configuration_url
+        if changes:
+            registry.async_update_device(device.id, **changes)

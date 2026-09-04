@@ -414,6 +414,11 @@ http://<tablet address>:8730/
 Open it from a phone or a desktop on the same network to arrange the room
 page. There is nothing to install and nothing to log into.
 
+The panel also reports that address with its status report, so Home Assistant
+shows it as the **Visit** link on the panel's device page — the editor is then
+one click from the device somebody is already looking at, rather than a port
+they have to remember. Switching the editor off removes the link with it.
+
 **The editor has no password, and that port must never be forwarded through a
 router or exposed to the internet.** It is meant for a house network and
 nothing else.

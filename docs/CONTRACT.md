@@ -638,6 +638,7 @@ another's battery level.
   "uptime_seconds": 4210,
   "wifi_dbm": -53,
   "temperature_c": 31.5,
+  "editor_url": "http://192.168.1.105:8730/",
   "battery": {"available": true, "percent": 82, "charging": false},
   "display": {"available": true, "on": true, "brightness": 57}
 }
@@ -668,6 +669,17 @@ another's battery level.
   omits either where the hardware has none, and the matching sensor stays
   unavailable. Neither is worth a report of its own: send them with whatever
   report is already going.
+- `editor_url` is where the layout editor this panel serves on its own
+  hardware answers, and it becomes the link on the panel's Home Assistant
+  device page. It is reported rather than worked out by Home Assistant,
+  because only the client knows the port it bound and which of its own
+  interfaces is routable. It is optional in both directions: a panel that
+  serves no editor — a tablet with `web_port=0`, a client that has none —
+  omits it, and the link is then taken off the device rather than left
+  pointing at a port nothing answers on. Home Assistant accepts an ordinary
+  `http` or `https` address of a host, at most 255 characters and with no
+  credentials in it, and silently ignores anything else: the value becomes a
+  link offered on the strength of one HTTP request.
 
 Answers: `200` with `{"status": "ok"}`; `400` for an unusable body; `403` when
 the token belongs to another account; `404` when no loaded panel has that ID.

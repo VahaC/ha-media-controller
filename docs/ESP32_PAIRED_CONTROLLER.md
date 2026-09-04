@@ -277,6 +277,14 @@ four fixed buttons and its `slots` payload, unchanged and un-deprecated.
 The device serves the editor on **port 80**, at `http://<device-ip>/`. It is the
 same page the T560 panel serves; the two differ only where the device does.
 
+The address is in the device's ESPHome log at start-up, and the device reports
+it to Home Assistant with every status report, which turns it into the
+**Visit** link on the device's *panel* page — the one this integration owns,
+beside the battery and screen entities, not the ESPHome device page. So the
+editor is one click from where its rooms were configured, rather than an IP
+address somebody has to look up. A device that is not on the network yet
+reports no address and gets no link.
+
 **It has no password, on purpose.** A phone is where a grid gets arranged, and a
 device that had to be logged into would not be. What makes the missing password
 survivable is the shape of the API rather than a promise:

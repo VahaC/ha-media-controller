@@ -237,6 +237,7 @@ class StatusReportTests(unittest.TestCase):
                 "uptime_seconds": 4210,
                 "wifi_dbm": -53,
                 "temperature_c": 31.5,
+                "editor_url": "http://192.168.1.105:8730/",
             }
         )
         self.assertEqual(status.battery_percent, 82)
@@ -250,6 +251,7 @@ class StatusReportTests(unittest.TestCase):
         self.assertEqual(status.uptime_seconds, 4210)
         self.assertEqual(status.wifi_dbm, -53)
         self.assertEqual(status.temperature_c, 31.5)
+        self.assertEqual(status.editor_url, "http://192.168.1.105:8730/")
 
     def test_empty_report_reads_as_nothing_known(self) -> None:
         status = panel_state.PanelStatus.from_report({})
@@ -258,6 +260,7 @@ class StatusReportTests(unittest.TestCase):
         self.assertEqual(status.brightness, -1)
         self.assertEqual(status.page, "")
         self.assertEqual(status.contract_version, 0)
+        self.assertEqual(status.editor_url, "")
         self.assertIsNone(status.uptime_seconds)
         self.assertIsNone(status.wifi_dbm)
         self.assertIsNone(status.temperature_c)
@@ -282,6 +285,46 @@ class StatusReportTests(unittest.TestCase):
         )
         self.assertEqual(status.app_version, "0.4.0")
         self.assertEqual(status.contract_version, 5)
+
+    def test_an_editor_address_survives_a_report(self) -> None:
+        for url in (
+            "http://192.168.1.105:8730/",
+            "https://tablet.local:8730/",
+            "http://tablet-kitchen:8730/",
+        ):
+            with self.subTest(url=url):
+                status = panel_state.PanelStatus.from_report(
+                    {"editor_url": url}
+                )
+                self.assertEqual(status.editor_url, url)
+
+    def test_a_panel_that_serves_no_editor_reports_no_address(self) -> None:
+        """A tablet with `web_port=0`, and every client that has none."""
+        status = panel_state.PanelStatus.from_report({"version": "0.4.0"})
+        self.assertEqual(status.editor_url, "")
+
+    def test_an_address_that_could_not_be_an_editor_is_dropped(self) -> None:
+        # It becomes a link Home Assistant offers to click, on the strength
+        # of one HTTP request, so the shape is checked narrowly.
+        for url in (
+            "javascript:alert(1)",
+            "file:///etc/passwd",
+            "homeassistant://navigate/lovelace",
+            "192.168.1.105:8730",
+            "http://",
+            "http://user:secret@192.168.1.105:8730/",
+            "http://192.168.1.105:8730/ and more",
+            "http://" + "a" * 300 + "/",
+            "   ",
+            8730,
+            None,
+            True,
+        ):
+            with self.subTest(url=url):
+                status = panel_state.PanelStatus.from_report(
+                    {"editor_url": url}
+                )
+                self.assertEqual(status.editor_url, "")
 
     def test_a_page_this_installation_does_not_have_is_dropped(self) -> None:
         # A newer client reporting a page Home Assistant has no option for

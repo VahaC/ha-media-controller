@@ -24,6 +24,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 import time
 from typing import Any
+from urllib.parse import urlsplit
 
 # Every bound below is the one the panel itself clamps to. They are repeated
 # here so that a number entity cannot offer a value the tablet would silently
@@ -66,6 +67,18 @@ PLAYER_SKIN_MAX_LENGTH = 32
 
 DISPLAY_ON = "on"
 DISPLAY_OFF = "off"
+
+# The address of the layout editor a panel serves on its own hardware. It is
+# reported rather than derived: the port is the client's to choose, a panel
+# that has the editor switched off has no address at all, and the panel
+# already knows which of its own interfaces a phone can reach it on.
+#
+# It is checked here rather than passed to the device registry as it arrives.
+# The registry refuses a scheme it does not know by raising, so an unusable
+# value would turn one malformed report into a failed report instead of an
+# ignored field.
+EDITOR_URL_MAX_LENGTH = 255
+EDITOR_URL_SCHEMES = ("http", "https")
 
 # The pages a panel can be sent to. They are the names the T560 application
 # gives its own stack children, and a page this list does not know is refused
@@ -124,6 +137,35 @@ def _player_skin(value: Any) -> str:
     if not all(character.isalnum() or character in "_-" for character in skin):
         return PLAYER_SKIN_UNSET
     return skin
+
+
+def _editor_url(value: Any) -> str:
+    """Read the editor address a panel serves, using "" for none.
+
+    Only the shape is checked, and deliberately narrowly: an ordinary
+    `http` or `https` address of a host, with nothing in front of it. A panel
+    reports where its own editor answers, and that is the whole of what this
+    field may become — anything else would be a link Home Assistant offers to
+    click on the strength of one HTTP request.
+    """
+    if not isinstance(value, str):
+        return ""
+    url = value.strip()
+    if not url or len(url) > EDITOR_URL_MAX_LENGTH:
+        return ""
+    if any(character.isspace() for character in url):
+        return ""
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return ""
+    if parsed.scheme not in EDITOR_URL_SCHEMES or not parsed.hostname:
+        return ""
+    # Credentials in the address would be stored in the device registry and
+    # shown to anybody who opens the device page.
+    if "@" in parsed.netloc:
+        return ""
+    return url
 
 
 def _flag(value: Any) -> bool:
@@ -301,6 +343,9 @@ class PanelStatus:
     display_known: bool = False
     brightness: int = -1
     app_version: str = ""
+    # Where the editor this panel serves answers, and "" for a panel that
+    # serves none. It becomes the link on the panel's device page.
+    editor_url: str = ""
     # The protocol the client says it speaks, and 0 for one that says
     # nothing. `app_version` is a release number and answers a different
     # question: it says when this build shipped, not what it understands.
@@ -341,6 +386,7 @@ class PanelStatus:
             display_known=_flag(display.get("available")),
             brightness=_percent(display.get("brightness")),
             app_version=str(report.get("version") or "")[:32],
+            editor_url=_editor_url(report.get("editor_url")),
             contract_version=_contract_version(report.get("contract_version")),
             page=page if page in PAGES else "",
             uptime_seconds=None if uptime is None else float(uptime),

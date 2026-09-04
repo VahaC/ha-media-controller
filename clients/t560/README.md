@@ -125,8 +125,9 @@ The room page is arranged from a browser on the same network:
 http://<tablet address>:8730/
 ```
 
-The panel prints the address to its log at start-up, and an empty room page
-shows it on screen.
+The panel prints the address to its log at start-up, an empty room page shows
+it on screen, and the panel reports it to Home Assistant, which offers it as
+the **Visit** link on the panel's device page.
 
 The page is one screen: the grid on the left, and the registry grouped by
 domain on the right. Pick an entity and tap a free cell to place it, drag a

@@ -231,6 +231,12 @@ class MediaControllerGrid final : public AsyncWebHandler, public Component {
   float get_setup_priority() const override { return setup_priority::AFTER_WIFI; }
 
   void set_port(uint16_t port) { this->port_ = port; }
+  /* Where a browser on the same network reaches this editor, and "" while
+   * the device has no address yet. The firmware reports it to Home
+   * Assistant, which offers it as the link on this device's panel page. It
+   * is built here because the port is this component's and nobody else's,
+   * exactly as the T560 panel builds its own in panel_web.c. */
+  std::string editor_url() const;
   void set_editor(const uint8_t *data, size_t size) {
     this->editor_ = data;
     this->editor_size_ = size;

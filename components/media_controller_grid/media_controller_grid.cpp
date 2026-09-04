@@ -1,6 +1,7 @@
 #include "media_controller_grid.h"
 
 #include "esphome/components/json/json_util.h"
+#include "esphome/components/network/util.h"
 #include "esphome/core/log.h"
 
 #include <cmath>
@@ -187,14 +188,37 @@ void MediaControllerGrid::setup() {
   this->base_->init();
 }
 
+std::string MediaControllerGrid::editor_url() const {
+  /* The listener is bound on every interface, so this only has to name one
+   * address a phone on that network can reach. IPv6 is passed over rather
+   * than bracketed: this address is read by a person off a device page on a
+   * house network, and it is the v4 one they can type. A device that is not
+   * on the network yet has none, and the caller reports nothing. */
+  for (const auto &address : network::get_ip_addresses()) {
+    if (!address.is_set() || !address.is_ip4())
+      continue;
+    char text[network::IP_ADDRESS_BUFFER_SIZE];
+    address.str_to(text);
+    std::string url = std::string("http://") + text;
+    /* A browser assumes 80, and the address is shorter without it. */
+    if (this->port_ != 80)
+      url += ":" + std::to_string(this->port_);
+    return url + "/";
+  }
+  return {};
+}
+
 void MediaControllerGrid::dump_config() {
+  std::string url = this->editor_url();
+  if (url.empty())
+    url = "http://<device>/";
   ESP_LOGCONFIG(TAG,
                 "Room grid:\n"
-                "  Editor: http://<device>:%u/\n"
+                "  Editor: %s (port %u)\n"
                 "  Grid: %ux%u cells of %u px\n"
                 "  Cards in flash: %u\n"
                 "  Skins: %u, of which %u carry a preview",
-                this->port_, GRID_COLUMNS, GRID_ROWS, GRID_CELL_PX,
+                url.c_str(), this->port_, GRID_COLUMNS, GRID_ROWS, GRID_CELL_PX,
                 static_cast<unsigned>(this->cards_.size()),
                 static_cast<unsigned>(this->skins_.size()),
                 static_cast<unsigned>(this->previews_.size()));

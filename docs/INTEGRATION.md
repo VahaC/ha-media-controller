@@ -188,6 +188,13 @@ every entity that depends on a report goes unavailable when none has arrived
 for three minutes. The tablet's application version appears as the device's
 software version.
 
+A panel that serves a layout editor of its own reports where it answers, and
+Home Assistant turns that into the **Visit** link on the panel's device page:
+the tablet's editor is then reached from the device page rather than from an
+address and a port somebody has to remember. The link appears with the first
+report after the panel starts, and disappears again if the editor is switched
+off on the tablet.
+
 **Screen brightness** is the one control the tablet can refuse. Writing the
 kernel's backlight device needs a permission the session user does not have by
 default, and the control stays unavailable where it is missing. Turning the

@@ -1976,6 +1976,15 @@ script:
                              id(esp32_temperature).state);
                     json += buf;
                   }
+                  // -- Where the layout editor this device serves answers,
+                  // -- so that Home Assistant can offer it on this device's
+                  // -- panel page. The address is the device's own and
+                  // -- nowhere else: the port belongs to the grid component
+                  // -- and the routable interface is only known here. A
+                  // -- device that has no address yet sends nothing. --
+                  std::string editor = id(room_grid)->editor_url();
+                  if (!editor.empty())
+                    json += ",\"editor_url\":\"" + editor + "\"";
                   snprintf(buf, sizeof(buf),
                            ",\"display\":{\"available\":true,\"on\":%s,"
                            "\"brightness\":%d}}",
