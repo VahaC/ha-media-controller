@@ -33,18 +33,23 @@ class CapabilityTests(unittest.TestCase):
         self.assertNotIn("min_kelvin", capabilities)
 
     def test_a_domain_with_no_card_yet_gets_no_controls(self) -> None:
-        # The registry accepts these groups so that they are already there
-        # when a card is written; until then a client ignores the element
-        # rather than drawing a toggle nothing would honour.
-        for domain in ("media_player", "climate", "cover", "weather"):
+        # The first three are registry groups that have no card written yet,
+        # so they are already there when one is; `sensor` is not a group at
+        # all and stands for any domain that reaches this rule by accident.
+        # Both must produce no controls rather than a toggle nothing honours.
+        for domain in ("media_player", "cover", "weather", "sensor"):
             with self.subTest(domain=domain):
                 self.assertEqual(
                     profiles.normalize_capabilities(domain, {})["controls"],
                     (),
                 )
 
-    def test_the_two_drawable_domains_are_named(self) -> None:
-        self.assertEqual(profiles.CARD_DOMAINS, ("light", "switch"))
+    def test_the_drawable_domains_are_named(self) -> None:
+        # Contract version 7 adds the third. Each remaining group joins this
+        # tuple in a version of its own.
+        self.assertEqual(
+            profiles.CARD_DOMAINS, ("light", "switch", "climate")
+        )
 
     def test_onoff_light_has_no_brightness(self) -> None:
         capabilities = profiles.normalize_capabilities(
@@ -156,6 +161,174 @@ class CapabilityTests(unittest.TestCase):
         )
 
 
+class ClimateTests(unittest.TestCase):
+    """Contract version 7: what a thermostat is told it can be asked to do."""
+
+    HEAT_COOL = {
+        "hvac_modes": ["off", "heat", "cool"],
+        "supported_features": 1 | 16,
+        "min_temp": 16,
+        "max_temp": 30,
+        "target_temp_step": 0.5,
+    }
+
+    def test_a_thermostat_that_can_be_turned_off_and_set(self) -> None:
+        capabilities = profiles.normalize_capabilities(
+            "climate", self.HEAT_COOL
+        )
+        self.assertEqual(
+            capabilities["controls"], ("toggle", "target_temperature")
+        )
+        self.assertEqual(capabilities["min_temp"], 16.0)
+        self.assertEqual(capabilities["max_temp"], 30.0)
+        self.assertEqual(capabilities["target_temp_step"], 0.5)
+
+    def test_off_in_the_modes_is_what_toggle_is_claimed_on(self) -> None:
+        # Many integrations never set the TURN_ON/TURN_OFF feature bits and
+        # list `off` instead, which is what climate.turn_off acts on.
+        capabilities = profiles.normalize_capabilities(
+            "climate", {"hvac_modes": ["off", "heat"], "supported_features": 0}
+        )
+        self.assertEqual(capabilities["controls"], ("toggle",))
+
+    def test_the_explicit_feature_bits_also_claim_toggle(self) -> None:
+        capabilities = profiles.normalize_capabilities(
+            "climate", {"hvac_modes": ["heat"], "supported_features": 128 | 256}
+        )
+        self.assertEqual(capabilities["controls"], ("toggle",))
+
+    def test_a_thermostat_that_cannot_be_turned_off_gets_no_toggle(
+        self,
+    ) -> None:
+        capabilities = profiles.normalize_capabilities(
+            "climate", {"hvac_modes": ["heat"], "supported_features": 1}
+        )
+        self.assertEqual(capabilities["controls"], ("target_temperature",))
+
+    def test_a_high_and_low_pair_is_not_a_setpoint(self) -> None:
+        # TARGET_TEMPERATURE_RANGE alone has no single number a card could
+        # move, and writing the wrong field would be worse than drawing none.
+        capabilities = profiles.normalize_capabilities(
+            "climate", {"hvac_modes": ["off", "heat"], "supported_features": 2}
+        )
+        self.assertEqual(capabilities["controls"], ("toggle",))
+        self.assertNotIn("min_temp", capabilities)
+
+    def test_a_thermostat_with_neither_gets_nothing(self) -> None:
+        capabilities = profiles.normalize_capabilities("climate", {})
+        self.assertEqual(capabilities["controls"], ())
+        self.assertNotIn("min_temp", capabilities)
+
+    def test_bounds_fall_back_when_the_entity_reports_none(self) -> None:
+        capabilities = profiles.normalize_capabilities(
+            "climate", {"hvac_modes": ["off"], "supported_features": 1}
+        )
+        self.assertEqual(capabilities["min_temp"], 7.0)
+        self.assertEqual(capabilities["max_temp"], 35.0)
+        self.assertEqual(capabilities["target_temp_step"], 0.5)
+
+    def test_an_inverted_range_falls_back(self) -> None:
+        capabilities = profiles.normalize_capabilities(
+            "climate",
+            {
+                "hvac_modes": ["off"],
+                "supported_features": 1,
+                "min_temp": 30,
+                "max_temp": 16,
+                "target_temp_step": 0,
+            },
+        )
+        self.assertEqual(capabilities["min_temp"], 7.0)
+        self.assertEqual(capabilities["max_temp"], 35.0)
+        self.assertEqual(capabilities["target_temp_step"], 0.5)
+
+    def test_the_bounds_carry_no_unit(self) -> None:
+        # A house configured in Fahrenheit reports 45 to 95 and the
+        # integration converts nothing: the payload names no unit at all.
+        capabilities = profiles.normalize_capabilities(
+            "climate",
+            {
+                "hvac_modes": ["off"],
+                "supported_features": 1,
+                "min_temp": 45,
+                "max_temp": 95,
+                "target_temp_step": 1,
+            },
+        )
+        self.assertEqual(capabilities["min_temp"], 45.0)
+        self.assertEqual(capabilities["max_temp"], 95.0)
+
+    def test_an_unusable_feature_value_is_no_features(self) -> None:
+        for value in (None, "many", True):
+            with self.subTest(value=value):
+                capabilities = profiles.normalize_capabilities(
+                    "climate", {"supported_features": value}
+                )
+                self.assertEqual(capabilities["controls"], ())
+
+    def test_the_setpoint_is_last_in_the_canonical_order(self) -> None:
+        self.assertEqual(
+            profiles.order_controls(
+                ["target_temperature", "toggle", "brightness"]
+            ),
+            ("toggle", "brightness", "target_temperature"),
+        )
+
+    def test_both_panels_draw_a_thermostat(self) -> None:
+        for profile in profiles.PANEL_PROFILES:
+            with self.subTest(profile=profile.slug):
+                self.assertEqual(
+                    profiles.limit_controls(
+                        ("toggle", "target_temperature"), profile
+                    ),
+                    ("toggle", "target_temperature"),
+                )
+
+    def test_the_classic_esp32_slots_never_carry_a_setpoint(self) -> None:
+        # Its four buttons are lights and switches, resolved while compiling.
+        for index in (1, 2, 3, 4):
+            with self.subTest(slot=index):
+                self.assertEqual(
+                    profiles.limit_controls(
+                        ("toggle", "target_temperature"),
+                        profiles.ESP32_S3.spec(index),
+                    ),
+                    ("toggle",),
+                )
+
+    def test_the_signature_ignores_a_room_that_warms_up(self) -> None:
+        # A thermostat's own numbers move all day. Folding them in would
+        # rebuild the payload of every panel in the house every few minutes.
+        warm = dict(self.HEAT_COOL, current_temperature=21.5, temperature=22)
+        warmer = dict(self.HEAT_COOL, current_temperature=23.0, temperature=24)
+        self.assertEqual(
+            profiles.capability_signature(warm),
+            profiles.capability_signature(warmer),
+        )
+
+    def test_the_signature_notices_a_new_capability(self) -> None:
+        self.assertNotEqual(
+            profiles.capability_signature(self.HEAT_COOL),
+            profiles.capability_signature(
+                dict(self.HEAT_COOL, supported_features=1 | 16 | 2)
+            ),
+        )
+
+    def test_the_signature_notices_new_bounds(self) -> None:
+        self.assertNotEqual(
+            profiles.capability_signature(self.HEAT_COOL),
+            profiles.capability_signature(dict(self.HEAT_COOL, max_temp=28)),
+        )
+
+    def test_the_signature_notices_a_mode_appearing(self) -> None:
+        self.assertNotEqual(
+            profiles.capability_signature(self.HEAT_COOL),
+            profiles.capability_signature(
+                dict(self.HEAT_COOL, hvac_modes=["heat", "cool"])
+            ),
+        )
+
+
 class ProfileTests(unittest.TestCase):
     """Verify the per-slot constraints of each client."""
 
@@ -213,6 +386,20 @@ class ProfileTests(unittest.TestCase):
             ("toggle", "brightness", "color_temp"), profiles.T560
         )
         self.assertEqual(controls, ("toggle", "brightness", "color_temp"))
+
+    def test_no_profile_offers_a_control_that_is_not_in_the_vocabulary(
+        self,
+    ) -> None:
+        """The closed list of docs/CONTRACT.md, in code."""
+        for profile in profiles.PROFILES.values():
+            with self.subTest(profile=profile.slug):
+                self.assertTrue(
+                    set(profile.controls) <= set(profiles.CONTROL_ORDER)
+                )
+                for spec in profile.slots:
+                    self.assertTrue(
+                        set(spec.controls) <= set(profiles.CONTROL_ORDER)
+                    )
 
     def test_only_a_panel_has_a_registry(self) -> None:
         self.assertFalse(profiles.ESP32_S3.has_registry)

@@ -48,6 +48,9 @@ REGISTRY_KEY_NAME = "name"
 REGISTRY_KEY_CONTROLS = "controls"
 REGISTRY_KEY_MIN_KELVIN = "min_kelvin"
 REGISTRY_KEY_MAX_KELVIN = "max_kelvin"
+REGISTRY_KEY_MIN_TEMP = "min_temp"
+REGISTRY_KEY_MAX_TEMP = "max_temp"
+REGISTRY_KEY_TEMP_STEP = "target_temp_step"
 # Not part of the contract: the Home Assistant entity registry row ID of the
 # target. It never reaches a client, and it is what makes an element follow
 # its entity through a rename.
@@ -63,8 +66,8 @@ class RegistryGroup:
 
 
 # In payload order, which is also the order the form lists them in. Only the
-# first two have cards in any client today; the rest are accepted so that the
-# registry is already carrying them when a card is written, and a client
+# first three have cards in any client today; the rest are accepted so that
+# the registry is already carrying them when a card is written, and a client
 # ignores an element whose domain it cannot draw.
 GROUPS: tuple[RegistryGroup, ...] = (
     RegistryGroup("lights", "light"),
@@ -101,6 +104,12 @@ class RegistryEntry:
     controls: tuple[str, ...] = ()
     min_kelvin: int | None = None
     max_kelvin: int | None = None
+    # The setpoint bounds of a thermostat, in whatever unit the entity itself
+    # reports. They are the climate card's `min_kelvin` and `max_kelvin`, and
+    # like those they are present only when the matching control is.
+    min_temp: float | None = None
+    max_temp: float | None = None
+    target_temp_step: float | None = None
 
     def as_stored(self) -> dict[str, Any]:
         """Return the config-entry representation of this element."""
@@ -117,6 +126,12 @@ class RegistryEntry:
             stored[REGISTRY_KEY_MIN_KELVIN] = self.min_kelvin
         if self.max_kelvin is not None:
             stored[REGISTRY_KEY_MAX_KELVIN] = self.max_kelvin
+        if self.min_temp is not None:
+            stored[REGISTRY_KEY_MIN_TEMP] = self.min_temp
+        if self.max_temp is not None:
+            stored[REGISTRY_KEY_MAX_TEMP] = self.max_temp
+        if self.target_temp_step is not None:
+            stored[REGISTRY_KEY_TEMP_STEP] = self.target_temp_step
         return stored
 
     @classmethod
@@ -138,6 +153,9 @@ class RegistryEntry:
             controls=tuple(stored.get(REGISTRY_KEY_CONTROLS) or ()),
             min_kelvin=stored.get(REGISTRY_KEY_MIN_KELVIN),
             max_kelvin=stored.get(REGISTRY_KEY_MAX_KELVIN),
+            min_temp=stored.get(REGISTRY_KEY_MIN_TEMP),
+            max_temp=stored.get(REGISTRY_KEY_MAX_TEMP),
+            target_temp_step=stored.get(REGISTRY_KEY_TEMP_STEP),
         )
 
 

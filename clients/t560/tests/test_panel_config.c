@@ -121,8 +121,156 @@ static void test_unknown_control_is_ignored(void)
 
     g_assert_true(parse(attributes, &layout, &failure));
     g_assert_cmpuint(entity_count(&layout), ==, 1);
+    g_assert_true(entity_at(&layout, 0)->togglable);
     g_assert_true(entity_at(&layout, 0)->brightness);
     g_assert_false(entity_at(&layout, 0)->color_temperature);
+    g_assert_false(entity_at(&layout, 0)->target_temperature);
+
+    g_free(attributes);
+    panel_layout_clear(&layout);
+}
+
+/* The same rule from the other side, and the one that lets a card type ship
+ * on its own: a payload from an integration newer than this build carries
+ * control names this build has never heard of, and the controls it does know
+ * still arrive. Nothing here may fail, and nothing may be dropped. */
+static void test_a_future_control_does_not_disturb_the_known_ones(void)
+{
+    PanelLayout layout = {0};
+    gchar *failure = NULL;
+    gchar *attributes = g_strdup_printf(
+        "%s,\"entities\":[{\"rid\":\"a1b2c3d4\",\"entity\":\"cover.blind\","
+        "\"name\":\"Blind\",\"domain\":\"cover\","
+        "\"controls\":[\"toggle\",\"position\",\"tilt\"]},"
+        "{\"rid\":\"b2c3d4e5\",\"entity\":\"climate.hall\","
+        "\"name\":\"Hall\",\"domain\":\"climate\","
+        "\"controls\":[\"toggle\",\"target_temperature\",\"humidity\"],"
+        "\"min_temp\":16,\"max_temp\":30,\"target_temp_step\":0.5}]",
+        CONTROLLER_ENTITIES);
+
+    g_assert_true(parse(attributes, &layout, &failure));
+    g_assert_cmpuint(entity_count(&layout), ==, 2);
+    /* An element whose every control is unknown is still carried: which
+     * domains this build can draw is the room page's business. */
+    g_assert_cmpstr(entity_at(&layout, 0)->domain, ==, "cover");
+    g_assert_false(entity_at(&layout, 0)->target_temperature);
+    /* And an unknown name beside a known one costs the known one nothing. */
+    g_assert_true(entity_at(&layout, 1)->target_temperature);
+    g_assert_cmpfloat(entity_at(&layout, 1)->max_temp, ==, 30.0);
+
+    g_free(attributes);
+    panel_layout_clear(&layout);
+}
+
+/* Contract version 7: the climate card. The setpoint bounds arrive with the
+ * control and are read as sent — the payload names no unit, so there is no
+ * plausible range to check them against. */
+static void test_climate_element_is_read(void)
+{
+    PanelLayout layout = {0};
+    gchar *failure = NULL;
+    gchar *attributes = g_strdup_printf(
+        "%s,\"entities\":[{\"rid\":\"7c41b8e0\",\"entity\":\"climate.hall\","
+        "\"name\":\"Hall\",\"domain\":\"climate\","
+        "\"controls\":[\"toggle\",\"target_temperature\"],"
+        "\"min_temp\":16.5,\"max_temp\":30,\"target_temp_step\":0.5}]",
+        CONTROLLER_ENTITIES);
+
+    g_assert_true(parse(attributes, &layout, &failure));
+    g_assert_cmpuint(entity_count(&layout), ==, 1);
+    g_assert_cmpstr(entity_at(&layout, 0)->domain, ==, "climate");
+    g_assert_true(entity_at(&layout, 0)->target_temperature);
+    g_assert_false(entity_at(&layout, 0)->brightness);
+    g_assert_false(entity_at(&layout, 0)->color_temperature);
+    g_assert_cmpfloat(entity_at(&layout, 0)->min_temp, ==, 16.5);
+    g_assert_cmpfloat(entity_at(&layout, 0)->max_temp, ==, 30.0);
+    g_assert_cmpfloat(entity_at(&layout, 0)->temp_step, ==, 0.5);
+
+    g_free(attributes);
+    panel_layout_clear(&layout);
+}
+
+/* A thermostat that can be turned off and nothing else. The card still
+ * draws and still toggles; it simply has no setpoint to open. */
+static void test_climate_without_a_setpoint(void)
+{
+    PanelLayout layout = {0};
+    gchar *failure = NULL;
+    gchar *attributes = g_strdup_printf(
+        "%s,\"entities\":[{\"rid\":\"7c41b8e0\",\"entity\":\"climate.hall\","
+        "\"name\":\"Hall\",\"domain\":\"climate\","
+        "\"controls\":[\"toggle\"]}]", CONTROLLER_ENTITIES);
+
+    g_assert_true(parse(attributes, &layout, &failure));
+    g_assert_cmpuint(entity_count(&layout), ==, 1);
+    g_assert_true(entity_at(&layout, 0)->togglable);
+    g_assert_false(entity_at(&layout, 0)->target_temperature);
+
+    g_free(attributes);
+    panel_layout_clear(&layout);
+}
+
+/* And one that can be neither turned off nor set. It is still carried and
+ * still drawn; what it must not do is act on a tap, because Home Assistant
+ * offered no action for it. */
+static void test_climate_with_no_controls_at_all(void)
+{
+    PanelLayout layout = {0};
+    gchar *failure = NULL;
+    gchar *attributes = g_strdup_printf(
+        "%s,\"entities\":[{\"rid\":\"7c41b8e0\",\"entity\":\"climate.hall\","
+        "\"name\":\"Hall\",\"domain\":\"climate\","
+        "\"controls\":[]}]", CONTROLLER_ENTITIES);
+
+    g_assert_true(parse(attributes, &layout, &failure));
+    g_assert_cmpuint(entity_count(&layout), ==, 1);
+    g_assert_false(entity_at(&layout, 0)->togglable);
+    g_assert_false(entity_at(&layout, 0)->target_temperature);
+
+    g_free(attributes);
+    panel_layout_clear(&layout);
+}
+
+/* Bounds that could not be drawn as a slider, and a step of nothing. Home
+ * Assistant's own Celsius defaults are what the integration would have sent
+ * had the entity reported nothing, so they are what this falls back to. */
+static void test_broken_temperature_bounds_fall_back(void)
+{
+    PanelLayout layout = {0};
+    gchar *failure = NULL;
+    gchar *attributes = g_strdup_printf(
+        "%s,\"entities\":[{\"rid\":\"7c41b8e0\",\"entity\":\"climate.hall\","
+        "\"name\":\"Hall\",\"domain\":\"climate\","
+        "\"controls\":[\"toggle\",\"target_temperature\"],"
+        "\"min_temp\":30,\"max_temp\":16,\"target_temp_step\":0}]",
+        CONTROLLER_ENTITIES);
+
+    g_assert_true(parse(attributes, &layout, &failure));
+    g_assert_cmpfloat(entity_at(&layout, 0)->min_temp, ==, 7.0);
+    g_assert_cmpfloat(entity_at(&layout, 0)->max_temp, ==, 35.0);
+    g_assert_cmpfloat(entity_at(&layout, 0)->temp_step, ==, 0.5);
+
+    g_free(attributes);
+    panel_layout_clear(&layout);
+}
+
+/* A house configured in Fahrenheit. The payload carries no unit and the
+ * panel invents none: 45 to 95 travels intact. */
+static void test_temperature_bounds_carry_no_unit(void)
+{
+    PanelLayout layout = {0};
+    gchar *failure = NULL;
+    gchar *attributes = g_strdup_printf(
+        "%s,\"entities\":[{\"rid\":\"7c41b8e0\",\"entity\":\"climate.hall\","
+        "\"name\":\"Hall\",\"domain\":\"climate\","
+        "\"controls\":[\"toggle\",\"target_temperature\"],"
+        "\"min_temp\":45,\"max_temp\":95,\"target_temp_step\":1}]",
+        CONTROLLER_ENTITIES);
+
+    g_assert_true(parse(attributes, &layout, &failure));
+    g_assert_cmpfloat(entity_at(&layout, 0)->min_temp, ==, 45.0);
+    g_assert_cmpfloat(entity_at(&layout, 0)->max_temp, ==, 95.0);
+    g_assert_cmpfloat(entity_at(&layout, 0)->temp_step, ==, 1.0);
 
     g_free(attributes);
     panel_layout_clear(&layout);
@@ -641,6 +789,17 @@ void panel_config_tests_register(void)
     g_test_add_func("/config/unicode-names", test_names_survive_unicode);
     g_test_add_func("/config/unknown-control",
                     test_unknown_control_is_ignored);
+    g_test_add_func("/config/future-control",
+                    test_a_future_control_does_not_disturb_the_known_ones);
+    g_test_add_func("/config/climate", test_climate_element_is_read);
+    g_test_add_func("/config/climate-toggle-only",
+                    test_climate_without_a_setpoint);
+    g_test_add_func("/config/climate-no-controls",
+                    test_climate_with_no_controls_at_all);
+    g_test_add_func("/config/climate-bounds",
+                    test_broken_temperature_bounds_fall_back);
+    g_test_add_func("/config/climate-bounds-unitless",
+                    test_temperature_bounds_carry_no_unit);
     g_test_add_func("/config/unknown-domain", test_unknown_domain_is_carried);
     g_test_add_func("/config/missing-domain", test_missing_domain_is_derived);
     g_test_add_func("/config/missing-name",

@@ -8,6 +8,8 @@ TARGET = t560-panel
 TEST_TARGET = tests/test-json-helpers
 RESOURCE_XML = data/t560.gresource.xml
 RESOURCE_FILES = data/editor.html \
+		 data/skins/modern.png \
+		 data/skins/cassette.png \
 		 data/icons/light-1.png \
 		 data/icons/light-2.png \
 		 data/icons/fan.png \

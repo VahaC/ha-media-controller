@@ -8,7 +8,7 @@ Treat this file as the change-control surface: a change to anything below
 affects released devices in the field. A change to code that is not described
 here affects one component only.
 
-Contract version: **6** (matches integration `1.2.x`).
+Contract version: **7** (matches integration `1.2.x`).
 
 Every version so far has been purely additive. Version 2 added the config
 sensor and let proxy lights forward colour temperature. Version 3 added two
@@ -63,6 +63,35 @@ version 5: it resolves both entity IDs and service domains while compiling, so
 proxies are the only way it can follow a change made in the Home Assistant UI,
 and a registry it cannot read would be of no use to it. It is sent no
 `entities` block, exactly as it is sent no `settings` and no `commands`.
+
+Version 7 is additive again, and it is the first of a series: it teaches the
+registry one new **card type**. Version 6 accepted six groups of entities and
+drew two of them, `light` and `switch`; every other group travelled with an
+empty `controls` list, waiting for the card that would draw it. Version 7
+writes the first of those cards, for `climate`, and nothing else. The
+remaining groups — `media_player`, `cover`, `weather` — still travel with an
+empty list and are still ignored by every client.
+
+That is deliberate, and the rule that makes it possible is already written
+below: **a client that does not know a value in `controls` ignores it, and a
+client that cannot draw a domain ignores that element.** So each card type is
+its own version and its own release. A panel running version 6 that is handed
+a version 7 payload reads a `climate` element whose `controls` contains a name
+it has never heard of, ignores the name, and behaves exactly as it did before;
+nothing else in the payload moved. The type is drawn on a panel when that
+panel is updated, and not before.
+
+What version 7 adds, precisely:
+
+- one value in `controls`: `target_temperature`, a single setpoint a card can
+  move;
+- three keys beside it — `min_temp`, `max_temp` and `target_temp_step` —
+  present only when `controls` contains `target_temperature`, exactly as
+  `min_kelvin` and `max_kelvin` are present only with `color_temp`;
+- `climate` moves from "no card" to "card" in the group table.
+
+`toggle` is **not** new and means on a thermostat what it has always meant:
+the element can be turned off and on again. See **Climate cards** below.
 
 ## Producer
 
@@ -194,7 +223,7 @@ receives the block it does not read. The panel payload is:
     }
   ],
   "revision": 2098342174,
-  "contract_version": 6,
+  "contract_version": 7,
   "skin_select": "select.kitchen_tablet_player_skin",
   "settings": {
     "poll_interval_ms": 1000,
@@ -233,7 +262,7 @@ The classic ESP32 controller reads the same payload with `slots` and
     }
   ],
   "revision": 2098342174,
-  "contract_version": 6
+  "contract_version": 7
 }
 ```
 
@@ -253,10 +282,16 @@ Real attributes, not an encoded string. Rules a client must follow:
 - Unconfigured slots are **omitted**. Render what arrives, in `slot` order, and
   handle an empty `slots` list.
 - `controls` is a closed list in both blocks: `toggle`, `brightness`,
-  `color_temp`. An unknown value must be ignored, not treated as an error, so
-  that a future control can be added without breaking released clients.
+  `color_temp`, `target_temperature`. An unknown value must be ignored, not
+  treated as an error, so that a future control can be added without breaking
+  released clients. This is the rule one card type at a time depends on: a
+  client that was released before a control existed keeps working when it
+  arrives. `slots` never carries `target_temperature` — the classic ESP32
+  firmware's four buttons are lights and switches, fixed while compiling.
 - `min_kelvin` and `max_kelvin` are present only when `controls` contains
   `color_temp`.
+- `min_temp`, `max_temp` and `target_temp_step` are present only when
+  `controls` contains `target_temperature`, and only in `entities`.
 - `revision` is a checksum of the rest of the payload, not a counter. Equal
   values mean an unchanged configuration; any change produces a different
   value. A client uses it to skip a re-layout, never to order versions.
@@ -334,14 +369,18 @@ client profile allows, in any of the groups below, and removes them again.
   domains below. **A client that cannot draw a domain ignores that element**,
   exactly as it ignores a control it does not know, so a group added later
   cannot break a client already in the field.
-- `controls` is the same closed list as in `slots` — `toggle`, `brightness`,
-  `color_temp` — and is resolved by the integration from the target's
+- `controls` is the same closed list as in `slots`, plus one value only a
+  registry element can carry: `toggle`, `brightness`, `color_temp`,
+  `target_temperature`. It is resolved by the integration from the target's
   capabilities. A client renders from it and never parses
-  `supported_color_modes` itself. As of this version only `light` and `switch`
-  produce controls; every other group is carried with an empty list, because
-  the cards that would draw them are not written yet.
+  `supported_color_modes` or `supported_features` itself. As of this version
+  `light`, `switch` and `climate` produce controls; `media_player`, `cover`
+  and `weather` are carried with an empty list, because the cards that would
+  draw them are not written yet.
 - `min_kelvin` and `max_kelvin` appear only when `controls` contains
   `color_temp`, as in `slots`.
+- `min_temp`, `max_temp` and `target_temp_step` appear only when `controls`
+  contains `target_temperature`. See **Climate cards** below.
 - The order of the list is the order to render in. It is the group order in
   the table below, and within a group the order the user added them.
 
@@ -362,9 +401,77 @@ The groups, in payload order:
 | Lights | `light` | yes |
 | Switches | `switch` | yes |
 | Media players | `media_player` | no |
-| Climate | `climate` | no |
+| Climate | `climate` | yes, since version 7 |
 | Covers | `cover` | no |
 | Weather | `weather` | no |
+
+A "no" in that column is not a promise that the element is useless: it still
+travels, still carries its `rid`, and is still stored in the layout a person
+arranged. It only means no client draws a control for it yet. Each remaining
+row becomes a "yes" in a version of its own.
+
+### Climate cards
+
+New in version 7, and the whole of what that version adds. A `climate`
+element is resolved the way a `light` is: the integration reads the
+thermostat's capabilities and sends the controls a card may draw, and a
+client never inspects `supported_features` itself.
+
+```json
+{
+  "rid": "7c41b8e0",
+  "entity": "climate.hall",
+  "name": "Hall",
+  "domain": "climate",
+  "controls": ["toggle", "target_temperature"],
+  "min_temp": 7,
+  "max_temp": 35,
+  "target_temp_step": 0.5
+}
+```
+
+Each control is claimed only on evidence, and either may be absent:
+
+- **`toggle`** means the thermostat can be turned off and on again. It is
+  claimed when the entity lists `off` among its `hvac_modes`, which is what
+  Home Assistant's own `climate.turn_off` acts on, or when it sets both the
+  `TURN_ON` and `TURN_OFF` feature bits itself. `toggle` is the same value,
+  with the same meaning, that a light or a switch carries; it is not new and a
+  client already honours it.
+- **`target_temperature`** means the entity has a **single** setpoint. An
+  entity that offers only a high and a low — `TARGET_TEMPERATURE_RANGE` and
+  not `TARGET_TEMPERATURE` — gets no setpoint control at all, because there is
+  no one number a card could move and writing the wrong field would be worse
+  than drawing nothing.
+
+The three bounds:
+
+- they are **unitless numbers**, in whatever unit the entity itself reports.
+  Home Assistant converts nothing here and the payload names no unit, because
+  a unit is not a capability: a client draws a bare degree sign and the number
+  it was given. A client must not assume Celsius;
+- `target_temp_step` is what one press or one notch moves the setpoint by. It
+  is never zero;
+- `max_temp` is always greater than `min_temp`. Where the entity reports a
+  range that is not, the integration substitutes Home Assistant's own
+  defaults rather than sending an inverted one.
+
+What a client draws is its own business, and the two panels differ:
+
+| Client | Tap | Beyond a tap |
+| --- | --- | --- |
+| T560 panel | `toggle` | The setpoint on the same sheet the brightness of a light uses |
+| ESP32-S3 panel | `toggle` | A long press sweeps the setpoint, as it sweeps brightness for a light |
+| ESP32-S3 controller | — | Not a panel; it reads `slots` and is sent no `entities` |
+
+Both panels also **show** the room temperature the thermostat reports, which
+needs nothing from this document: it is an ordinary attribute of the entity a
+client already polls.
+
+A card an element gives no `target_temperature` still draws and still
+toggles. A card whose element gives neither control is drawn as a reading
+rather than a control, which is the honest thing to show for a thermostat
+this integration can offer no action on.
 
 ### What version 6 breaks
 
@@ -432,6 +539,13 @@ Three rules make that workable across versions:
 - **The list is open.** Adding a layout to a client means adding its name to
   that client's profile and teaching that client to draw it. No other client
   is affected, and neither is this table's shape.
+
+Both panels also show a **picture of each layout** in the editor they serve,
+because a name says nothing about one. Those pictures are the client's own
+business and appear nowhere in this document: they never cross the boundary
+this file describes. Each is a static asset the client carries, one per name
+in the table above, and a name with no picture is still offered. See
+`clients/t560/README.md` and `docs/ESP32_PAIRED_CONTROLLER.md`.
 
 `config.ini` on the tablet keeps the same keys, and they are a **fallback, not
 an override**: they decide only until the panel has read a payload carrying
@@ -519,7 +633,7 @@ another's battery level.
 {
   "panel_id": "t560_1a2b3c4d",
   "version": "0.3.1",
-  "contract_version": 6,
+  "contract_version": 7,
   "page": "player",
   "uptime_seconds": 4210,
   "wifi_dbm": -53,
@@ -722,11 +836,12 @@ Tests that protect the contract:
   `slots` and `entities` each client kind is sent;
 - `tests/test_registry.py` — `rid` generation and stability, the per-profile
   limits, an empty registry and one at its limit;
-- `tests/test_profiles.py` — which controls a client is told to draw;
+- `tests/test_profiles.py` — which controls a client is told to draw,
+  including the climate rules and the card domains;
 - `tests/test_migration.py` — the version 1 slots keep their numbers;
 - `clients/t560/tests/test_panel_config.c` — payload parsing on the client
-  side, including an unknown control name, the registry limit, and the skin
-  select;
+  side, including an unknown control name, a climate element and its bounds,
+  the registry limit, and the skin select;
 - `clients/t560/tests/test_panel_grid.c` — the client-side layout the backup
   endpoint carries: what is a usable grid and what is dropped;
 - `tests/test_layout_backup.py` — the layout a panel stores here: that it is

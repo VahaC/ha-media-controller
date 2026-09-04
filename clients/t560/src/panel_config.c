@@ -19,8 +19,10 @@ static gint clamp_kelvin(gdouble value, gint fallback)
  * integration can add one without breaking a released panel. */
 static void read_controls(JsonArray *controls, PanelEntity *entity)
 {
+    entity->togglable = FALSE;
     entity->brightness = FALSE;
     entity->color_temperature = FALSE;
+    entity->target_temperature = FALSE;
     if (controls == NULL)
         return;
 
@@ -28,11 +30,41 @@ static void read_controls(JsonArray *controls, PanelEntity *entity)
         const gchar *control = json_array_get_string_element(controls, i);
         if (control == NULL)
             continue;
-        if (g_str_equal(control, "brightness"))
+        if (g_str_equal(control, "toggle"))
+            entity->togglable = TRUE;
+        else if (g_str_equal(control, "brightness"))
             entity->brightness = TRUE;
         else if (g_str_equal(control, "color_temp"))
             entity->color_temperature = TRUE;
+        else if (g_str_equal(control, "target_temperature"))
+            entity->target_temperature = TRUE;
     }
+}
+
+/* A thermostat's setpoint bounds. Unlike the Kelvin pair there is no
+ * plausible range to sanity-check them against: the payload carries no unit,
+ * so 7-35 and 45-95 are both ordinary. All that can be checked is that they
+ * are ordered and that the step is a real step, and the fallbacks are Home
+ * Assistant's own Celsius defaults, which is what the integration would have
+ * sent had the entity reported nothing. */
+static void read_temperature_bounds(JsonObject *object, PanelEntity *entity)
+{
+    gdouble value = 0.0;
+
+    entity->min_temp = json_object_number(object, "min_temp", &value)
+                           ? value
+                           : 7.0;
+    entity->max_temp = json_object_number(object, "max_temp", &value)
+                           ? value
+                           : 35.0;
+    if (entity->max_temp <= entity->min_temp) {
+        entity->min_temp = 7.0;
+        entity->max_temp = 35.0;
+    }
+    entity->temp_step =
+        json_object_number(object, "target_temp_step", &value) && value > 0.0
+            ? value
+            : 0.5;
 }
 
 /* The domain is repeated in the payload so that a client can pick a card
@@ -82,6 +114,7 @@ static PanelEntity *read_entity(JsonObject *object)
         entity->min_kelvin = 2000;
         entity->max_kelvin = 6500;
     }
+    read_temperature_bounds(object, entity);
     return entity;
 }
 

@@ -200,14 +200,24 @@ struct _PanelUi {
     GtkWidget *room_temperature_box;
     GtkWidget *room_temperature_scale;
     GtkWidget *room_temperature_value;
+    /* The thermostat setpoint. It is a third control on the same sheet
+     * rather than a sheet of its own: a climate card wants exactly what a
+     * dimmable light wants — a tap that toggles and one value to drag — and
+     * a second sheet would be a second thing to learn for the same gesture. */
+    GtkWidget *room_setpoint_box;
+    GtkWidget *room_setpoint_scale;
+    GtkWidget *room_setpoint_value;
     gint room_adjust_index;
     gboolean changing_room_adjustment;
     guint brightness_debounce_source;
     guint temperature_debounce_source;
+    guint setpoint_debounce_source;
     gint pending_brightness_index;
     gint pending_brightness;
     gint pending_temperature_index;
     gint pending_temperature;
+    gint pending_setpoint_index;
+    gdouble pending_setpoint;
 };
 
 /* One card on the room page. It knows its own identity, where it sits in
@@ -239,6 +249,13 @@ typedef struct {
     gint temperature;
     gint temperature_min;
     gint temperature_max;
+    /* A thermostat card. `setpoint` is what it is set to and `ambient` what
+     * the room actually is; both are NAN until Home Assistant has answered
+     * once, and a card draws only the ones it has. The bounds come from the
+     * registry element rather than from the poll, because they are a
+     * capability and not a state. */
+    gdouble setpoint;
+    gdouble ambient;
     /* The colour the user chose for this card, and whether they chose one. */
     guint accent;
     gboolean has_accent;
@@ -453,6 +470,11 @@ static const gchar *icon_for_domain(const gchar *domain)
         return "light-1";
     if (g_strcmp0(domain, "switch") == 0)
         return "fan";
+    /* The air-conditioner picture is the closest thing this build carries to
+     * a thermostat, and a person can still choose one of the others for a
+     * card in the editor. */
+    if (g_strcmp0(domain, "climate") == 0)
+        return "ac";
     return "light-2";
 }
 
@@ -579,10 +601,25 @@ static gint room_card_at(PanelUi *ui, gdouble x, gdouble y)
     return -1;
 }
 
+/* Whether the ADJUST corner has anything to open. It is one question for
+ * every card type on purpose: a dimmable light, a colour-temperature light
+ * and a thermostat all want the same gesture — a tap that toggles and one
+ * value to drag — and the sheet shows whichever of the three controls the
+ * element actually has. */
 static gboolean card_is_adjustable(const PanelRoomCard *card)
 {
     return card->entity != NULL &&
-           (card->entity->brightness || card->entity->color_temperature);
+           (card->entity->brightness || card->entity->color_temperature ||
+            card->entity->target_temperature);
+}
+
+/* A temperature as a card and a sheet write one: no unit letter, because the
+ * payload names none, and one decimal only when there is one to show. */
+static gchar *format_temperature(gdouble value)
+{
+    if (fabs(value - round(value)) < 0.05)
+        return g_strdup_printf("%.0f°", round(value));
+    return g_strdup_printf("%.1f°", value);
 }
 
 /* The ADJUST hit region: the top-right corner, the same size whatever the
@@ -626,6 +663,39 @@ static gboolean emit_temperature_change(gpointer user_data)
                ui->pending_temperature_index);
     g_free(value);
     return G_SOURCE_REMOVE;
+}
+
+static gboolean emit_setpoint_change(gpointer user_data)
+{
+    PanelUi *ui = user_data;
+    /* Sent with one decimal because a step of 0.5 is ordinary. The locale is
+     * deliberately not involved: this becomes a JSON number. */
+    gchar value[G_ASCII_DTOSTR_BUF_SIZE];
+
+    g_ascii_formatd(value, sizeof(value), "%.1f", ui->pending_setpoint);
+    ui->setpoint_debounce_source = 0;
+    emit_event(ui, PANEL_UI_SET_ROOM_TARGET_TEMPERATURE, value,
+               ui->pending_setpoint_index);
+    return G_SOURCE_REMOVE;
+}
+
+static void room_setpoint_changed(GtkRange *range, gpointer user_data)
+{
+    PanelUi *ui = user_data;
+    gdouble value = gtk_range_get_value(range);
+    gchar *text = format_temperature(value);
+
+    gtk_label_set_text(GTK_LABEL(ui->room_setpoint_value), text);
+    g_free(text);
+    if (ui->changing_room_adjustment || ui->room_adjust_index < 0)
+        return;
+
+    ui->pending_setpoint_index = ui->room_adjust_index;
+    ui->pending_setpoint = value;
+    if (ui->setpoint_debounce_source != 0)
+        g_source_remove(ui->setpoint_debounce_source);
+    ui->setpoint_debounce_source = g_timeout_add_full(
+        G_PRIORITY_DEFAULT_IDLE, 350, emit_setpoint_change, ui, NULL);
 }
 
 static void room_brightness_changed(GtkRange *range, gpointer user_data)
@@ -673,6 +743,10 @@ static void close_room_sheet(GtkButton *button, gpointer user_data)
     gtk_revealer_set_reveal_child(GTK_REVEALER(ui->room_sheet), FALSE);
 }
 
+/* The sheet shows the controls this element actually has and hides the rest,
+ * so one sheet serves a dimmable light, a colour-temperature light and a
+ * thermostat without any of them being offered a control that would do
+ * nothing. */
 static void open_room_sheet(PanelUi *ui, gint index)
 {
     PanelRoomCard *card = g_ptr_array_index(ui->room_cards, index);
@@ -683,6 +757,12 @@ static void open_room_sheet(PanelUi *ui, gint index)
                            ? card->temperature
                            : (card->temperature_min +
                               card->temperature_max) / 2;
+    /* A thermostat that has not answered yet opens in the middle of its own
+     * range rather than at its minimum, which would read as a setting
+     * somebody made. */
+    gdouble setpoint = !isnan(card->setpoint)
+                           ? card->setpoint
+                           : (entity->min_temp + entity->max_temp) / 2.0;
 
     ui->room_adjust_index = index;
     gtk_label_set_text(GTK_LABEL(ui->room_sheet_title), title);
@@ -690,12 +770,23 @@ static void open_room_sheet(PanelUi *ui, gint index)
     gtk_widget_set_visible(ui->room_brightness_box, entity->brightness);
     gtk_widget_set_visible(ui->room_temperature_box,
                            entity->color_temperature);
+    gtk_widget_set_visible(ui->room_setpoint_box,
+                           entity->target_temperature);
 
     ui->changing_room_adjustment = TRUE;
     gtk_range_set_range(GTK_RANGE(ui->room_temperature_scale),
                         card->temperature_min, card->temperature_max);
     gtk_range_set_value(GTK_RANGE(ui->room_brightness_scale), brightness);
     gtk_range_set_value(GTK_RANGE(ui->room_temperature_scale), temperature);
+    if (entity->target_temperature) {
+        gtk_range_set_range(GTK_RANGE(ui->room_setpoint_scale),
+                            entity->min_temp, entity->max_temp);
+        gtk_range_set_increments(GTK_RANGE(ui->room_setpoint_scale),
+                                 entity->temp_step, entity->temp_step);
+        gtk_range_set_round_digits(GTK_RANGE(ui->room_setpoint_scale),
+                                   entity->temp_step < 1.0 ? 1 : 0);
+        gtk_range_set_value(GTK_RANGE(ui->room_setpoint_scale), setpoint);
+    }
     ui->changing_room_adjustment = FALSE;
     gtk_revealer_set_reveal_child(GTK_REVEALER(ui->room_sheet), TRUE);
 }
@@ -1874,6 +1965,57 @@ static void draw_room_adjust(PanelUi *ui, cairo_t *cr, PangoLayout *layout,
     cairo_restore(cr);
 }
 
+/* What a thermostat card says under its name instead of ON or OFF, and NULL
+ * for every other card. "ON" tells a person nothing they came to a
+ * thermostat for; the temperature the room is at does, with the setpoint
+ * after it, which is the order a thermostat is read in.
+ *
+ * The room temperature is drawn whether the thermostat is running or not,
+ * because it is true either way. The **setpoint** is not: a thermostat that
+ * is off is heading nowhere, and leaving the number it used to be set to on
+ * the card would read as something it is doing. A thermostat that reports
+ * no numbers at all falls back to ON and OFF like anything else — a coarse
+ * line is better than an empty one — and the card's own gradient says which
+ * of the two it is in either case.
+ *
+ * The size rules above this are unchanged and apply to a thermostat as they
+ * do to a lamp: a one-cell card has room for the name and the ADJUST corner
+ * and nothing else, and this line appears from about two cells up. */
+static gchar *card_reading(const PanelRoomCard *card)
+{
+    if (card->entity == NULL || !card->entity->target_temperature)
+        return NULL;
+    if (!card->state_known)
+        return NULL;
+
+    gboolean has_ambient = !isnan(card->ambient);
+    gboolean has_setpoint = card->active && !isnan(card->setpoint);
+
+    /* The room first and the setpoint after it. The separator is a slash and
+     * not an arrow so that the two clients read the same: the Roboto face the
+     * ESP32 firmware builds carries no U+2192, and a glyph a font does not
+     * have cannot be added to it. */
+    if (has_ambient && has_setpoint) {
+        gchar *ambient = format_temperature(card->ambient);
+        gchar *setpoint = format_temperature(card->setpoint);
+        gchar *reading = g_strdup_printf("%s / %s", ambient, setpoint);
+
+        g_free(ambient);
+        g_free(setpoint);
+        return reading;
+    }
+    if (has_ambient)
+        return format_temperature(card->ambient);
+    if (has_setpoint) {
+        gchar *setpoint = format_temperature(card->setpoint);
+        gchar *reading = g_strdup_printf("set %s", setpoint);
+
+        g_free(setpoint);
+        return reading;
+    }
+    return NULL;
+}
+
 static void draw_room_card(PanelUi *ui, cairo_t *cr, PangoLayout *layout,
                            const PanelRoomCard *card, gint index)
 {
@@ -1980,7 +2122,9 @@ static void draw_room_card(PanelUi *ui, cairo_t *cr, PangoLayout *layout,
               content_bottom, text_width);
 
     if (height >= 108.0) {
+        gchar *reading = unassigned ? NULL : card_reading(card);
         const gchar *state = unassigned ? card->rid
+                             : reading != NULL ? reading
                              : !card->state_known ? "--"
                              : card->active ? "ON" : "OFF";
         gint state_size = (gint)CLAMP(height / 11.0, 9.0, 13.0);
@@ -1990,6 +2134,7 @@ static void draw_room_card(PanelUi *ui, cairo_t *cr, PangoLayout *layout,
         card_text(cr, layout, state, state_size, TRUE,
                   unassigned ? 0x52657cU : mix_color(0x8fa9c7U, lit, mix),
                   1.0, x + pad, content_bottom, text_width);
+        g_free(reading);
     }
 
     if (!unassigned) {
@@ -2310,6 +2455,8 @@ static void room_cards_rebuild(PanelUi *ui)
         card->temperature = -1;
         card->temperature_min = entity != NULL ? entity->min_kelvin : 2000;
         card->temperature_max = entity != NULL ? entity->max_kelvin : 6500;
+        card->setpoint = NAN;
+        card->ambient = NAN;
         card->icon = g_strdup(
             placed->icon != NULL
                 ? placed->icon
@@ -2410,6 +2557,34 @@ static GtkWidget *room_adjust_sheet(PanelUi *ui)
                        FALSE, FALSE, 0);
     g_signal_connect(ui->room_temperature_scale, "value-changed",
                      G_CALLBACK(room_temperature_changed), ui);
+
+    /* The thermostat setpoint. The range and the step are set per card when
+     * the sheet opens, because they come from the registry element rather
+     * than from this build: 7 to 35 and 21 are only what an unconfigured
+     * scale has to say before a card has been chosen. */
+    ui->room_setpoint_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
+    GtkWidget *setpoint_header = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    GtkWidget *setpoint_title = new_label("TARGET", "room-control-title");
+    ui->room_setpoint_value = new_label("21°", "room-control-value");
+    gtk_widget_set_halign(setpoint_title, GTK_ALIGN_START);
+    gtk_widget_set_halign(ui->room_setpoint_value, GTK_ALIGN_END);
+    gtk_box_pack_start(GTK_BOX(setpoint_header), setpoint_title,
+                       TRUE, TRUE, 0);
+    gtk_box_pack_end(GTK_BOX(setpoint_header), ui->room_setpoint_value,
+                     FALSE, FALSE, 0);
+    ui->room_setpoint_scale = gtk_scale_new_with_range(
+        GTK_ORIENTATION_HORIZONTAL, 7.0, 35.0, 0.5);
+    gtk_scale_set_draw_value(GTK_SCALE(ui->room_setpoint_scale), FALSE);
+    gtk_widget_set_size_request(ui->room_setpoint_scale, -1, 58);
+    add_css_class(ui->room_setpoint_scale, "room-control-scale");
+    gtk_box_pack_start(GTK_BOX(ui->room_setpoint_box), setpoint_header,
+                       FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(ui->room_setpoint_box),
+                       ui->room_setpoint_scale, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(sheet), ui->room_setpoint_box,
+                       FALSE, FALSE, 0);
+    g_signal_connect(ui->room_setpoint_scale, "value-changed",
+                     G_CALLBACK(room_setpoint_changed), ui);
 
     gtk_container_add(GTK_CONTAINER(revealer), sheet);
     ui->room_sheet = revealer;
@@ -2542,6 +2717,8 @@ void panel_ui_free(PanelUi *ui)
         g_source_remove(ui->brightness_debounce_source);
     if (ui->temperature_debounce_source != 0)
         g_source_remove(ui->temperature_debounce_source);
+    if (ui->setpoint_debounce_source != 0)
+        g_source_remove(ui->setpoint_debounce_source);
     if (ui->room_animation_tick != 0 && ui->room_area != NULL)
         gtk_widget_remove_tick_callback(ui->room_area,
                                         ui->room_animation_tick);
@@ -3257,31 +3434,37 @@ void panel_ui_select_playlist(PanelUi *ui, gint selected)
     ui->changing_list_selection = FALSE;
 }
 
-void panel_ui_set_room(PanelUi *ui, guint index, gboolean active,
-                       gint brightness_percent, gint color_temp_kelvin,
-                       gint min_color_temp_kelvin,
-                       gint max_color_temp_kelvin)
+void panel_ui_set_room(PanelUi *ui, guint index, const PanelRoomState *state)
 {
     g_return_if_fail(ui->room_cards != NULL);
+    g_return_if_fail(state != NULL);
     g_return_if_fail(index < ui->room_cards->len);
 
     PanelRoomCard *card = g_ptr_array_index(ui->room_cards, index);
 
-    if (brightness_percent >= 0)
-        card->brightness = CLAMP(brightness_percent, 1, 100);
-    if (min_color_temp_kelvin > 0 && max_color_temp_kelvin > 0 &&
-        min_color_temp_kelvin < max_color_temp_kelvin) {
-        card->temperature_min = min_color_temp_kelvin;
-        card->temperature_max = max_color_temp_kelvin;
+    if (state->brightness_percent >= 0)
+        card->brightness = CLAMP(state->brightness_percent, 1, 100);
+    if (state->min_color_temp_kelvin > 0 && state->max_color_temp_kelvin > 0 &&
+        state->min_color_temp_kelvin < state->max_color_temp_kelvin) {
+        card->temperature_min = state->min_color_temp_kelvin;
+        card->temperature_max = state->max_color_temp_kelvin;
     }
-    if (color_temp_kelvin > 0) {
-        card->temperature = CLAMP(color_temp_kelvin, card->temperature_min,
+    if (state->color_temp_kelvin > 0) {
+        card->temperature = CLAMP(state->color_temp_kelvin,
+                                  card->temperature_min,
                                   card->temperature_max);
     }
+    /* Taken as reported and not clamped to the registry's bounds: they are
+     * what a card may *ask* for, and a room that is colder than a
+     * thermostat's minimum is a fact worth drawing rather than an error. */
+    if (!isnan(state->setpoint))
+        card->setpoint = state->setpoint;
+    if (!isnan(state->ambient))
+        card->ambient = state->ambient;
 
-    if (card->active != active || !card->state_known) {
-        card->active = active;
-        start_card_animation(ui, card, active);
+    if (card->active != state->active || !card->state_known) {
+        card->active = state->active;
+        start_card_animation(ui, card, state->active);
     }
     card->state_known = TRUE;
     invalidate_card(ui, card);
@@ -3297,6 +3480,13 @@ void panel_ui_set_room(PanelUi *ui, guint index, gboolean active,
         if (ui->temperature_debounce_source == 0 && card->temperature >= 0) {
             gtk_range_set_value(GTK_RANGE(ui->room_temperature_scale),
                                 card->temperature);
+        }
+        /* Never while a drag is still settling: the slider is where the
+         * finger left it, and Home Assistant is still reporting the value
+         * from before the change. */
+        if (ui->setpoint_debounce_source == 0 && !isnan(card->setpoint)) {
+            gtk_range_set_value(GTK_RANGE(ui->room_setpoint_scale),
+                                card->setpoint);
         }
         ui->changing_room_adjustment = FALSE;
     }

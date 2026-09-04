@@ -419,7 +419,7 @@ router or exposed to the internet.** It is meant for a house network and
 nothing else.
 
 What the missing password costs is bounded on purpose. The server answers
-exactly seven routes and none of them is a proxy to Home Assistant: it cannot
+exactly eight routes and none of them is a proxy to Home Assistant: it cannot
 read a state, call an arbitrary service, reach an entity the panel does not
 already draw, or expose the panel's Home Assistant access token. The registry
 it shows comes from the payload the panel has already cached. The worst a

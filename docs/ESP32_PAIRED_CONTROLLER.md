@@ -281,9 +281,11 @@ same page the T560 panel serves; the two differ only where the device does.
 device that had to be logged into would not be. What makes the missing password
 survivable is the shape of the API rather than a promise:
 
-- there are exactly **seven routes**, and not one of them is a general proxy to
+- there are exactly **eight routes**, and not one of them is a general proxy to
   Home Assistant. Nothing there can read a state, call an arbitrary service, or
-  reach an entity the device does not already draw;
+  reach an entity the device does not already draw. The one route that takes a
+  name from the caller — the skin preview — compares it with the skins linked
+  in at codegen time and never builds a path out of it;
 - the registry is served from the payload the device has already parsed, so a
   request to the editor never becomes a request to Home Assistant;
 - the Home Assistant token never leaves the device and is readable through no
@@ -303,6 +305,7 @@ uses. ESPHome's ESP-IDF web server registers URI handlers for `GET`, `POST` and
 | Route | Purpose |
 | --- | --- |
 | `GET /` | the editor page, one gzipped asset in flash |
+| `GET /skins/<name>.png` | what one skin looks like |
 | `GET /api/entities` | the registry, the artwork, the grid size, the last restore |
 | `GET /api/layout` | the arrangement on screen |
 | `POST /api/layout` | adopt and persist an arrangement |
@@ -315,10 +318,73 @@ Skin* select and nothing else, and the name is checked against the three skins
 this build draws before it is sent. Home Assistant stays the owner of the value:
 the device writes nothing locally and adopts the new skin on its next poll.
 
+### The skin previews
+
+A skin name says nothing about a layout, so the editor shows a picture of each
+one beside the list. The pictures are **static PNGs linked into flash** beside
+the editor, one per skin in `components/media_controller_grid/previews/`, and
+`GET /skins/<name>.png` serves the one whose name matches. They are drawn by
+`tools/make-skin-previews.py` from the same numbers the interface draws with —
+the widget geometry in `media-controller-ui.yaml` — which is what makes them
+reproducible from the repository rather than from a camera.
+
+They are static on purpose. A live preview would mean a second implementation
+of every home layout, in JavaScript, kept in step with the real one by hand;
+the picture beside the list is a drawing of a layout and the status line under
+it is what says whether the device actually adopted the skin.
+
+Which skins the editor lists is the `skins:` block of
+`media_controller_grid:`, which is the `esp32_s3_panel` profile's list in
+`custom_components/media_controller/profiles.py` — the editor therefore offers
+exactly what this build draws. A skin with no picture is still offered; the
+tile shows its name and drops the image.
+
+What they cost: about 6.4 kB of flash for the three of them, against about
+8.8 kB for the gzipped editor beside them. They are **not** gzipped — a PNG is
+already deflate-compressed, and wrapping one in a gzip member makes it about
+twenty bytes larger — and are kept small where it pays instead: 144x144, and
+quantised to a 48-colour palette.
+
 Restoring is asked for and then watched rather than answered in one request:
 fetching the copy from Home Assistant blocks the device's main loop, so the
 device takes the request, answers `queued`, does the work on its own loop, and
 reports the outcome on `GET /api/entities`.
+
+### What a card draws
+
+| Group | Tap | Long press | At one cell |
+| --- | --- | --- | --- |
+| `light` | toggle | sweeps brightness | icon and a tap |
+| `switch` | toggle | — | icon and a tap |
+| `climate` | toggle | sweeps the setpoint | icon and a tap |
+
+Everything else in the registry is drawn as a card with no action, because no
+card is written for it yet. See **Registry entries** in `docs/CONTRACT.md`.
+
+A card two cells square or larger carries its name; a thermostat carries a
+reading above the name as well — the temperature the room is at and the
+setpoint, as `21.5° / 22°`. A thermostat that is **off** shows the room
+temperature alone: that number is true either way, and the setpoint it used to
+be heading for is not. The card's border already says which of the two it is.
+At one cell there is 54 px of paint and room for the icon or the name but not
+both, and the icon is the half that still says what the card is; that rule is
+the same for every card type.
+
+A thermostat's setpoint sweep is **not** sent per tick, unlike a light's
+brightness. The value moves on the device while the finger is down and goes to
+Home Assistant once, on release: a lamp answers on mains wiring, and a
+thermostat is very often a battery radiator valve on a Zigbee or Z-Wave mesh
+that ten calls a second would flood with a value nobody has finished choosing.
+Only a press that actually moved the value sends anything, so holding a card
+for a moment and letting go writes nothing.
+
+The sweep also needs a **running** thermostat. An off one shows the room
+temperature rather than the setpoint, so sweeping it would move a number with
+nothing on screen changing; turning it on is a tap, and the sweep is there the
+moment it runs.
+
+A tap does nothing on an element Home Assistant offered no `toggle` for — a
+thermostat that cannot be turned off is a card that reads rather than acts.
 
 ### Where the layout lives
 

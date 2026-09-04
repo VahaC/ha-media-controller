@@ -14,30 +14,59 @@ from typing import Any
 CONTROL_TOGGLE = "toggle"
 CONTROL_BRIGHTNESS = "brightness"
 CONTROL_COLOR_TEMP = "color_temp"
+# A single setpoint a card can move. Added in contract version 7 with the
+# climate card; a client that does not know the name ignores it, which is
+# what lets one card type ship at a time.
+CONTROL_TARGET_TEMPERATURE = "target_temperature"
 
 # Canonical order, so that two equal control sets always compare equal.
-CONTROL_ORDER = (CONTROL_TOGGLE, CONTROL_BRIGHTNESS, CONTROL_COLOR_TEMP)
+CONTROL_ORDER = (
+    CONTROL_TOGGLE,
+    CONTROL_BRIGHTNESS,
+    CONTROL_COLOR_TEMP,
+    CONTROL_TARGET_TEMPERATURE,
+)
 
 # Keys of the capability mapping normalize_capabilities returns.
 CAP_CONTROLS = "controls"
 CAP_MIN_KELVIN = "min_kelvin"
 CAP_MAX_KELVIN = "max_kelvin"
+CAP_MIN_TEMP = "min_temp"
+CAP_MAX_TEMP = "max_temp"
+CAP_TEMP_STEP = "target_temp_step"
+
+# What a target entity's state has to change for its controls to change with
+# it. Nothing here may be a value that moves while the thing is simply being
+# used: the brightness of a lamp and the temperature of a room both do, and
+# folding one in would rebuild the payload of every panel in the house every
+# time somebody dimmed a light or a room warmed up.
 CAPABILITY_ATTRIBUTES = (
     "supported_color_modes",
     "brightness",
     "color_temp_kelvin",
     "min_color_temp_kelvin",
     "max_color_temp_kelvin",
+    "supported_features",
+    "hvac_modes",
+    "min_temp",
+    "max_temp",
+    "target_temp_step",
 )
+# The two of those that are read for presence rather than for their value: a
+# light group reports the effective attribute without a complete
+# `supported_color_modes`, so the attribute being there is the capability.
+_PRESENCE_ATTRIBUTES = frozenset({"brightness", "color_temp_kelvin"})
+_LIST_ATTRIBUTES = frozenset({"supported_color_modes", "hvac_modes"})
 
 LIGHT_DOMAIN = "light"
 SWITCH_DOMAIN = "switch"
+CLIMATE_DOMAIN = "climate"
 
 # The domains a client can draw a card for today. Every other domain a user
-# may put in the registry — media_player, climate, cover, weather — is carried
-# with an empty control list until its card exists, and a client ignores an
-# element whose domain it cannot draw. See docs/CONTRACT.md, Registry entries.
-CARD_DOMAINS = (LIGHT_DOMAIN, SWITCH_DOMAIN)
+# may put in the registry — media_player, cover, weather — is carried with an
+# empty control list until its card exists, and a client ignores an element
+# whose domain it cannot draw. See docs/CONTRACT.md, Registry entries.
+CARD_DOMAINS = (LIGHT_DOMAIN, SWITCH_DOMAIN, CLIMATE_DOMAIN)
 
 # Every Home Assistant colour mode except these carries a brightness channel,
 # so brightness is derived from the set difference rather than an allow-list
@@ -48,6 +77,26 @@ COLOR_TEMP_MODE = "color_temp"
 # Used only when a colour-temperature light does not report its own bounds.
 FALLBACK_MIN_KELVIN = 2000
 FALLBACK_MAX_KELVIN = 6535
+
+# Bits of Home Assistant's `ClimateEntityFeature`, written out rather than
+# imported: this module deliberately has no Home Assistant imports so that
+# the rules below can be tested without a runtime. They are part of the
+# public climate API and have not moved.
+CLIMATE_TARGET_TEMPERATURE = 1
+CLIMATE_TURN_OFF = 128
+CLIMATE_TURN_ON = 256
+
+# The mode a thermostat is in when it is off. A climate entity that lists it
+# can be turned off and on again, which is what `toggle` means here.
+HVAC_MODE_OFF = "off"
+
+# Used only when a thermostat does not report its own bounds, which a real
+# one always does. They are the Home Assistant defaults, and like every
+# temperature in the payload they are in the unit the entity itself reports —
+# the integration converts nothing and the payload names no unit.
+FALLBACK_MIN_TEMP = 7.0
+FALLBACK_MAX_TEMP = 35.0
+FALLBACK_TEMP_STEP = 0.5
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,9 +157,10 @@ class ClientProfile:
     entity_limit: int = 0
     # What this client can draw for a registry element at all, intersected
     # with what the target entity actually supports. It is the registry's
-    # equivalent of SlotSpec.controls: the paired ESP32 has four buttons and a
-    # brightness long-press and no control to set a colour temperature with,
-    # so it is told about neither.
+    # equivalent of SlotSpec.controls: the paired ESP32 has a tap and one
+    # long-press sweep per card, which it spends on brightness for a lamp and
+    # on the setpoint for a thermostat, and has nothing left to set a colour
+    # temperature with — so it is told about that one and not the others.
     controls: tuple[str, ...] = CONTROL_ORDER
 
     @property
@@ -168,7 +218,12 @@ T560 = ClientProfile(
     update_kind=UPDATE_KIND_TABLET,
     slots=(),
     entity_limit=100,
-    controls=(CONTROL_TOGGLE, CONTROL_BRIGHTNESS, CONTROL_COLOR_TEMP),
+    controls=(
+        CONTROL_TOGGLE,
+        CONTROL_BRIGHTNESS,
+        CONTROL_COLOR_TEMP,
+        CONTROL_TARGET_TEMPERATURE,
+    ),
 )
 
 # The same hardware as ESP32_S3, running the paired firmware instead. It is a
@@ -180,8 +235,10 @@ T560 = ClientProfile(
 # That is why it has a registry and the classic firmware cannot. The limit is
 # lower than the tablet's because the payload is parsed on the device itself,
 # by brace depth and with no JSON library. Colour temperature is still absent:
-# the firmware has buttons and a brightness long-press, and no control to set
-# a colour temperature with.
+# the firmware has buttons, and its one gesture beyond a tap is a long press
+# that sweeps a value. It spends that gesture on brightness for a light and on
+# the setpoint for a thermostat, and has nothing left to set a colour
+# temperature with.
 ESP32_S3_PANEL = ClientProfile(
     slug="esp32_s3_panel",
     name="ESP32-S3 panel",
@@ -189,7 +246,11 @@ ESP32_S3_PANEL = ClientProfile(
     update_kind=UPDATE_KIND_FIRMWARE,
     slots=(),
     entity_limit=64,
-    controls=(CONTROL_TOGGLE, CONTROL_BRIGHTNESS),
+    controls=(
+        CONTROL_TOGGLE,
+        CONTROL_BRIGHTNESS,
+        CONTROL_TARGET_TEMPERATURE,
+    ),
 )
 
 # The controller config entry always carries the ESP32 slots; every other
@@ -248,6 +309,8 @@ def normalize_capabilities(
     """
     if domain == SWITCH_DOMAIN:
         return {CAP_CONTROLS: (CONTROL_TOGGLE,)}
+    if domain == CLIMATE_DOMAIN:
+        return _climate_capabilities(attributes or {})
     if domain != LIGHT_DOMAIN:
         return {CAP_CONTROLS: ()}
 
@@ -288,20 +351,74 @@ def normalize_capabilities(
     return capabilities
 
 
-def capability_signature(attributes: Mapping[str, Any] | None) -> tuple[Any, ...]:
-    """Return the state portion that can change a light's controls."""
-    safe_attributes = attributes or {}
-    modes = safe_attributes.get("supported_color_modes") or ()
+def _climate_capabilities(attributes: Mapping[str, Any]) -> dict[str, Any]:
+    """Convert a thermostat's attributes to the controls a card may draw.
+
+    Two of them, and each is claimed only on evidence:
+
+    * `toggle` needs a thermostat that can be turned off and on again. A
+      climate entity says so by listing `off` among its `hvac_modes`, which
+      is what Home Assistant's own `climate.turn_off` acts on; the explicit
+      `TURN_ON`/`TURN_OFF` feature bits are accepted too, for an entity that
+      implements them itself instead.
+    * `target_temperature` needs the single-setpoint feature. An entity that
+      offers only `TARGET_TEMPERATURE_RANGE` has a high and a low and no one
+      number a card could move, so it is left with no setpoint control rather
+      than one that would write the wrong field.
+    """
+    features = _integer(attributes.get("supported_features"))
+    modes = attributes.get("hvac_modes") or ()
     if isinstance(modes, str):
         modes = (modes,)
+    mode_set = {str(mode) for mode in modes}
+
+    controls: list[str] = []
+    if HVAC_MODE_OFF in mode_set or (
+        features & CLIMATE_TURN_ON and features & CLIMATE_TURN_OFF
+    ):
+        controls.append(CONTROL_TOGGLE)
+
+    capabilities: dict[str, Any] = {}
+    if features & CLIMATE_TARGET_TEMPERATURE:
+        controls.append(CONTROL_TARGET_TEMPERATURE)
+        capabilities[CAP_MIN_TEMP] = _temperature(
+            attributes.get("min_temp"), FALLBACK_MIN_TEMP
+        )
+        capabilities[CAP_MAX_TEMP] = _temperature(
+            attributes.get("max_temp"), FALLBACK_MAX_TEMP
+        )
+        step = _temperature(
+            attributes.get("target_temp_step"), FALLBACK_TEMP_STEP
+        )
+        capabilities[CAP_TEMP_STEP] = step if step > 0 else FALLBACK_TEMP_STEP
+        if capabilities[CAP_MAX_TEMP] <= capabilities[CAP_MIN_TEMP]:
+            # A range a card could not draw a slider over. Fall back to the
+            # defaults rather than sending an inverted or empty one.
+            capabilities[CAP_MIN_TEMP] = FALLBACK_MIN_TEMP
+            capabilities[CAP_MAX_TEMP] = FALLBACK_MAX_TEMP
+
+    capabilities[CAP_CONTROLS] = order_controls(controls)
+    return capabilities
+
+
+def capability_signature(attributes: Mapping[str, Any] | None) -> tuple[Any, ...]:
+    """Return the state portion that can change a target's controls."""
+    safe_attributes = attributes or {}
     return tuple(
-        tuple(str(mode) for mode in modes)
-        if key == "supported_color_modes"
-        else key in safe_attributes
-        if key in ("brightness", "color_temp_kelvin")
-        else safe_attributes.get(key)
-        for key in CAPABILITY_ATTRIBUTES
+        _signature_field(safe_attributes, key) for key in CAPABILITY_ATTRIBUTES
     )
+
+
+def _signature_field(attributes: Mapping[str, Any], key: str) -> Any:
+    """Return one attribute in the shape the signature compares it in."""
+    if key in _LIST_ATTRIBUTES:
+        value = attributes.get(key) or ()
+        if isinstance(value, str):
+            value = (value,)
+        return tuple(str(item) for item in value)
+    if key in _PRESENCE_ATTRIBUTES:
+        return key in attributes
+    return attributes.get(key)
 
 
 def _kelvin(value: Any, fallback: int) -> int:
@@ -311,3 +428,24 @@ def _kelvin(value: Any, fallback: int) -> int:
     except (TypeError, ValueError):
         return fallback
     return kelvin if kelvin > 0 else fallback
+
+
+def _integer(value: Any) -> int:
+    """Read a feature bitmask, treating anything unusable as no features."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    return int(value)
+
+
+def _temperature(value: Any, fallback: float) -> float:
+    """Read a temperature bound, falling back to a usable default.
+
+    Rounded to one decimal because that is the resolution a thermostat is
+    ever set to, and because a bound that arrives as 21.999999999 would
+    otherwise travel into every payload and every checksum with it.
+    """
+    try:
+        temperature = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    return round(temperature, 1)

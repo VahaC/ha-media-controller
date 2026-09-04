@@ -22,8 +22,9 @@ What is still out of scope here is moving the tablet-local settings —
 `[panel]` and `[camera]` — into Home Assistant; see
 [Still on the tablet](#still-on-the-tablet).
 
-Contract version: **6**. The payload is in [CONTRACT.md](CONTRACT.md), under
-**Registry entries**.
+Contract version: **7**. The payload is in [CONTRACT.md](CONTRACT.md), under
+**Registry entries**. Version 6 introduced the registry; version 7 wrote the
+first of the cards it was waiting for.
 
 ## Goal
 
@@ -46,7 +47,7 @@ everything below.
 | 3 | ESP32 has no entry of its own | Its four slots stay on the controller config entry, where they already are |
 | 4 | A panel's room controls are an **unbounded registry grouped by domain**; the classic ESP32 keeps exactly four slots | Rewritten in version 6 — see below |
 | 5 | Every element has a **label field**; empty falls back to `friendly_name` | |
-| 6 | The registry accepts **six groups**; only `light` and `switch` have cards | Rewritten in version 6 — see below |
+| 6 | The registry accepts **six groups**; `light`, `switch` and `climate` have cards | Rewritten in version 6, extended one group at a time from version 7 — see below |
 | 7 | The integration **normalizes capabilities** | Clients render from a plain list and never parse `supported_color_modes` |
 | 8 | Legacy **entity IDs** are preserved | Flashed ESP32 devices keep working without a reflash |
 
@@ -105,7 +106,7 @@ next time somebody tidied theirs. The integration also records the target's
 entity-registry row ID, so the element follows its entity through exactly that
 rename.
 
-### Decision 6, rewritten: six groups, two of them drawable
+### Decision 6, rewritten: six groups, drawable one at a time
 
 The original decision was `light` and `switch` only, with no `climate`, no
 `cover` and no `fan`. The registry widens the part of that which was about
@@ -113,10 +114,12 @@ The original decision was `light` and `switch` only, with no `climate`, no
 
 The form offers six groups and the payload carries each element's `domain`, so
 a media player, a thermostat, a cover or a weather entity can be added now.
-What none of them has yet is a card: `controls` stays the closed list
-`toggle`, `brightness`, `color_temp`, only `light` and `switch` resolve to
-anything in it, and a client ignores an element whose domain it cannot draw —
-the same rule that already covers an unknown control name. Writing those cards
+What most of them do not have yet is a card. `controls` is the closed list
+`toggle`, `brightness`, `color_temp`, `target_temperature`; as of contract
+version 7 `light`, `switch` and `climate` resolve to something in it and the
+rest are carried with an empty list. A client ignores an element whose domain
+it cannot draw — the same rule that already covers an unknown control name,
+and the rule that lets one card type be released at a time. Writing those cards
 is a later phase, and it needs no further contract change, because the
 elements will already be there when it lands.
 
@@ -348,12 +351,29 @@ unavailable.
 | `light.*`, `supported_color_modes == {onoff}` or unknown | `["toggle"]` | — |
 | `light.*` with any other colour mode | `["toggle", "brightness"]` | — |
 | `light.*` whose modes include `color_temp` | `["toggle", "brightness", "color_temp"]` | `min_kelvin`, `max_kelvin` from `min_color_temp_kelvin` / `max_color_temp_kelvin` |
+| `climate.*` listing `off` in `hvac_modes`, or setting both `TURN_ON` and `TURN_OFF` | `["toggle"]` | — |
+| `climate.*` with the `TARGET_TEMPERATURE` feature | `["target_temperature"]` | `min_temp`, `max_temp`, `target_temp_step` from the entity's own |
 | every other domain in the registry | `[]` | — |
 
+The two climate rows combine: a thermostat that can be turned off *and* set
+carries both controls, and one that can do neither carries an empty list like
+any other domain with no card.
+
+`TARGET_TEMPERATURE_RANGE` without `TARGET_TEMPERATURE` gets **no** setpoint
+control: that entity has a high and a low and no single number a card could
+move, and writing the wrong field would be worse than drawing nothing.
+
+The three temperature bounds carry **no unit**. They are whatever the entity
+reports — which is the unit Home Assistant is configured in — and the
+integration converts nothing; a card draws a bare degree sign. The fallbacks
+where an entity reports none are Home Assistant's own Celsius defaults, 7 to
+35 by 0.5.
+
 The last row is the registry's alone; a slot can only ever be a light or a
-switch. An element in the media player, climate, cover or weather group is
-carried with no controls until a client has a card for it, and is ignored by
-every client until then.
+switch, because the classic ESP32 firmware resolves the service domain of its
+four buttons while compiling. An element in the media player, cover or weather
+group is carried with no controls until a client has a card for it, and is
+ignored by every client until then.
 
 Every mode except `onoff` and `unknown` implies brightness in Home Assistant,
 so brightness is derived from the set difference, not from an allow-list.

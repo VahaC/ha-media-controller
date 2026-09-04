@@ -3,6 +3,7 @@
 #include "esphome/components/json/json_util.h"
 #include "esphome/core/log.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 
@@ -68,7 +69,87 @@ static uint8_t domain_from_name(const char *domain) {
     return DOMAIN_LIGHT;
   if (strcmp(domain, "switch") == 0)
     return DOMAIN_SWITCH;
+  if (strcmp(domain, "climate") == 0)
+    return DOMAIN_CLIMATE;
   return DOMAIN_OTHER;
+}
+
+static const char *domain_to_name(uint8_t domain) {
+  switch (domain) {
+    case DOMAIN_LIGHT:
+      return "light";
+    case DOMAIN_SWITCH:
+      return "switch";
+    case DOMAIN_CLIMATE:
+      return "climate";
+    default:
+      return "other";
+  }
+}
+
+/* A temperature as a card writes one: no unit letter, because the payload
+ * names none, and one decimal only where there is one to show. */
+static std::string format_temperature(float value) {
+  char buffer[16];
+  if (fabsf(value - roundf(value)) < 0.05f) {
+    snprintf(buffer, sizeof(buffer), "%.0f\u00b0", roundf(value));
+  } else {
+    snprintf(buffer, sizeof(buffer), "%.1f\u00b0", value);
+  }
+  return std::string(buffer);
+}
+
+/* A number out of the rendered template answer. Home Assistant writes
+ * "None" for an attribute an entity does not have, which is not a number
+ * and must leave the field alone rather than becoming zero. */
+static float parse_number(const std::string &text) {
+  if (text.empty() || text == "None" || text == "unknown" || text == "unavailable")
+    return NAN;
+  char *end = nullptr;
+  const float value = strtof(text.c_str(), &end);
+  return end == text.c_str() ? NAN : value;
+}
+
+bool card_is_labelled(const Card &card) { return card.w() >= 2 && card.h() >= 2; }
+
+bool card_shows_reading(const Card &card, const Entry *entry) {
+  return entry != nullptr && entry->domain == DOMAIN_CLIMATE && card_is_labelled(card);
+}
+
+bool entry_is_known(const Entry &entry) {
+  return !entry.state.empty() && entry.state != "unavailable" && entry.state != "unknown";
+}
+
+bool entry_is_on(const Entry &entry) {
+  if (!entry_is_known(entry))
+    return false;
+  return entry.domain == DOMAIN_CLIMATE ? entry.state != "off" : entry.state == "on";
+}
+
+std::string card_reading(const Entry &entry) {
+  if (!entry_is_known(entry))
+    return std::string();
+
+  /* The room first and the setpoint after it, which is the order a
+   * thermostat is read in. The separator is a slash and not an arrow
+   * because the Roboto face this firmware builds carries no U+2192, and a
+   * glyph a font does not have cannot be added to it.
+   *
+   * The room temperature is drawn whether the thermostat is running or not,
+   * because it is true either way. The **setpoint** is not: a thermostat
+   * that is off is heading nowhere, and leaving the number it used to be set
+   * to on the card would read as something it is doing. The card's border
+   * already says which of the two it is. */
+  const bool running = entry_is_on(entry);
+  const bool has_ambient = !std::isnan(entry.ambient);
+  const bool has_setpoint = running && !std::isnan(entry.setpoint);
+  if (has_ambient && has_setpoint)
+    return format_temperature(entry.ambient) + " / " + format_temperature(entry.setpoint);
+  if (has_ambient)
+    return format_temperature(entry.ambient);
+  if (has_setpoint)
+    return "set " + format_temperature(entry.setpoint);
+  return std::string();
 }
 
 static uint8_t icon_from_name(const char *name) {
@@ -111,9 +192,12 @@ void MediaControllerGrid::dump_config() {
                 "Room grid:\n"
                 "  Editor: http://<device>:%u/\n"
                 "  Grid: %ux%u cells of %u px\n"
-                "  Cards in flash: %u",
+                "  Cards in flash: %u\n"
+                "  Skins: %u, of which %u carry a preview",
                 this->port_, GRID_COLUMNS, GRID_ROWS, GRID_CELL_PX,
-                static_cast<unsigned>(this->cards_.size()));
+                static_cast<unsigned>(this->cards_.size()),
+                static_cast<unsigned>(this->skins_.size()),
+                static_cast<unsigned>(this->previews_.size()));
   ESP_LOGCONFIG(TAG, "  The editor has no password. Do not forward this port through a router.");
 }
 
@@ -172,15 +256,40 @@ bool MediaControllerGrid::ingest_entities(const std::string &attributes) {
       const char *name = element["name"].as<const char *>();
       entry.name = name != nullptr ? name : "";
       entry.domain = domain_from_name(element["domain"].as<const char *>());
+      entry.togglable = false;
       entry.dimmable = false;
+      entry.settable_temp = false;
       for (JsonVariant control : element["controls"].as<JsonArray>()) {
         const char *value = control.as<const char *>();
         /* A control this build does not know is ignored rather than treated
          * as an error, so that a future one can be added without breaking a
-         * device already in the field. */
-        if (value != nullptr && strcmp(value, "brightness") == 0)
+         * device already in the field. That rule is what lets a card type
+         * ship on its own: this list grows by one name per contract version
+         * and a device in the field skips the names it has not learned. */
+        if (value == nullptr)
+          continue;
+        if (strcmp(value, "toggle") == 0)
+          entry.togglable = true;
+        else if (strcmp(value, "brightness") == 0)
           entry.dimmable = true;
+        else if (strcmp(value, "target_temperature") == 0)
+          entry.settable_temp = true;
       }
+      /* The bounds are sent only with the control, and Home Assistant's own
+       * Celsius defaults are what it would have sent had the thermostat
+       * reported nothing. They are not sanity-checked against a range: the
+       * payload names no unit, so 7-35 and 45-95 are both ordinary. */
+      entry.min_temp = element["min_temp"] | 7.0f;
+      entry.max_temp = element["max_temp"] | 35.0f;
+      entry.temp_step = element["target_temp_step"] | 0.5f;
+      if (entry.max_temp <= entry.min_temp) {
+        entry.min_temp = 7.0f;
+        entry.max_temp = 35.0f;
+      }
+      if (entry.temp_step <= 0.0f)
+        entry.temp_step = 0.5f;
+      entry.ambient = NAN;
+      entry.setpoint = NAN;
       entry.pct = 50.0f;
       entry.direction = 1;
       parsed.push_back(std::move(entry));
@@ -199,7 +308,10 @@ bool MediaControllerGrid::ingest_entities(const std::string &attributes) {
       const Entry &was = this->entries_[i];
       const Entry &now = parsed[i];
       if (was.rid != now.rid || was.entity != now.entity || was.name != now.name ||
-          was.domain != now.domain || was.dimmable != now.dimmable) {
+          was.domain != now.domain || was.togglable != now.togglable ||
+          was.dimmable != now.dimmable || was.settable_temp != now.settable_temp ||
+          was.min_temp != now.min_temp || was.max_temp != now.max_temp ||
+          was.temp_step != now.temp_step) {
         changed = true;
         break;
       }
@@ -215,6 +327,8 @@ bool MediaControllerGrid::ingest_entities(const std::string &attributes) {
     const Entry *previous = this->entry(entry.rid);
     if (previous != nullptr) {
       entry.state = previous->state;
+      entry.ambient = previous->ambient;
+      entry.setpoint = previous->setpoint;
       entry.pct = previous->pct;
       entry.direction = previous->direction;
     }
@@ -480,10 +594,14 @@ void MediaControllerGrid::restore_finished(bool ok, const std::string &document,
 
 // ---------------------------------------------------------- state routing
 
-std::string MediaControllerGrid::state_request() const {
-  std::string list;
-  size_t count = 0;
-  for (const auto &entry : this->entries_) {
+std::vector<size_t> MediaControllerGrid::polled_order_() const {
+  std::vector<size_t> plain;
+  std::vector<size_t> thermostats;
+
+  for (size_t i = 0; i < this->entries_.size(); i++) {
+    const Entry &entry = this->entries_[i];
+    if (entry.domain == DOMAIN_OTHER)
+      continue;
     bool drawn = false;
     for (const auto &card : this->cards_) {
       if (card.rid == entry.rid) {
@@ -491,9 +609,28 @@ std::string MediaControllerGrid::state_request() const {
         break;
       }
     }
-    if (!drawn || entry.domain == DOMAIN_OTHER)
+    if (!drawn)
       continue;
-    if (count > 0)
+    /* Thermostats last, and in a group of their own, because they are the
+     * ones that render three fields instead of one. Two template loops keep
+     * the *request* small — a loop over a list of entity IDs is about twenty
+     * bytes an entity, and writing each entity into three function calls
+     * would be a hundred and thirty. */
+    (entry.domain == DOMAIN_CLIMATE ? thermostats : plain).push_back(i);
+  }
+  plain.insert(plain.end(), thermostats.begin(), thermostats.end());
+  return plain;
+}
+
+std::string MediaControllerGrid::state_request() const {
+  std::string plain;
+  std::string thermostats;
+  size_t count = 0;
+
+  for (const size_t index : this->polled_order_()) {
+    const Entry &entry = this->entries_[index];
+    std::string &list = entry.domain == DOMAIN_CLIMATE ? thermostats : plain;
+    if (!list.empty())
       list += ',';
     list += '\'';
     list += entry.entity;
@@ -506,8 +643,21 @@ std::string MediaControllerGrid::state_request() const {
   /* One template renders every card's state in one request. The alternative —
    * one `/api/states/<entity>` per card — is sixty-four blocking requests on
    * ESP-IDF for a page that has to stay responsive, which is exactly what
-   * AGENTS.md forbids in the hot path. */
-  std::string tmpl = "{% for e in [" + list + "] %}{{ states(e) }}|{% endfor %}";
+   * AGENTS.md forbids in the hot path. A card type added to the contract may
+   * therefore add fields to this answer, and must never add a request.
+   *
+   * A thermostat renders three fields where everything else renders one:
+   * the mode, the temperature the room is at, and the setpoint. They are
+   * separated by `~` inside a card and by `|` between cards, and neither
+   * character occurs in a Home Assistant state or in a number. */
+  std::string tmpl;
+  if (!plain.empty())
+    tmpl += "{% for e in [" + plain + "] %}{{ states(e) }}|{% endfor %}";
+  if (!thermostats.empty()) {
+    tmpl += "{% for e in [" + thermostats +
+            "] %}{{ states(e) }}~{{ state_attr(e,'current_temperature') }}"
+            "~{{ state_attr(e,'temperature') }}|{% endfor %}";
+  }
 
   JsonDocument doc;
   JsonObject root = doc.to<JsonObject>();
@@ -519,17 +669,9 @@ std::string MediaControllerGrid::state_request() const {
 
 void MediaControllerGrid::apply_states(const std::string &rendered) {
   size_t at = 0;
-  for (auto &entry : this->entries_) {
-    bool drawn = false;
-    for (const auto &card : this->cards_) {
-      if (card.rid == entry.rid) {
-        drawn = true;
-        break;
-      }
-    }
-    if (!drawn || entry.domain == DOMAIN_OTHER)
-      continue;
 
+  for (const size_t index : this->polled_order_()) {
+    Entry &entry = this->entries_[index];
     const size_t end = rendered.find('|', at);
     if (end == std::string::npos) {
       /* Fewer fields than entities means the answer was cut short. Leave the
@@ -537,8 +679,28 @@ void MediaControllerGrid::apply_states(const std::string &rendered) {
        * page because one poll was truncated. */
       break;
     }
-    entry.state = rendered.substr(at, end - at);
+    const std::string field = rendered.substr(at, end - at);
     at = end + 1;
+
+    if (entry.domain != DOMAIN_CLIMATE) {
+      entry.state = field;
+      continue;
+    }
+
+    const size_t first = field.find('~');
+    if (first == std::string::npos) {
+      /* Not the shape a thermostat was asked for. Take it as a bare state
+       * rather than discarding it: the card still reads as on or off. */
+      entry.state = field;
+      continue;
+    }
+    const size_t second = field.find('~', first + 1);
+    entry.state = field.substr(0, first);
+    entry.ambient = parse_number(
+        field.substr(first + 1, second == std::string::npos ? std::string::npos
+                                                            : second - first - 1));
+    if (second != std::string::npos)
+      entry.setpoint = parse_number(field.substr(second + 1));
   }
 }
 
@@ -546,9 +708,15 @@ void MediaControllerGrid::apply_states(const std::string &rendered) {
 
 namespace {
 
+/* What a skin preview is addressed as. The name between the two is compared
+ * with the skins registered at codegen time; nothing here becomes a path. */
+const char *const SKIN_PREFIX = "/skins/";
+const char *const SKIN_SUFFIX = ".png";
+
 enum Route : uint8_t {
   ROUTE_NONE = 0,
   ROUTE_EDITOR,
+  ROUTE_SKIN_PREVIEW,
   ROUTE_ENTITIES,
   ROUTE_GET_LAYOUT,
   ROUTE_SAVE_LAYOUT,
@@ -557,18 +725,20 @@ enum Route : uint8_t {
   ROUTE_SET_SKIN,
 };
 
-/* Seven routes, and this is all of them. There is deliberately no catch-all
+/* Eight routes, and this is all of them. There is deliberately no catch-all
  * and no path that takes an entity, a service or a URL from the caller: this
  * server has no password, so what it cannot express is the security model.
  *
  * The T560 panel spells the three writes PUT and DELETE. Here they are POST,
  * because ESPHome's ESP-IDF web server registers URI handlers for GET, POST
- * and OPTIONS only: a PUT never reaches a handler at all. Same seven
+ * and OPTIONS only: a PUT never reaches a handler at all. Same eight
  * questions, same bodies, the verbs the platform can carry. */
 Route route_of(http_method method, const char *url) {
   if (method == HTTP_GET) {
     if (strcmp(url, "/") == 0)
       return ROUTE_EDITOR;
+    if (strncmp(url, SKIN_PREFIX, strlen(SKIN_PREFIX)) == 0)
+      return ROUTE_SKIN_PREVIEW;
     if (strcmp(url, "/api/entities") == 0)
       return ROUTE_ENTITIES;
     if (strcmp(url, "/api/layout") == 0)
@@ -620,6 +790,9 @@ void MediaControllerGrid::handleRequest(AsyncWebServerRequest *request) {
     case ROUTE_EDITOR:
       this->handle_editor_(request);
       break;
+    case ROUTE_SKIN_PREVIEW:
+      this->handle_skin_preview_(request, url.c_str());
+      break;
     case ROUTE_ENTITIES:
       this->handle_entities_(request);
       break;
@@ -669,6 +842,34 @@ void MediaControllerGrid::handle_editor_(AsyncWebServerRequest *request) {
   request->send(response);
 }
 
+/* One skin's picture. The name in the path is compared with the skins this
+ * build registered and is never used to address anything: there is no
+ * filesystem here to traverse, and a name that matches nothing is a 404. */
+void MediaControllerGrid::handle_skin_preview_(AsyncWebServerRequest *request, const char *url) {
+  const std::string tail = url + strlen(SKIN_PREFIX);
+  const size_t suffix = strlen(SKIN_SUFFIX);
+  if (tail.size() <= suffix || tail.compare(tail.size() - suffix, suffix, SKIN_SUFFIX) != 0) {
+    send_error_(request, 404, "No such route.");
+    return;
+  }
+
+  const std::string skin = tail.substr(0, tail.size() - suffix);
+  for (const auto &preview : this->previews_) {
+    if (preview.skin != skin)
+      continue;
+    auto *response = request->beginResponse(200, "image/png", preview.data, preview.size);
+    /* Linked into flash, so it changes only when the device is installed
+     * again: worth caching for the life of the page rather than fetching it
+     * on every render. */
+    response->addHeader("Cache-Control", "max-age=86400");
+    request->send(response);
+    return;
+  }
+  /* A skin this build draws but carries no picture for lands here too. The
+   * editor falls back to the name alone rather than a broken image. */
+  send_error_(request, 404, "This device carries no picture of that skin.");
+}
+
 void MediaControllerGrid::handle_entities_(AsyncWebServerRequest *request) {
   /* The body is built under the lock and sent without it: a send takes as
    * long as the client needs to read it, and holding the lock across one
@@ -692,11 +893,10 @@ void MediaControllerGrid::handle_entities_(AsyncWebServerRequest *request) {
       item["rid"] = format_rid(entry.rid);
       item["entity"] = entry.entity;
       item["name"] = entry.name;
-      item["domain"] = entry.domain == DOMAIN_LIGHT    ? "light"
-                       : entry.domain == DOMAIN_SWITCH ? "switch"
-                                                       : "other";
+      item["domain"] = domain_to_name(entry.domain);
       item["brightness"] = entry.dimmable;
       item["color_temp"] = false;
+      item["target_temperature"] = entry.settable_temp;
     }
 
     /* The artwork this build carries, so the editor offers exactly what the

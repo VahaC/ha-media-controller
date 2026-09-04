@@ -132,8 +132,14 @@ used.
 
 Only the group's size ceiling comes from the device type: 100 entities for a
 tablet, 64 for a paired ESP32. Only the tablet offers colour temperature.
-Media players, climate, covers and weather can be added now, but no client
-draws a card for them yet and they are ignored until one does. See
+
+Lights, switches and climate have cards on both panels. A thermostat is
+toggled with a tap and its setpoint is moved on the tablet's adjust sheet or
+by a long press on the ESP32; both panels show what the room is at and what it
+is set to. Media players, covers and weather can be added now, but no client
+draws a card for them yet and they are ignored until one does — each becomes a
+card in a contract version of its own, so a panel gains one when it is
+updated and never breaks on a payload that carries one it does not know. See
 [ROOM_SLOTS.md](ROOM_SLOTS.md).
 
 The room controls of an ESP32 running the **classic** firmware are the exception

@@ -15,6 +15,7 @@ typedef enum {
     PANEL_UI_TOGGLE_ROOM,
     PANEL_UI_SET_ROOM_BRIGHTNESS,
     PANEL_UI_SET_ROOM_COLOR_TEMPERATURE,
+    PANEL_UI_SET_ROOM_TARGET_TEMPERATURE,
     PANEL_UI_SHOW_PAGE,
     PANEL_UI_SELECT_QUEUE_ITEM,
     PANEL_UI_SELECT_PLAYLIST,
@@ -79,10 +80,29 @@ const PanelGrid *panel_ui_grid(PanelUi *ui);
 /* Where the layout editor answers, shown on a page with no cards on it. */
 void panel_ui_set_editor_url(PanelUi *ui, const gchar *url);
 
-void panel_ui_set_room(PanelUi *ui, guint index, gboolean active,
-                       gint brightness_percent, gint color_temp_kelvin,
-                       gint min_color_temp_kelvin,
-                       gint max_color_temp_kelvin);
+/* One poll's answer about one card: everything a room card draws that comes
+ * from Home Assistant. It is a record rather than a parameter list because
+ * the list grows by a field every time a card type is added, and it was
+ * already seven parameters long when the second one arrived.
+ *
+ * Every field carries its own "not answered" value, so a card keeps what it
+ * last knew rather than being blanked by an attribute the entity does not
+ * have: -1 for the two integers, 0 for the Kelvin bounds, NAN for the two
+ * temperatures. */
+typedef struct {
+    gboolean active;
+    gint brightness_percent;
+    gint color_temp_kelvin;
+    gint min_color_temp_kelvin;
+    gint max_color_temp_kelvin;
+    /* A thermostat's setpoint and the temperature the room actually is.
+     * Unitless, as the payload is: the card draws a degree sign and no
+     * letter. */
+    gdouble setpoint;
+    gdouble ambient;
+} PanelRoomState;
+
+void panel_ui_set_room(PanelUi *ui, guint index, const PanelRoomState *state);
 void panel_ui_show_page(PanelUi *ui, const gchar *page, const gchar *title);
 /* Chooses how the whole interface is drawn, not only the player page: the
  * navigation bar and the room page follow the skin too. Safe to call before

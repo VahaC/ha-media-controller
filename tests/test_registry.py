@@ -371,10 +371,34 @@ class StorageTests(unittest.TestCase):
         )
         self.assertEqual(restored, [original])
 
+    def test_a_thermostat_round_trips(self) -> None:
+        original = RegistryEntry(
+            rid="7c41b8e0",
+            target_entity_id="climate.hall",
+            domain="climate",
+            name="Передпокій",
+            registry_id="row-2",
+            controls=("toggle", "target_temperature"),
+            min_temp=16.5,
+            max_temp=30.0,
+            target_temp_step=0.5,
+        )
+        restored = registry.stored_entries(
+            {"entities": [original.as_stored()]}, "entities"
+        )
+        self.assertEqual(restored, [original])
+
     def test_kelvin_bounds_are_omitted_where_they_do_not_apply(self) -> None:
         stored = entry("aaaaaaaa", "switch.fan").as_stored()
         self.assertNotIn("min_kelvin", stored)
         self.assertNotIn("max_kelvin", stored)
+
+    def test_setpoint_bounds_are_omitted_where_they_do_not_apply(self) -> None:
+        """The same rule, so a lamp never carries a thermostat's numbers."""
+        stored = entry("aaaaaaaa", "switch.fan").as_stored()
+        self.assertNotIn("min_temp", stored)
+        self.assertNotIn("max_temp", stored)
+        self.assertNotIn("target_temp_step", stored)
 
     def test_an_incomplete_record_is_ignored(self) -> None:
         restored = registry.stored_entries(

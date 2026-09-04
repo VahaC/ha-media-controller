@@ -16,7 +16,7 @@
  * The panel sends it in every status report and reads the integration's own
  * out of the config sensor, so each half can tell that the other is behind.
  * Raise it in the same change that raises the number in that document. */
-#define T560_PANEL_CONTRACT_VERSION 6
+#define T560_PANEL_CONTRACT_VERSION 7
 
 /* How many registry elements this panel will hold. The integration sends its
  * own `entity_limit` and the T560 profile's is the same number; this is the
@@ -62,10 +62,26 @@ typedef struct {
     gchar *entity;
     gchar *name;
     gchar *domain;
+    /* Whether the payload offered `toggle`. Every light and switch does; a
+     * thermostat that cannot be turned off does not, and its card reads
+     * rather than acts. See docs/CONTRACT.md, Climate cards. */
+    gboolean togglable;
     gboolean brightness;
     gboolean color_temperature;
     gint min_kelvin;
     gint max_kelvin;
+    /* A thermostat's single setpoint, and the range a card may move it in.
+     * The three numbers mean nothing unless `target_temperature` is set.
+     *
+     * They carry **no unit**, exactly as the payload carries none: they are
+     * whatever the entity itself reports, and the card draws the number with
+     * a bare degree sign. Assuming Celsius here would be wrong in a house
+     * configured in Fahrenheit and would show a thermostat set to 68 as
+     * being at the top of a 7-35 scale. */
+    gboolean target_temperature;
+    gdouble min_temp;
+    gdouble max_temp;
+    gdouble temp_step;
 } PanelEntity;
 
 /* The tablet-local settings Home Assistant owns. They used to live only in

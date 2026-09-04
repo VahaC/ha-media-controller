@@ -115,6 +115,22 @@ input[type=color] { padding: 2px; height: 40px; background: #16273c; border: 1px
 #status.error { color: var(--danger); }
 #status.ok { color: var(--accent); }
 .hint { color: var(--muted); font-size: 13px; margin: 0; }
+/* The skin list and, beside it, what each name looks like. The pictures are
+   static files this build carries, one per skin: drawing a live preview would
+   mean a second implementation of every skin, in JavaScript, kept in step
+   with the real one by hand. A skin with no picture is still a usable choice,
+   so a tile whose image fails to load keeps its name and drops the image. */
+.skins { display: flex; flex-wrap: wrap; gap: 10px; }
+.skin-preview {
+  flex: 0 0 auto; display: flex; flex-direction: column; align-items: center;
+  gap: 6px; padding: 8px; min-height: 0; font-size: 12px;
+  color: var(--muted); text-transform: capitalize;
+}
+.skin-preview img {
+  display: block; width: 88px; height: auto; border-radius: 5px;
+  background: #0d1826;
+}
+.skin-preview.current { border-color: var(--accent); color: var(--accent); }
 /* Adding a card is the one action with no control of its own — it is two
    taps, in two different places — so it says so where the entities are. */
 #palette-hint { margin-bottom: 11px; }
@@ -129,7 +145,6 @@ input[type=color] { padding: 2px; height: 40px; background: #16273c; border: 1px
 <header>
   <h1>Room layout</h1>
   <div class="spacer"></div>
-  <select id="skin" title="Player skin"></select>
   <button id="restore" class="danger" title="Replace this layout with the copy saved in Home Assistant">Restore</button>
   <button id="save" class="primary" disabled>Save</button>
   <div id="status">Loading…</div>
@@ -172,6 +187,15 @@ input[type=color] { padding: 2px; height: 40px; background: #16273c; border: 1px
     </section>
 
     <section>
+      <h2>Player skin</h2>
+      <div class="row">
+        <label for="skin">Skin</label>
+        <select id="skin" title="Player skin"></select>
+      </div>
+      <div class="skins" id="skin-previews"></div>
+    </section>
+
+    <section>
       <h2>Entities</h2>
       <p class="hint" id="palette-hint">Pick one, then tap a free cell on the
         grid.</p>
@@ -193,6 +217,11 @@ var supports = { colors: true };
 var selected = -1;
 var armed = null;
 var dirty = false;
+/* The skins this client draws, in the order it offers them, and whether Home
+   Assistant named an entity to write one into. Both come from /api/skins, so
+   which skins exist is not written down here a second time. */
+var skinNames = [];
+var skinWritable = false;
 
 var boardEl = document.getElementById("board");
 var cellsEl = document.getElementById("cells");
@@ -621,12 +650,67 @@ document.getElementById("restore").addEventListener("click", function () {
     .catch(function (error) { say(String(error.message || error), "error"); });
 });
 
+/* The tiles beside the list. They are another way to choose a skin and never
+   a second implementation of choosing one: a tap writes the select's value
+   and fires its change event, so the whole request stays in one handler. */
+function renderSkinPreviews(current) {
+  var box = document.getElementById("skin-previews");
+  box.textContent = "";
+  skinNames.forEach(function (name) {
+    var tile = document.createElement("button");
+    tile.className = "skin-preview";
+    tile.dataset.skin = name;
+    tile.title = name;
+
+    var image = document.createElement("img");
+    image.src = "/skins/" + encodeURIComponent(name) + ".png";
+    image.alt = "";
+    /* A skin this build draws but carries no picture for. The name alone is
+       still a usable choice; a broken image would not be. */
+    image.addEventListener("error", function () { image.remove(); });
+    tile.appendChild(image);
+
+    var label = document.createElement("span");
+    label.textContent = name.replace(/_/g, " ");
+    tile.appendChild(label);
+
+    tile.addEventListener("click", function () {
+      var select = document.getElementById("skin");
+      if (select.disabled || select.value === name) { return; }
+      select.value = name;
+      select.dispatchEvent(new Event("change"));
+    });
+    box.appendChild(tile);
+  });
+  markCurrentSkin(current);
+  setSkinBusy(false);
+}
+
+function markCurrentSkin(name) {
+  var tiles = document.getElementById("skin-previews").children;
+  for (var i = 0; i < tiles.length; i++) {
+    var isCurrent = tiles[i].dataset.skin === name;
+    tiles[i].classList.toggle("current", isCurrent);
+    tiles[i].setAttribute("aria-pressed", isCurrent ? "true" : "false");
+  }
+}
+
+/* One place decides whether a skin can be chosen at all, so the list and the
+   tiles can never disagree: both are disabled while a request is in flight,
+   and for good where Home Assistant named no entity to write. */
+function setSkinBusy(busy) {
+  var disabled = busy || !skinWritable;
+  var tiles = document.getElementById("skin-previews").children;
+  document.getElementById("skin").disabled = disabled;
+  for (var i = 0; i < tiles.length; i++) { tiles[i].disabled = disabled; }
+}
+
 /* Asks the device what skin it is drawing until it answers with the one
    that was requested. The request only reaches Home Assistant, which owns
    the value; the device adopts it on its next poll. Reporting "sent"
-   would tell the reader nothing about whether it worked, and this page
-   shows no preview of the skin, so this is the only honest confirmation
-   there is. */
+   would tell the reader nothing about whether it worked, and the picture
+   beside the list is a drawing of a layout rather than evidence the device
+   adopted it, so this is the only honest confirmation there is. */
 function confirmSkin(name, attempts) {
   if (attempts <= 0) { return Promise.resolve(false); }
   return new Promise(function (resolve) { setTimeout(resolve, 600); })
@@ -640,9 +724,8 @@ function confirmSkin(name, attempts) {
 
 document.getElementById("skin").addEventListener("change", function () {
   var name = this.value;
-  var select = this;
   say("Asking Home Assistant for the " + name + " skin…");
-  select.disabled = true;
+  setSkinBusy(true);
   fetch("/api/skin", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -656,8 +739,9 @@ document.getElementById("skin").addEventListener("change", function () {
     say("Asked. Waiting for the device to pick it up…");
     return confirmSkin(name, 10);
   }).then(function (applied) {
-    select.disabled = false;
+    setSkinBusy(false);
     if (applied) {
+      markCurrentSkin(name);
       say("The device is drawing the " + name + " skin.", "ok");
     } else {
       /* Home Assistant took it, so this is not a failure: the device is
@@ -666,7 +750,7 @@ document.getElementById("skin").addEventListener("change", function () {
           "picked it up yet.");
     }
   }).catch(function (error) {
-    select.disabled = false;
+    setSkinBusy(false);
     say(String(error.message || error), "error");
   });
 });
@@ -704,18 +788,20 @@ function loadSkins() {
   return fetch("/api/skins").then(function (r) { return r.json(); })
     .then(function (body) {
       var select = document.getElementById("skin");
+      skinNames = body.skins || [];
+      skinWritable = body.writable === true;
       select.textContent = "";
-      (body.skins || []).forEach(function (name) {
+      skinNames.forEach(function (name) {
         var option = document.createElement("option");
         option.value = name;
         option.textContent = name;
         select.appendChild(option);
       });
       if (body.current) { select.value = body.current; }
-      select.disabled = !body.writable;
-      select.title = body.writable
+      select.title = skinWritable
         ? "Player skin"
         : "Home Assistant has not told this device which entity holds the skin";
+      renderSkinPreviews(body.current);
     });
 }
 

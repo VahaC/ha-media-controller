@@ -53,10 +53,21 @@ is ever written by hand is an optional set of fallbacks.
 - A card whose registry element has been removed in Home Assistant keeps its
   place and says it is unassigned, rather than disappearing and taking the
   arrangement with it.
-- Brightness and color-temperature controls appear on a card only when the
-  entity behind it actually supports them, as reported by the integration. On
-  a card too small for the ADJUST button, the same corner is still the same
-  target and is drawn as a compact slider glyph.
+- Brightness, colour-temperature and thermostat-setpoint controls appear on a
+  card only when the entity behind it actually supports them, as reported by
+  the integration. On a card too small for the ADJUST button, the same corner
+  is still the same target and is drawn as a compact slider glyph.
+- **Thermostat cards**, since contract version 7. A tap turns the thermostat
+  off and on, the ADJUST corner opens the setpoint on the same sheet a light's
+  brightness uses, and a card of two cells or more says what the room is at
+  and what it is set to — `21.5° / 22°` — instead of ON or OFF, which is not
+  what anybody came to a thermostat for. A thermostat that is off shows the
+  room temperature alone: that number is true either way, and the setpoint it
+  used to be heading for is not. Temperatures carry no unit letter:
+  the integration sends whatever the entity reports, in whatever unit Home
+  Assistant is configured in, and the card draws the number and a degree sign.
+  A thermostat costs no extra polling: the two numbers are attributes of the
+  state document the card is already polled with.
 - **A layout editor the panel serves itself**, on port 8730 by default, so
   the grid is arranged from a phone or a desktop rather than on a tablet with
   no keyboard. It has no password; see [The layout
@@ -121,29 +132,41 @@ The page is one screen: the grid on the left, and the registry grouped by
 domain on the right. Pick an entity and tap a free cell to place it, drag a
 card to move it, drag the corner to resize it, and use the panel above the
 palette to change which entity a card acts on, its icon, its colour, or to
-remove it. It is built for a phone as much as for a desktop. The player skin
-is a select in the header; choosing one asks Home Assistant, which stays the
-owner of that value, and the panel adopts it on its next poll.
+remove it. It is built for a phone as much as for a desktop.
+
+The **Player skin** section lists the skins this build draws and shows a
+picture of each one beside the list, because a name says nothing about a
+layout. The pictures are static PNGs compiled into the binary, one per skin,
+drawn by `tools/make-skin-previews.py` from the palettes in `panel_ui.c`; a
+live preview would mean a second implementation of every skin, in JavaScript,
+kept in step with the real one by hand. Choosing a skin — from the list or by
+tapping its picture — asks Home Assistant, which stays the owner of that
+value, and the panel adopts it on its next poll. The status line is what says
+whether it actually did; the picture is a drawing, not evidence.
 
 ### It has no password, and that is deliberate
 
 A tablet on a house network, serving one page that arranges its own room
 controls, is not worth a login on a device with no keyboard. What makes that
-defensible is what the server cannot do, and the seven routes are the whole of
+defensible is what the server cannot do, and the eight routes are the whole of
 it:
 
 ```text
-GET    /              the editor page
-GET    /api/entities  the registry, out of the payload the panel already holds
-GET    /api/layout    the arrangement on screen
-PUT    /api/layout    save an arrangement
-DELETE /api/layout    put back the copy Home Assistant holds
-GET    /api/skins     the skins this build draws
-PUT    /api/skin      ask Home Assistant for one of them
+GET    /               the editor page
+GET    /skins/<n>.png  what one skin looks like
+GET    /api/entities   the registry, out of the payload the panel already holds
+GET    /api/layout     the arrangement on screen
+PUT    /api/layout     save an arrangement
+DELETE /api/layout     put back the copy Home Assistant holds
+GET    /api/skins      the skins this build draws
+PUT    /api/skin       ask Home Assistant for one of them
 ```
 
 There is no general proxy to Home Assistant. Nothing here reads a state, calls
 an arbitrary service, or reaches an entity the panel does not already draw;
+the one route that takes a name from the caller — the skin preview — is
+checked against the skins this build draws before it becomes a resource path,
+so it cannot be used to read anything else out of the binary;
 `/api/entities` is answered from the config payload the panel has cached and
 never becomes a request to Home Assistant; `PUT /api/skin` calls
 `select.select_option` on this panel's own skin select, with a name checked
@@ -284,7 +307,7 @@ The application is split into focused C modules with explicit interfaces:
   validating a card against the grid, and building the default 2 x 2
   arrangement a panel starts from. It knows nothing about GTK and is where the
   layout tests point;
-- `panel_web` serves the layout editor over libsoup, in exactly seven routes
+- `panel_web` serves the layout editor over libsoup, in exactly eight routes
   and with no proxy to Home Assistant;
 - `home_assistant_client` encapsulates authenticated asynchronous HTTP I/O;
 - `panel_ui` builds and updates GTK widgets without knowing API details. The

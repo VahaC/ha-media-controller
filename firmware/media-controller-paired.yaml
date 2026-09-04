@@ -38,7 +38,7 @@ substitutions:
   # sensor, so each half can tell that the other is behind. Raise it in the
   # same change that raises the number in that document; it is not a knob to
   # turn per device.
-  contract_version: "6"
+  contract_version: "7"
   asset_base_url: "https://raw.githubusercontent.com/VahaC/ha-media-controller/main/firmware/assets"
 
   # Where the room-grid external component is fetched from. It is a
@@ -108,7 +108,7 @@ api:
 # the layout editor, and web_server would add an entity dashboard nobody asked
 # for. On ESP32 web_server_base autoloads web_server_idf.
 #
-# There is no authentication, deliberately, and the seven routes are narrow
+# There is no authentication, deliberately, and the eight routes are narrow
 # enough that this is a decision rather than an oversight. See the header of
 # components/media_controller_grid/media_controller_grid.h, and the warning in
 # docs/ESP32_PAIRED_CONTROLLER.md about not exposing this port outside the
@@ -355,6 +355,16 @@ globals:
   # -- the interface keep one of these per button; the grid has one, because
   # -- only one card can be under a finger. --
   - id: room_card_long_active
+    type: bool
+    restore_value: false
+    initial_value: "false"
+
+  # -- Whether that long press actually moved a thermostat's setpoint, which
+  # -- is a different question: a press held just past the long-press
+  # -- threshold and released before the first repeat has swept nothing, and
+  # -- the release must not then write the thermostat's own value back to it.
+  # -- One is enough for the same reason as above. --
+  - id: room_card_swept
     type: bool
     restore_value: false
     initial_value: "false"
@@ -805,6 +815,35 @@ script:
               "{\"entity_id\":\"" + entity +
               "\",\"brightness_pct\":" + buf + "}");
 
+  # -- A thermostat's setpoint, contract version 7.
+  # --
+  # -- Called **once**, when the finger comes off, and never per sweep tick.
+  # -- A brightness sweep can afford a call per tick because a lamp answers
+  # -- on mains wiring; a thermostat is very often a battery radiator valve
+  # -- on Zigbee or Z-Wave, and ten calls a second to one would flood a mesh
+  # -- with values nobody has finished choosing. The value swept during the
+  # -- press is local to the grid component and only this sends it. --
+  - id: cmd_entity_set_temperature
+    mode: parallel
+    max_runs: 4
+    parameters:
+      entity: string
+      value: float
+    then:
+      - lambda: |-
+          if (entity.rfind("climate.", 0) != 0) return;
+          char buf[16];
+          snprintf(buf, sizeof(buf), "%.1f", value);
+          id(ha_action)->execute(
+              std::string("climate"), std::string("set_temperature"),
+              "{\"entity_id\":\"" + entity +
+              "\",\"temperature\":" + buf + "}");
+      # -- Same reason as a toggle: the card must not wait for the slow room
+      # -- poll to show what the person just asked for. --
+      - delay: 400ms
+      - lambda: id(last_room_poll_ms) = millis();
+      - script.execute: poll_room_states
+
   # -- The one entity in the payload this device writes. Home Assistant owns
   # -- the value: this asks for a skin and changes nothing locally, and the
   # -- new one arrives back the ordinary way, in settings.player_skin. The
@@ -1107,9 +1146,16 @@ script:
                   Content-Type: "application/json"
                 body: !lambda return id(pending_state_request);
                 capture_response: true
-                # -- One short word per card and a separator: sixty-four cards
-                # -- render to about four hundred bytes. --
-                max_response_buffer_size: 2048
+                # -- One short word per card and a separator, except a
+                # -- thermostat, which renders its mode, the temperature the
+                # -- room is at and its setpoint: about twenty-three bytes a
+                # -- card against four. Sixty-four thermostats are therefore
+                # -- about 1.5 kB where sixty-four lamps are four hundred,
+                # -- and this is the ceiling with room to spare. It matters
+                # -- that it has room: an answer that overflows is cut off
+                # -- mid-flight, and apply_states then stops at the first
+                # -- card it cannot read rather than reporting anything. --
+                max_response_buffer_size: 4096
                 on_response:
                   then:
                     - if:
@@ -1577,19 +1623,39 @@ script:
             else if (card.icon == 3) art = id(card_icon_fan);
             else if (card.icon == 4) art = id(card_icon_ac);
             else if (entry != nullptr &&
-                     entry->domain == media_controller_grid::DOMAIN_SWITCH) {
+                     (entry->domain == media_controller_grid::DOMAIN_SWITCH ||
+                      entry->domain == media_controller_grid::DOMAIN_CLIMATE)) {
               art = id(card_icon_ac);
             }
 
             // -- A one-cell card is 54 px of paint and has room for the icon
             //    or the name, not both. The icon is the half that still says
-            //    what the card is at a glance. --
-            bool labelled = card.w() >= 2 && card.h() >= 2;
+            //    what the card is at a glance. That rule is the same for
+            //    every card type: a thermostat at one cell is a picture and
+            //    a tap, and everything it has to say needs two. --
+            bool labelled = media_controller_grid::card_is_labelled(card);
+            bool reads = media_controller_grid::card_shows_reading(card, entry);
 
             lv_obj_t *icon = lv_image_create(tile);
             lv_image_set_src(icon, art->get_lv_image_dsc());
             lv_obj_remove_flag(icon, LV_OBJ_FLAG_CLICKABLE);
-            lv_obj_align(icon, LV_ALIGN_CENTER, 0, labelled ? -12 : 0);
+            lv_obj_align(icon, LV_ALIGN_CENTER, 0,
+                         !labelled ? 0 : (reads ? -20 : -12));
+
+            // -- Child 1 on a labelled thermostat card and nowhere else; see
+            //    the child order in media_controller_grid.h. It is created
+            //    empty because the registry arriving and the state arriving
+            //    are two different polls, and refresh_room_cards fills it. --
+            if (reads) {
+              lv_obj_t *reading = lv_label_create(tile);
+              lv_label_set_long_mode(reading, LV_LABEL_LONG_DOT);
+              lv_obj_set_width(reading, card.w() * 60 - 16);
+              lv_obj_set_style_text_align(reading, LV_TEXT_ALIGN_CENTER, 0);
+              lv_obj_set_style_text_font(reading, id(roboto_16)->get_lv_font(), 0);
+              lv_obj_set_style_text_color(reading, lv_color_hex(0x8f8fb4), 0);
+              lv_label_set_text(reading, "");
+              lv_obj_align(reading, LV_ALIGN_BOTTOM_MID, 0, -26);
+            }
 
             if (labelled) {
               lv_obj_t *name = lv_label_create(tile);
@@ -1624,31 +1690,89 @@ script:
               switch (lv_event_get_code(e)) {
                 case LV_EVENT_PRESSED:
                   id(room_card_long_active) = false;
+                  id(room_card_swept) = false;
                   break;
                 case LV_EVENT_LONG_PRESSED:
                   id(room_card_long_active) = true;
                   break;
                 case LV_EVENT_LONG_PRESSED_REPEAT: {
-                  // -- Only a light can be dimmed. The sweep runs up, turns
-                  //    round at the top and comes back down, exactly as the
-                  //    four fixed buttons do; the value is local because a
-                  //    light reports the brightness it reached, not the one
-                  //    the finger is heading for. --
-                  if (!entry->dimmable) break;
-                  float pct = entry->pct + entry->direction * 4.0f;
-                  if (pct >= 100.0f) { pct = 100.0f; entry->direction = -1; }
-                  if (pct <= 1.0f) { pct = 1.0f; entry->direction = 1; }
-                  entry->pct = pct;
-                  id(cmd_entity_brightness)->execute(entry->entity,
-                                                     (int) pct);
+                  // -- This device has one gesture beyond a tap, and each
+                  //    card type spends it on the one value it has: a light
+                  //    on its brightness, a thermostat on its setpoint. The
+                  //    sweep runs up, turns round at the top and comes back
+                  //    down, exactly as the four fixed buttons do; the value
+                  //    is local because a light reports the brightness it
+                  //    reached, not the one the finger is heading for. --
+                  if (entry->dimmable) {
+                    float pct = entry->pct + entry->direction * 4.0f;
+                    if (pct >= 100.0f) { pct = 100.0f; entry->direction = -1; }
+                    if (pct <= 1.0f) { pct = 1.0f; entry->direction = 1; }
+                    entry->pct = pct;
+                    id(cmd_entity_brightness)->execute(entry->entity,
+                                                       (int) pct);
+                    break;
+                  }
+                  // -- Not while it is off. The card of an off thermostat
+                  //    shows the room temperature and not the setpoint,
+                  //    because it is heading nowhere, so a sweep there would
+                  //    move a number with nothing on screen changing — the
+                  //    one thing a sweep must never do. Turning it on is a
+                  //    tap, and the sweep is there the moment it runs. --
+                  if (!entry->settable_temp ||
+                      !media_controller_grid::entry_is_on(*entry)) break;
+
+                  // -- Nothing is sent from here. The setpoint moves on the
+                  //    device and goes to Home Assistant once, on release:
+                  //    see cmd_entity_set_temperature for why a thermostat
+                  //    is not swept the way a lamp is. --
+                  float target = std::isnan(entry->setpoint)
+                                     ? (entry->min_temp + entry->max_temp) / 2.0f
+                                     : entry->setpoint;
+                  target += entry->direction * entry->temp_step;
+                  if (target >= entry->max_temp) {
+                    target = entry->max_temp;
+                    entry->direction = -1;
+                  }
+                  if (target <= entry->min_temp) {
+                    target = entry->min_temp;
+                    entry->direction = 1;
+                  }
+                  entry->setpoint = target;
+                  id(room_card_swept) = true;
+
+                  // -- Only this card is repainted, not the page: a full
+                  //    refresh_room_cards at the long-press repeat rate
+                  //    would invalidate sixty-four tiles ten times a second
+                  //    for one number. Child 1 is the reading; see the child
+                  //    order in media_controller_grid.h. --
+                  if (media_controller_grid::card_shows_reading(placed[index],
+                                                                entry)) {
+                    lv_obj_t *reading = lv_obj_get_child(pressed, 1);
+                    std::string text = media_controller_grid::card_reading(*entry);
+                    if (reading != NULL && !text.empty())
+                      lv_label_set_text(reading, text.c_str());
+                  }
                   break;
                 }
+                case LV_EVENT_RELEASED:
+                  // -- Where a setpoint sweep is committed. RELEASED and not
+                  //    CLICKED, because a finger that slides off the card
+                  //    still ends the sweep and still means it; LVGL sends
+                  //    RELEASED in both cases and CLICKED in only one. --
+                  if (id(room_card_swept) && !std::isnan(entry->setpoint)) {
+                    id(cmd_entity_set_temperature)->execute(entry->entity,
+                                                            entry->setpoint);
+                  }
+                  id(room_card_swept) = false;
+                  break;
                 case LV_EVENT_CLICKED:
-                  // -- A release that ended a brightness sweep, or one that
-                  //    happened while the page was already sliding away, is
-                  //    not a tap. --
+                  // -- A release that ended a sweep, or one that happened
+                  //    while the page was already sliding away, is not a
+                  //    tap. Neither is a tap on an element Home Assistant
+                  //    offered no `toggle` for: a thermostat that cannot be
+                  //    turned off is a card that reads rather than acts. --
                   if (!id(room_card_long_active) &&
-                      !id(switches_swipe_active)) {
+                      !id(switches_swipe_active) && entry->togglable) {
                     id(cmd_entity_toggle)->execute(entry->entity);
                   }
                   id(room_card_long_active) = false;
@@ -1682,11 +1806,14 @@ script:
             // -- Three states and not two. A card whose element Home
             //    Assistant no longer carries, or whose entity is
             //    unavailable, must not read as "off": off is a fact and this
-            //    is the absence of one. --
-            bool known = entry != nullptr && !entry->state.empty() &&
-                         entry->state != "unavailable" &&
-                         entry->state != "unknown";
-            bool on = known && entry->state == "on";
+            //    is the absence of one.
+            // --
+            // -- What counts as "on" is the component's to answer, because a
+            //    thermostat's state is a mode rather than the word "on" and
+            //    card_reading has to agree with this line. --
+            bool known = entry != nullptr &&
+                         media_controller_grid::entry_is_known(*entry);
+            bool on = known && media_controller_grid::entry_is_on(*entry);
 
             lv_obj_set_style_border_color(
                 tile,
@@ -1701,6 +1828,26 @@ script:
               lv_obj_set_style_img_recolor_opa(icon, on ? LV_OPA_TRANSP : 150,
                                                0);
               lv_obj_set_style_img_opa(icon, known ? LV_OPA_COVER : 90, 0);
+            }
+
+            // -- A thermostat says a temperature where everything else says
+            //    nothing: "on" is not what a person came to a thermostat
+            //    for. Child 1, and only on a labelled thermostat card; see
+            //    the child order in media_controller_grid.h.
+            // --
+            // -- The guard is "has this element ever been answered", not
+            //    "is the new reading empty". Skipping an empty reading would
+            //    leave a thermostat that was just switched off showing the
+            //    setpoint it used to have; skipping until the first answer
+            //    is what actually stops a card being blanked before the poll
+            //    has said anything about it. --
+            if (media_controller_grid::card_shows_reading(cards[i], entry)) {
+              lv_obj_t *reading = lv_obj_get_child(tile, 1);
+              if (reading != NULL && !entry->state.empty()) {
+                lv_label_set_text(
+                    reading,
+                    media_controller_grid::card_reading(*entry).c_str());
+              }
             }
           }
 

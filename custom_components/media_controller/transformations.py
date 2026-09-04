@@ -259,6 +259,13 @@ class EntityPayload:
     controls: tuple[str, ...] = ()
     min_kelvin: int | None = None
     max_kelvin: int | None = None
+    # The setpoint bounds of a thermostat. They travel only beside a
+    # `target_temperature` control, the way the two Kelvin bounds travel only
+    # beside `color_temp`. No unit travels with them: they are whatever the
+    # entity itself reports, and a card draws a bare degree sign.
+    min_temp: float | None = None
+    max_temp: float | None = None
+    target_temp_step: float | None = None
 
     def as_dict(self) -> dict[str, Any]:
         """Return the client-facing registry object."""
@@ -273,6 +280,12 @@ class EntityPayload:
             payload["min_kelvin"] = self.min_kelvin
         if self.max_kelvin is not None:
             payload["max_kelvin"] = self.max_kelvin
+        if self.min_temp is not None:
+            payload["min_temp"] = self.min_temp
+        if self.max_temp is not None:
+            payload["max_temp"] = self.max_temp
+        if self.target_temp_step is not None:
+            payload["target_temp_step"] = self.target_temp_step
         return payload
 
 

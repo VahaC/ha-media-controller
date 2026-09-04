@@ -399,6 +399,69 @@ class RegistryPayloadTests(unittest.TestCase):
         self.assertEqual(attributes["entities"][0]["controls"], [])
         self.assertEqual(attributes["entities"][0]["domain"], "weather")
 
+    def test_a_thermostat_carries_its_setpoint_bounds(self) -> None:
+        attributes = self._panel(
+            entities=(
+                transformations.EntityPayload(
+                    rid="7c41b8e0",
+                    entity="climate.hall",
+                    name="Hall",
+                    domain="climate",
+                    controls=("toggle", "target_temperature"),
+                    min_temp=16.0,
+                    max_temp=30.0,
+                    target_temp_step=0.5,
+                ),
+            )
+        ).as_attributes()
+        element = attributes["entities"][0]
+        self.assertEqual(
+            element["controls"], ["toggle", "target_temperature"]
+        )
+        self.assertEqual(element["min_temp"], 16.0)
+        self.assertEqual(element["max_temp"], 30.0)
+        self.assertEqual(element["target_temp_step"], 0.5)
+        # A thermostat is not a light and carries neither Kelvin bound.
+        self.assertNotIn("min_kelvin", element)
+
+    def test_setpoint_bounds_only_where_they_apply(self) -> None:
+        """The same rule the Kelvin bounds follow, for the same reason."""
+        elements = self._panel().as_attributes()["entities"]
+        for element in elements:
+            with self.subTest(rid=element["rid"]):
+                self.assertNotIn("min_temp", element)
+                self.assertNotIn("max_temp", element)
+                self.assertNotIn("target_temp_step", element)
+
+    def test_a_new_control_changes_the_revision(self) -> None:
+        """It is layout: a card that gains a setpoint has to be redrawn."""
+        before = self._panel(
+            entities=(
+                transformations.EntityPayload(
+                    rid="7c41b8e0",
+                    entity="climate.hall",
+                    name="Hall",
+                    domain="climate",
+                    controls=("toggle",),
+                ),
+            )
+        ).as_attributes()["revision"]
+        after = self._panel(
+            entities=(
+                transformations.EntityPayload(
+                    rid="7c41b8e0",
+                    entity="climate.hall",
+                    name="Hall",
+                    domain="climate",
+                    controls=("toggle", "target_temperature"),
+                    min_temp=16.0,
+                    max_temp=30.0,
+                    target_temp_step=0.5,
+                ),
+            )
+        ).as_attributes()["revision"]
+        self.assertNotEqual(before, after)
+
     def test_the_registry_is_part_of_the_revision(self) -> None:
         """It is layout, so a change to it must trigger a re-layout."""
         before = self._panel().as_attributes()["revision"]

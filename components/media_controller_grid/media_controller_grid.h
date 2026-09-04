@@ -5,6 +5,7 @@
 #include "esphome/core/preferences.h"
 #include "esphome/components/web_server_base/web_server_base.h"
 
+#include <cmath>
 #include <functional>
 #include <string>
 #include <vector>
@@ -32,11 +33,14 @@
  * **There is no authentication on the web server.** That is a deliberate
  * decision and it is the reason for the shape of the API:
  *
- * - there are exactly seven routes and not one of them is a general proxy to
+ * - there are exactly eight routes and not one of them is a general proxy to
  *   Home Assistant. Nothing here can read a state, call an arbitrary service,
  *   or reach an entity the device does not already draw. The worst an
  *   unauthenticated caller can do is rearrange the room page of one device
- *   and ask Home Assistant for a skin this device already offers;
+ *   and ask Home Assistant for a skin this device already offers. The one
+ *   route that takes a name from the caller — the skin preview — compares it
+ *   with the skins registered at codegen time and never builds a path out of
+ *   it;
  * - the registry is served from the payload the device has already parsed, so
  *   a request here never becomes a request to Home Assistant;
  * - the device's Home Assistant token never leaves it and is never readable
@@ -85,6 +89,9 @@ enum CardDomain : uint8_t {
   DOMAIN_OTHER = 0,
   DOMAIN_LIGHT = 1,
   DOMAIN_SWITCH = 2,
+  /* Contract version 7. A thermostat is drawn like the other two; what
+   * differs is what its card says and what a long press moves. */
+  DOMAIN_CLIMATE = 3,
 };
 
 /* One card, in the shape that goes to flash.
@@ -133,18 +140,78 @@ struct Entry {
   std::string entity;
   std::string name;
   uint8_t domain;
+  /* What the payload said this element can be asked to do. `togglable` is
+   * the `toggle` control, which every light and switch carries and a
+   * thermostat may not; a card whose element has none does nothing on a tap
+   * rather than calling a service Home Assistant would refuse. */
+  bool togglable;
   bool dimmable;
+  /* Contract version 7: the `target_temperature` control, and the range a
+   * long press may move the setpoint in. The three numbers carry no unit,
+   * exactly as the payload carries none. */
+  bool settable_temp;
+  float min_temp;
+  float max_temp;
+  float temp_step;
   /* The last state Home Assistant reported for `entity`, as the template
    * endpoint rendered it: "on", "off", "unavailable", or empty before the
-   * first answer. */
+   * first answer. For a thermostat it is the mode — "heat", "cool", "off" —
+   * and every mode but "off" is a thermostat that is running. */
   std::string state;
+  /* The temperature the room is at, from the same poll as `state`. NAN
+   * until Home Assistant has answered once. */
+  float ambient;
+  /* The setpoint. It arrives from the poll and is also where a long-press
+   * sweep leaves it, for the same reason `pct` is local: a thermostat
+   * reports the setpoint it has, not the one the finger is heading for. It
+   * is sent to Home Assistant once, when the finger comes off — a service
+   * call per sweep tick would put a radio thermostat on the air ten times a
+   * second for a value nobody has finished choosing. */
+  float setpoint;
   /* Where the brightness sweep of a long press is, in percent. It is local
    * and deliberately not read back: the same value the four fixed buttons
    * kept, for the same reason — a light reports the brightness it reached,
    * not the one the finger is heading for. */
   float pct;
+  /* Which way a sweep is going, shared by brightness and by the setpoint:
+   * only one card can be under a finger. */
   int8_t direction;
 };
+
+/* What a tile is built out of, and the order its children are created in.
+ * The firmware builds a tile in one lambda and refreshes it in another, and
+ * the second walks the children by index, so the rule lives here once
+ * instead of being written down twice:
+ *
+ *   child 0     the icon, on every card;
+ *   child 1     the reading, on a labelled thermostat card only;
+ *   last child  the name, on any labelled card.
+ */
+bool card_is_labelled(const Card &card);
+bool card_shows_reading(const Card &card, const Entry *entry);
+
+/* Whether Home Assistant has said anything about this element at all, and
+ * whether what it said means "on".
+ *
+ * They are two questions because a card has three states and not two: an
+ * element that is unavailable, or that has not been polled yet, must not
+ * read as off — off is a fact and that is the absence of one.
+ *
+ * A light and a switch say "on" and everything else is off. A thermostat
+ * does not: its state is the mode it is in — heat, cool, auto, dry, fan_only
+ * — and every one of them but "off" is a thermostat that is running. */
+bool entry_is_known(const Entry &entry);
+bool entry_is_on(const Entry &entry);
+/* The line such a card draws under its name: the temperature the room is at
+ * and, while the thermostat is running, the setpoint after it — the order a
+ * thermostat is read in.
+ *
+ * Empty means "there is nothing to say", which includes a thermostat that is
+ * off and reports no room temperature, and the caller **writes** that empty
+ * string so a stale reading cannot survive. What the caller must skip
+ * instead is an element that has never been answered at all — `state` still
+ * empty — because that is a card the poll has said nothing about yet. */
+std::string card_reading(const Entry &entry);
 
 /* Why the last restore ended the way it did, reported to the editor. */
 enum RestoreState : uint8_t {
@@ -172,6 +239,15 @@ class MediaControllerGrid final : public AsyncWebHandler, public Component {
    * rather than hard-coded here because which layouts exist is the
    * interface's business, not this component's. */
   void add_skin(const char *name) { this->skins_.emplace_back(name); }
+  /* What one of those skins looks like, as a PNG in flash. The editor shows
+   * it beside the list, because a name says nothing about a layout. It is a
+   * static picture and not a live preview: drawing one would mean a second
+   * implementation of every skin, in JavaScript, kept in step with
+   * media-controller-ui.yaml by hand. A skin registered with no picture is
+   * still offered; the editor falls back to its name. */
+  void set_preview(const char *skin, const uint8_t *data, size_t size) {
+    this->previews_.push_back(Preview{skin, data, size});
+  }
 
   // ------------------------------------------------------------ the seam
   //
@@ -249,6 +325,13 @@ class MediaControllerGrid final : public AsyncWebHandler, public Component {
                   size_t total) override;
 
  protected:
+  /* Which entries a poll asks about, and in what order: the ones a card
+   * actually draws, everything but a thermostat first and the thermostats
+   * after them. It is one function because `state_request` writes the
+   * template in this order and `apply_states` reads the answer in it, and
+   * two copies of an order are two chances for it to drift. */
+  std::vector<size_t> polled_order_() const;
+
   /* Replaces the layout, writes it to flash, backs it up and redraws.
    * Everything that changes the grid goes through here, so that no path can
    * forget one of the four. */
@@ -270,6 +353,7 @@ class MediaControllerGrid final : public AsyncWebHandler, public Component {
   std::vector<Card> default_layout_() const;
 
   void handle_editor_(AsyncWebServerRequest *request);
+  void handle_skin_preview_(AsyncWebServerRequest *request, const char *url);
   void handle_entities_(AsyncWebServerRequest *request);
   void handle_get_layout_(AsyncWebServerRequest *request);
   void handle_save_layout_(AsyncWebServerRequest *request);
@@ -284,6 +368,15 @@ class MediaControllerGrid final : public AsyncWebHandler, public Component {
   const uint8_t *editor_{nullptr};
   size_t editor_size_{0};
   std::vector<std::string> skins_;
+
+  /* One skin's picture in flash. Both are fixed at codegen time and never
+   * written at runtime, so neither needs the lock below. */
+  struct Preview {
+    std::string skin;
+    const uint8_t *data;
+    size_t size;
+  };
+  std::vector<Preview> previews_;
 
   std::vector<Entry> entries_;
   std::vector<Card> cards_;

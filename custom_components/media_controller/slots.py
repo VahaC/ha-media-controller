@@ -27,7 +27,10 @@ from .contract import CONTRACT_VERSION
 from .profiles import (
     CAP_CONTROLS,
     CAP_MAX_KELVIN,
+    CAP_MAX_TEMP,
     CAP_MIN_KELVIN,
+    CAP_MIN_TEMP,
+    CAP_TEMP_STEP,
     CONTROL_TOGGLE,
     ClientProfile,
     capability_signature,
@@ -166,6 +169,9 @@ def _resolve_entry_capabilities(
         controls=limit_controls(capabilities[CAP_CONTROLS], profile),
         min_kelvin=capabilities.get(CAP_MIN_KELVIN),
         max_kelvin=capabilities.get(CAP_MAX_KELVIN),
+        min_temp=capabilities.get(CAP_MIN_TEMP),
+        max_temp=capabilities.get(CAP_MAX_TEMP),
+        target_temp_step=capabilities.get(CAP_TEMP_STEP),
     )
 
 
@@ -502,6 +508,9 @@ class ClientConfiguration:
                     controls=entry.controls,
                     min_kelvin=entry.min_kelvin,
                     max_kelvin=entry.max_kelvin,
+                    min_temp=entry.min_temp,
+                    max_temp=entry.max_temp,
+                    target_temp_step=entry.target_temp_step,
                 )
                 for entry in self.entries
             )

@@ -17,7 +17,7 @@
  * **There is no authentication.** That is a deliberate decision and it is the
  * reason for the shape of everything below:
  *
- * - there are exactly seven routes and not one of them is a general proxy to
+ * - there are exactly eight routes and not one of them is a general proxy to
  *   Home Assistant. Nothing here can read a state, call an arbitrary service,
  *   or reach an entity the panel does not already draw. The worst an
  *   unauthenticated caller can do is rearrange the room page of one tablet

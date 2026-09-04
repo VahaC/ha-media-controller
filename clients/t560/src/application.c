@@ -12,6 +12,8 @@
 
 #include <json-glib/json-glib.h>
 
+#include <math.h>
+
 #define APPLICATION_ID "com.vahac.T560MusicPanel"
 
 /* Home Assistant restarting answers with a refused connection, not a refused
@@ -286,6 +288,26 @@ static const PanelEntity *configured_room(PanelApplication *application,
     return panel_ui_card_entity(application->ui, (guint)index);
 }
 
+/* The same payload as room_value_json, for a value that is not a whole
+ * number: a thermostat step of half a degree is ordinary. json-glib writes a
+ * JSON number without consulting the locale, so a tablet whose locale writes
+ * decimal commas still sends a decimal point. */
+static gchar *room_double_json(const gchar *entity, const gchar *key,
+                               gdouble value)
+{
+    JsonBuilder *builder = json_builder_new();
+
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "entity_id");
+    json_builder_add_string_value(builder, entity);
+    json_builder_set_member_name(builder, key);
+    json_builder_add_double_value(builder, value);
+    json_builder_end_object(builder);
+    gchar *json = json_builder_to_string(builder);
+    g_object_unref(builder);
+    return json;
+}
+
 static gchar *room_value_json(const gchar *entity, const gchar *key,
                               gint value)
 {
@@ -430,7 +452,11 @@ static void handle_ui_event(PanelUiEvent event, const gchar *value, gint index,
     }
     case PANEL_UI_TOGGLE_ROOM: {
         const PanelEntity *room = configured_room(application, index);
-        if (room != NULL) {
+        /* Only where Home Assistant said the element can be turned off and
+         * on. Every light and switch can; a thermostat with no `off` mode
+         * cannot, and calling the service anyway would be a request Home
+         * Assistant refuses and a user who is told nothing about it. */
+        if (room != NULL && room->togglable) {
             call_entity_service(application, "homeassistant", "toggle",
                                 room->entity);
         }
@@ -457,6 +483,21 @@ static void handle_ui_event(PanelUiEvent event, const gchar *value, gint index,
             gchar *json = room_value_json(room->entity, "color_temp_kelvin",
                                           temperature);
             call_service(application, "light", "turn_on", json);
+            g_free(json);
+        }
+        break;
+    }
+    case PANEL_UI_SET_ROOM_TARGET_TEMPERATURE: {
+        const PanelEntity *room = configured_room(application, index);
+        /* Clamped again here rather than trusted from the interface: the
+         * bounds are the registry's, and this is the last place before a
+         * value reaches Home Assistant. */
+        if (room != NULL && value != NULL && room->target_temperature) {
+            gdouble setpoint = g_ascii_strtod(value, NULL);
+            setpoint = CLAMP(setpoint, room->min_temp, room->max_temp);
+            gchar *json = room_double_json(room->entity, "temperature",
+                                           setpoint);
+            call_service(application, "climate", "set_temperature", json);
             g_free(json);
         }
         break;
@@ -644,36 +685,70 @@ static void update_playlists(PanelApplication *application, JsonObject *state)
                            application->playlist_selected);
 }
 
+/* Whether a card should read as on.
+ *
+ * A light and a switch say "on" and everything else is off. A thermostat does
+ * not: its state is the mode it is in — heat, cool, auto, dry, fan_only — and
+ * every one of them but "off" is a thermostat that is running. Anything the
+ * panel cannot recognise is left alone rather than guessed at, which is what
+ * `state_known` is for; here an unavailable entity is simply not on. */
+static gboolean room_is_active(const PanelEntity *entity, const gchar *state)
+{
+    if (entity != NULL && g_strcmp0(entity->domain, "climate") == 0) {
+        return !g_str_equal(state, "off") &&
+               !g_str_equal(state, "unavailable") &&
+               !g_str_equal(state, "unknown") && *state != '\0';
+    }
+    return g_str_equal(state, "on");
+}
+
+/* One card's state, out of one `/api/states/<entity_id>` document.
+ *
+ * A thermostat costs no extra request: `current_temperature` and
+ * `temperature` are attributes of the same document the card was already
+ * polled with, so a page of thermostats polls exactly as a page of lamps
+ * does. */
 static void update_room(PanelApplication *application, guint index,
                         JsonObject *state)
 {
     if (state == NULL)
         return;
     JsonObject *attributes = json_state_attributes(state);
-    gboolean active = g_str_equal(
-        json_object_string(state, "state", ""), "on");
+    const PanelEntity *entity = configured_room(application, (gint)index);
+    PanelRoomState reported = {
+        .active = room_is_active(entity,
+                                 json_object_string(state, "state", "")),
+        .brightness_percent = -1,
+        .color_temp_kelvin = -1,
+        .min_color_temp_kelvin = 0,
+        .max_color_temp_kelvin = 0,
+        .setpoint = NAN,
+        .ambient = NAN
+    };
     gdouble value = 0.0;
-    gint brightness = -1;
-    gint color_temperature = -1;
-    gint min_color_temperature = 2000;
-    gint max_color_temperature = 6500;
 
-    if (json_object_number(attributes, "brightness", &value) && value >= 0.0)
-        brightness = CLAMP((gint)(value * 100.0 / 255.0 + 0.5), 1, 100);
+    if (json_object_number(attributes, "brightness", &value) && value >= 0.0) {
+        reported.brightness_percent =
+            CLAMP((gint)(value * 100.0 / 255.0 + 0.5), 1, 100);
+    }
     if (json_object_number(attributes, "color_temp_kelvin", &value) &&
         value > 0.0) {
-        color_temperature = (gint)(value + 0.5);
+        reported.color_temp_kelvin = (gint)(value + 0.5);
     }
     if (json_object_number(attributes, "min_color_temp_kelvin", &value) &&
         value > 0.0)
-        min_color_temperature = (gint)(value + 0.5);
+        reported.min_color_temp_kelvin = (gint)(value + 0.5);
     if (json_object_number(attributes, "max_color_temp_kelvin", &value) &&
         value > 0.0)
-        max_color_temperature = (gint)(value + 0.5);
+        reported.max_color_temp_kelvin = (gint)(value + 0.5);
+    /* No sanity range: the payload carries no unit, so a plausible
+     * temperature in one house is an implausible one in another. */
+    if (json_object_number(attributes, "temperature", &value))
+        reported.setpoint = value;
+    if (json_object_number(attributes, "current_temperature", &value))
+        reported.ambient = value;
 
-    panel_ui_set_room(application->ui, index, active, brightness,
-                      color_temperature, min_color_temperature,
-                      max_color_temperature);
+    panel_ui_set_room(application->ui, index, &reported);
 }
 
 /* Quitting takes effect on the next main loop iteration, so the request is
