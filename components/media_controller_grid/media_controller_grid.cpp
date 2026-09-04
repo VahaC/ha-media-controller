@@ -787,165 +787,78 @@ void MediaControllerGrid::restore_finished(bool ok, const std::string &document,
 
 // ---------------------------------------------------------- state routing
 
-std::vector<size_t> MediaControllerGrid::polled_order_() const {
-  std::vector<size_t> plain;
-  std::vector<size_t> thermostats;
-  std::vector<size_t> weather;
-  std::vector<size_t> sensors;
+/* One number out of a room_states array. JSON null — an attribute the entity
+ * does not report — reads as no reading rather than as zero, and so does a
+ * value of any other shape this build did not ask for. */
+static float room_number(JsonVariant value) {
+  if (value.is<float>())
+    return value.as<float>();
+  if (value.is<int>())
+    return static_cast<float>(value.as<int>());
+  const char *text = value.as<const char *>();
+  if (text == nullptr)
+    return NAN;
+  return parse_number(text);
+}
 
-  for (size_t i = 0; i < this->entries_.size(); i++) {
-    const Entry &entry = this->entries_[i];
-    if (entry.domain == DOMAIN_OTHER)
-      continue;
-    bool drawn = false;
-    for (const auto &card : this->cards_) {
-      if (card.rid == entry.rid) {
-        drawn = true;
-        break;
+bool MediaControllerGrid::apply_room_states(const std::string &room_states) {
+  bool changed = false;
+  if (room_states.empty())
+    return false;
+
+  /* Two floats are the same reading when they are equal, or when neither is
+   * a reading at all. */
+  auto same_number = [](float was, float now) {
+    return (std::isnan(was) && std::isnan(now)) || was == now;
+  };
+
+  const bool read = json::parse_json(room_states, [&](JsonObject root) -> bool {
+    for (auto &entry : this->entries_) {
+      JsonArray item = root[format_rid(entry.rid).c_str()].as<JsonArray>();
+      if (item.isNull())
+        continue;
+
+      /* The state itself. Explicitly unknown when the integration names no
+       * usable value, so a deleted entity cannot keep a stale one. */
+      const char *raw = item[0].as<const char *>();
+      std::string state =
+          (raw != nullptr && *raw != '\0') ? raw : "unknown";
+
+      float ambient = entry.ambient;
+      float setpoint = entry.setpoint;
+      float weather_temp = entry.weather_temp;
+      float weather_humidity = entry.weather_humidity;
+      std::string unit = entry.sensor_unit;
+      if (entry.domain == DOMAIN_CLIMATE) {
+        ambient = room_number(item[1]);
+        setpoint = room_number(item[2]);
+      } else if (entry.domain == DOMAIN_WEATHER) {
+        weather_temp = room_number(item[1]);
+        weather_humidity = room_number(item[2]);
+      } else if (entry.domain == DOMAIN_SENSOR) {
+        const char *text = item[1].as<const char *>();
+        unit = text != nullptr ? text : "";
       }
+
+      if (entry.state == state && same_number(entry.ambient, ambient) &&
+          same_number(entry.setpoint, setpoint) &&
+          same_number(entry.weather_temp, weather_temp) &&
+          same_number(entry.weather_humidity, weather_humidity) &&
+          entry.sensor_unit == unit) {
+        continue;
+      }
+      entry.state = state;
+      entry.ambient = ambient;
+      entry.setpoint = setpoint;
+      entry.weather_temp = weather_temp;
+      entry.weather_humidity = weather_humidity;
+      entry.sensor_unit = unit;
+      changed = true;
     }
-    if (!drawn)
-      continue;
-    /* Thermostats last, and in a group of their own, because they are the
-     * ones that render three fields instead of one. Two template loops keep
-     * the *request* small — a loop over a list of entity IDs is about twenty
-     * bytes an entity, and writing each entity into three function calls
-     * would be a hundred and thirty. Weather blocks are a third group for
-     * the same reason: the condition plus two attributes. Sensor blocks are
-     * a fourth: the value plus its unit. Everything else — a lamp, a socket
-     * and a blind alike — renders its bare state in the first group. */
-    if (entry.domain == DOMAIN_CLIMATE)
-      thermostats.push_back(i);
-    else if (entry.domain == DOMAIN_WEATHER)
-      weather.push_back(i);
-    else if (entry.domain == DOMAIN_SENSOR)
-      sensors.push_back(i);
-    else
-      plain.push_back(i);
-  }
-  plain.insert(plain.end(), thermostats.begin(), thermostats.end());
-  plain.insert(plain.end(), weather.begin(), weather.end());
-  plain.insert(plain.end(), sensors.begin(), sensors.end());
-  return plain;
-}
+    return true;
+  });
 
-std::string MediaControllerGrid::state_request() const {
-  std::string plain;
-  std::string thermostats;
-  std::string weather;
-  std::string sensors;
-  size_t count = 0;
-
-  for (const size_t index : this->polled_order_()) {
-    const Entry &entry = this->entries_[index];
-    std::string &list = entry.domain == DOMAIN_CLIMATE  ? thermostats
-                        : entry.domain == DOMAIN_WEATHER ? weather
-                        : entry.domain == DOMAIN_SENSOR  ? sensors
-                                                         : plain;
-    if (!list.empty())
-      list += ',';
-    list += '\'';
-    list += entry.entity;
-    list += '\'';
-    count++;
-  }
-  if (count == 0)
-    return std::string();
-
-  /* One template renders every card's state in one request. The alternative —
-   * one `/api/states/<entity>` per card — is sixty-four blocking requests on
-   * ESP-IDF for a page that has to stay responsive, which is exactly what
-   * AGENTS.md forbids in the hot path. A card type added to the contract may
-   * therefore add fields to this answer, and must never add a request.
-   *
-   * A thermostat renders three fields where everything else renders one:
-   * the mode, the temperature the room is at, and the setpoint. They are
-   * separated by `~` inside a card and by `|` between cards, and neither
-   * character occurs in a Home Assistant state or in a number. A weather
-   * block renders three fields of its own: the condition, the temperature
-   * and the humidity. A sensor block renders two: the value and its unit. */
-  std::string tmpl;
-  if (!plain.empty())
-    tmpl += "{% for e in [" + plain + "] %}{{ states(e) }}|{% endfor %}";
-  if (!thermostats.empty()) {
-    tmpl += "{% for e in [" + thermostats +
-            "] %}{{ states(e) }}~{{ state_attr(e,'current_temperature') }}"
-            "~{{ state_attr(e,'temperature') }}|{% endfor %}";
-  }
-  if (!weather.empty()) {
-    tmpl += "{% for e in [" + weather +
-            "] %}{{ states(e) }}~{{ state_attr(e,'temperature') }}"
-            "~{{ state_attr(e,'humidity') }}|{% endfor %}";
-  }
-  if (!sensors.empty()) {
-    tmpl += "{% for e in [" + sensors +
-            "] %}{{ states(e) }}~{{ state_attr(e,'unit_of_measurement') }}|{% endfor %}";
-  }
-
-  JsonDocument doc;
-  JsonObject root = doc.to<JsonObject>();
-  root["template"] = tmpl;
-  std::string out;
-  serialize_to(doc, &out);
-  return out;
-}
-
-void MediaControllerGrid::apply_states(const std::string &rendered) {
-  size_t at = 0;
-
-  for (const size_t index : this->polled_order_()) {
-    Entry &entry = this->entries_[index];
-    const size_t end = rendered.find('|', at);
-    if (end == std::string::npos) {
-      /* Fewer fields than entities means the answer was cut short. Leave the
-       * remaining cards showing what they last knew rather than blanking a
-       * page because one poll was truncated. */
-      break;
-    }
-    const std::string field = rendered.substr(at, end - at);
-    at = end + 1;
-
-    if (entry.domain != DOMAIN_CLIMATE && entry.domain != DOMAIN_WEATHER &&
-        entry.domain != DOMAIN_SENSOR) {
-      entry.state = field;
-      continue;
-    }
-
-    const size_t first = field.find('~');
-    if (first == std::string::npos) {
-      /* Not the shape that was asked for. Take it as a bare state rather
-       * than discarding it: a thermostat card still reads as on or off, a
-       * weather block still names the sky, and a sensor block still names
-       * its value. */
-      entry.state = field;
-      continue;
-    }
-    const size_t second = field.find('~', first + 1);
-    entry.state = field.substr(0, first);
-    const std::string middle =
-        field.substr(first + 1, second == std::string::npos ? std::string::npos
-                                                            : second - first - 1);
-    const std::string last =
-        second == std::string::npos ? std::string() : field.substr(second + 1);
-    if (entry.domain == DOMAIN_WEATHER) {
-      entry.weather_temp = parse_number(middle);
-      entry.weather_humidity = parse_number(last);
-      continue;
-    }
-    if (entry.domain == DOMAIN_SENSOR) {
-      /* Home Assistant renders a missing attribute as "None": no unit, not
-       * a unit called None. */
-      entry.sensor_unit =
-          (middle.empty() || middle == "None" || middle == "unknown" ||
-           middle == "unavailable")
-              ? std::string()
-              : middle;
-      continue;
-    }
-    entry.ambient = parse_number(middle);
-    if (second != std::string::npos)
-      entry.setpoint = parse_number(last);
-  }
+  return read && changed;
 }
 
 // ------------------------------------------------------- the forecast

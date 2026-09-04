@@ -343,13 +343,6 @@ globals:
   # -- arrangement, which is the user's own work. The registry is Home
   # -- Assistant's and comes back with the first poll.
 
-  # -- The rendered /api/template request for every entity a card addresses.
-  # -- Built once per poll rather than twice, because the poll asks whether
-  # -- there is anything to request and then sends it. --
-  - id: pending_state_request
-    type: std::string
-    restore_value: false
-
   # -- The body of one weather.get_forecasts request, built the same way:
   # -- the poll asks the component whether a weather card is drawn, and only
   # -- then sends it. --
@@ -486,16 +479,6 @@ globals:
     type: std::string
     restore_value: false
   - id: last_playlist_poll_ms
-    type: uint32_t
-    restore_value: false
-    initial_value: "0"
-
-  # -- Room state is polled at a fifth of the player's rate. An http_request on
-  # -- ESP-IDF blocks the main loop, so six requests a second would be six
-  # -- stalls a second in front of LVGL; a lamp somebody else switched can wait
-  # -- five seconds, and a lamp switched here refreshes immediately because the
-  # -- button asks for it. --
-  - id: last_room_poll_ms
     type: uint32_t
     restore_value: false
     initial_value: "0"
@@ -809,12 +792,11 @@ script:
           id(ha_action)->execute(
               std::string("homeassistant"), std::string("toggle"),
               "{\"entity_id\":\"" + entity + "\"}");
-      # -- Room state is otherwise polled slowly. A card the person just
-      # -- pressed must not wait for that, so ask again once Home Assistant
-      # -- has had time to act. --
+      # -- The states ride the config poll, which runs every second anyway.
+      # -- A card the person just pressed must not wait for that, so read
+      # -- the config again once Home Assistant has had time to act. --
       - delay: 400ms
-      - lambda: id(last_room_poll_ms) = millis();
-      - script.execute: poll_room_states
+      - script.execute: ui_load_room_config
 
   # -- Only a light can be dimmed. A switch simply ignores the long press. --
   - id: cmd_entity_brightness
@@ -856,11 +838,10 @@ script:
               std::string("climate"), std::string("set_temperature"),
               "{\"entity_id\":\"" + entity +
               "\",\"temperature\":" + buf + "}");
-      # -- Same reason as a toggle: the card must not wait for the slow room
-      # -- poll to show what the person just asked for. --
+      # -- Same reason as a toggle: the card must not wait for the next
+      # -- config poll to show what the person just asked for. --
       - delay: 400ms
-      - lambda: id(last_room_poll_ms) = millis();
-      - script.execute: poll_room_states
+      - script.execute: ui_load_room_config
 
   # -- The one entity in the payload this device writes. Home Assistant owns
   # -- the value: this asks for a skin and changes nothing locally, and the
@@ -1136,56 +1117,14 @@ script:
                           id(media_position).publish_state(p);
                         }
 
-  # -- Every card's state in one request.
-  # --
-  # -- The four fixed buttons asked `/api/states/<entity>` once per button.
-  # -- Sixty-four cards cannot: http_request blocks the main loop on ESP-IDF,
-  # -- so the number of requests may not grow with the number of cards. A
-  # -- template renders every entity a card addresses in one answer, which is
-  # -- one request whether there is one card on the page or sixty-four.
-  # --
-  # -- The request names only entities that are already drawn on this device,
-  # -- and the template it sends is built here rather than taken from
-  # -- anywhere: nothing a caller can reach chooses what it asks for. --
-  - id: poll_room_states
-    mode: restart
-    then:
-      - lambda: id(pending_state_request) = id(room_grid)->state_request();
-      - if:
-          condition:
-            lambda: |-
-              return !id(ha_token).empty() &&
-                     !id(pending_state_request).empty();
-          then:
-            - http_request.post:
-                url: "${ha_url}/api/template"
-                request_headers:
-                  Authorization: !lambda return id(auth_header).c_str();
-                  Content-Type: "application/json"
-                body: !lambda return id(pending_state_request);
-                capture_response: true
-                # -- One short word per card and a separator, except a
-                # -- thermostat, which renders its mode, the temperature the
-                # -- room is at and its setpoint: about twenty-three bytes a
-                # -- card against four. Sixty-four thermostats are therefore
-                # -- about 1.5 kB where sixty-four lamps are four hundred,
-                # -- and this is the ceiling with room to spare. It matters
-                # -- that it has room: an answer that overflows is cut off
-                # -- mid-flight, and apply_states then stops at the first
-                # -- card it cannot read rather than reporting anything. --
-                max_response_buffer_size: 4096
-                on_response:
-                  then:
-                    - if:
-                        condition:
-                          lambda: return response->status_code == 200;
-                        then:
-                          - lambda: id(room_grid)->apply_states(body);
-                          - script.execute: refresh_room_cards
-                        else:
-                          - lambda: |-
-                              ESP_LOGW("room", "State template HTTP %d",
-                                       response->status_code);
+  # -- Every card's state arrives inside the config poll, in the `room_states`
+  # -- block the integration renders there. It used to be a template rendered
+  # -- by a POST to /api/template, one request for every card on the page —
+  # -- but that endpoint answers administrators only, and this device's token
+  # -- belongs to a dedicated non-administrator user, so Home Assistant
+  # -- refused it with 401 and every card stayed blank. The states are read
+  # -- out of the config attributes in ui_load_room_config below, through
+  # -- apply_room_states, which costs no request of its own.
 
   # -- The daily forecast behind the weather blocks. One request names every
   # -- drawn weather entity the component reports, and the answer is parsed
@@ -1379,6 +1318,21 @@ script:
                         id(pending_commands) = id(json_object)(attrs,
                                                                "commands");
                         id(pending_attributes) = attrs;
+
+                        // -- The room states ride this poll, in the block
+                        //    the integration renders beside the registry. A
+                        //    template rendered by POST /api/template would
+                        //    be one request for every card, but that
+                        //    endpoint answers administrators only and this
+                        //    device's token belongs to a dedicated
+                        //    non-administrator user. Applied on every poll:
+                        //    unlike the registry, states move constantly. --
+                        std::string states = id(json_object)(
+                            attrs, "room_states");
+                        if (!states.empty() &&
+                            id(room_grid)->apply_room_states(states)) {
+                          id(refresh_room_cards)->execute();
+                        }
                     - if:
                         condition:
                           lambda: return !id(pending_skin).empty();
@@ -1401,7 +1355,6 @@ script:
                               if (id(room_grid)->ingest_entities(
                                       id(pending_attributes))) {
                                 id(rebuild_room_grid)->execute();
-                                id(last_room_poll_ms) = 0;
                                 id(last_forecast_poll_ms) = 0;
                               }
 
@@ -2273,10 +2226,10 @@ interval:
             id(poll_player)->execute();
           }
 
-          if (now - id(last_room_poll_ms) >= id(poll_interval_ms) * 5) {
-            id(last_room_poll_ms) = now;
-            id(poll_room_states)->execute();
-          }
+          // -- Room states need no poll of their own: they ride the config
+          //    poll above, in the room_states block, because the template
+          //    endpoint they used to come through answers administrators
+          //    only. --
 
           // -- The forecast behind the weather blocks: at once when there
           //    is something to ask for, then every half hour. The clock

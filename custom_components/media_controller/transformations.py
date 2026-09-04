@@ -243,6 +243,75 @@ class SlotPayload:
         return payload
 
 
+def room_state_number(value: Any) -> float | int | None:
+    """Return a JSON-native number for a room-state reading, or None.
+
+    Home Assistant renders `/api/template` for administrators only, and a
+    panel token belongs to a dedicated non-administrator user by design, so
+    the integration renders here what the ESP32 panel can no longer ask for
+    itself: one small array per registry element, keyed by rid. A number the
+    entity does not report travels as JSON null, which the firmware reads as
+    "no reading" rather than as zero.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return value
+    return None
+
+
+def room_state_unit(value: Any) -> str | None:
+    """Return a sensor unit for a room-state reading, or None.
+
+    Home Assistant renders a missing attribute as the string "None", which
+    is no unit rather than a unit called None.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        if value.strip().lower() in ("", "none", "unknown", "unavailable"):
+            return None
+        return value
+    return str(value)
+
+
+def room_state_values(
+    domain: str,
+    state: str | None,
+    attributes: Mapping[str, Any] | None,
+) -> list[Any]:
+    """Render one registry element's current room state.
+
+    `domain` is the Home Assistant domain of the element (`light`, `switch`,
+    `climate`, `cover`, `weather`, `sensor`); anything else travels as a bare
+    state, which is all a client that cannot draw the domain needs to ignore
+    the element. `state` is the entity state itself, or None when the entity
+    is gone, which reads as unknown rather than keeping a stale value: an
+    element that is unavailable must not read as off, because off is a fact
+    and this is the absence of one. The state string is UTF-8 and survives
+    intact; sensor values are states too, never numbers, because a sensor may
+    report "on" rather than a reading.
+    """
+    safe_attributes = attributes or {}
+    if state is None:
+        return ["unknown"]
+    if domain == "climate":
+        return [
+            state,
+            room_state_number(safe_attributes.get("current_temperature")),
+            room_state_number(safe_attributes.get("temperature")),
+        ]
+    if domain == "weather":
+        return [
+            state,
+            room_state_number(safe_attributes.get("temperature")),
+            room_state_number(safe_attributes.get("humidity")),
+        ]
+    if domain == "sensor":
+        return [state, room_state_unit(safe_attributes.get("unit_of_measurement"))]
+    return [state]
+
+
 @dataclass(frozen=True, slots=True)
 class EntityPayload:
     """One registry element as a panel reads it.
@@ -325,6 +394,15 @@ class ClientConfigPayload:
     # neither key at all.
     settings: Mapping[str, Any] | None = None
     commands: Mapping[str, Any] | None = None
+    # Panels only. The current state of every registry element, keyed by rid,
+    # rendered by the integration because a panel cannot render it itself:
+    # POST /api/template answers administrators only, and a panel token
+    # belongs to a dedicated non-administrator user. The ESP32 panel reads
+    # this block out of the same poll that carries the registry; any other
+    # client ignores it, the way it ignores settings and commands it has no
+    # use for. Omitted for the classic ESP32 controller, which learns its
+    # four states over the native API instead.
+    room_states: Mapping[str, Any] | None = None
 
     def as_attributes(self) -> dict[str, Any]:
         """Return the Home Assistant attributes of a config sensor.
@@ -372,6 +450,13 @@ class ClientConfigPayload:
             payload["settings"] = dict(self.settings)
         if self.commands is not None:
             payload["commands"] = dict(self.commands)
+        # Also after the revision, for the same reason as settings and
+        # commands and more so: states move constantly while the house is
+        # simply being used, and a re-layout on every toggle would rebuild
+        # the room page out from under the finger that caused it. Panels
+        # only, decided the same way every other panel-only key here is.
+        if self.entities is not None and self.room_states:
+            payload["room_states"] = dict(self.room_states)
         return payload
 
     @staticmethod

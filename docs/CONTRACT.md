@@ -980,8 +980,62 @@ the playlists payload.
 - The queue refreshes after a Music Assistant title change, behind a cancellable
   three-second debounce.
 - Overlapping queue calls are prevented; obsolete delays are cancelled.
+- Room states ride the config sensor poll, which panels read about once a
+  second; see **Room states** below.
 - Clients poll Home Assistant for entity state. They must request single
   entities (`/api/states/<entity_id>`), never the full `/api/states` list.
+
+### Room states
+
+The current state of every registry element, rendered by the integration
+into the config sensor beside the registry:
+
+```json
+{
+  "room_states": {
+    "a3f1c92d": ["on"],
+    "7c41b8e0": ["heat", 21.5, 22.0],
+    "9d2e7a41": ["sunny", 15.5, 62],
+    "b71f0c2e": ["21.5", "°C"]
+  }
+}
+```
+
+One small array per element, keyed by `rid`:
+
+- a light, a switch and a cover travel as the bare state — `on`, `open`,
+  `unavailable` — because for them the state is the whole of the content;
+- a thermostat travels as the mode, the room temperature and the setpoint;
+- a weather block as the condition, the temperature and the humidity;
+- a sensor block as the value and the unit;
+- a reading the entity does not report travels as JSON null, which a client
+  reads as "no reading" rather than as zero;
+- an element whose entity is gone reads as `unknown` rather than keeping a
+  stale value.
+
+The block exists because a panel cannot render these itself. Its first shape
+was a template the device POSTed to `/api/template`, one request for every
+card on the page — but that endpoint answers administrators only, and a
+panel's token belongs to a dedicated non-administrator user, so Home
+Assistant refused it with 401 and every card stayed blank. The tablet never
+noticed: it asks for one entity at a time through `/api/states/<entity_id>`,
+which any caller with read access may use. The integration renders here what
+the ESP32 panel can no longer ask for, and the ESP32 panel reads it out of
+the same poll that carries the registry, at no extra request of its own.
+
+Rules a client must follow:
+
+- `room_states` is outside `revision`, exactly like `settings` and
+  `commands`: states move constantly while the house is simply being used,
+  and a re-layout on every toggle would rebuild the room page out from
+  under the finger that caused it;
+- it is sent **only to panels**, and only beside an `entities` block. The
+  classic ESP32 controller is sent neither: it learns its four states over
+  the ESPHome native API;
+- a client that has no use for the block ignores it. The T560 panel reads
+  per-entity state and ignores the whole of it; an older ESP32 panel reads
+  nothing and behaves exactly as it did before the block existed, which is
+  why this addition moves no version number.
 
 ## Direct Music Assistant state
 

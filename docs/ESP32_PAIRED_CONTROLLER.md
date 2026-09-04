@@ -171,13 +171,15 @@ config sensor is what names all the others, which is why it is fetched every
 cycle and not merely when a layout changes: it is also the channel Home
 Assistant sends screen and page commands through.
 
-Room entities are polled at a fifth of that rate, in **one** request for the
-whole page. An `http_request` on ESP-IDF blocks the main loop, so the number of
-requests may not grow with the number of cards: a template that renders every
-entity the grid draws answers for one card and for sixty-four alike. A lamp
-somebody switched elsewhere can take five seconds to catch up; a lamp switched
-*here* does not wait, because the card asks for a fresh read as soon as Home
-Assistant has had time to act.
+Room states arrive inside the same config poll, in the `room_states` block
+the integration renders beside the registry: one small array per element,
+keyed by rid, refreshed with every poll. They used to come from a template
+rendered by POST `/api/template`, one request for the whole page — but that
+endpoint answers administrators only, and this device's token belongs to a
+dedicated non-administrator user, so Home Assistant refused it with 401 and
+every card stayed blank. A lamp somebody switched elsewhere now catches up
+with the next one-second poll; a lamp switched *here* does not wait, because
+the card asks for a fresh read as soon as Home Assistant has had time to act.
 
 The queue is fetched when the track title changes rather than on every tick,
 because it is the one large payload. Playlists have an interval of their own.

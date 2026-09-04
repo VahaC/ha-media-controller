@@ -24,8 +24,10 @@ COMPONENTS = REPO / "components"
 
 # A range-for whose collection expression calls .as<T>() inline, e.g.
 #   for (JsonObject element : root["cards"].as<JsonArray>())
+# Confined to the for header: parentheses are excluded from the match, so a
+# .as<T>() call in the loop body — after the closing paren — never matches.
 FOR_OVER_TEMPORARY = re.compile(
-    r"for\s*\([^;:]*:\s*[^;]*\.as\s*<\s*\w+\s*>\s*\(\s*\)",
+    r"for\s*\([^()]*:[^()]*\.as\s*<\s*\w+\s*>\s*\(\s*\)[^()]*\)",
     re.MULTILINE,
 )
 

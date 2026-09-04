@@ -365,18 +365,19 @@ class MediaControllerGrid final : public AsyncWebHandler, public Component {
 
   // ----------------------------------------------------- state routing
   //
-  // Card to rid to entity to state. One request answers for every card on
-  // the page, however many there are: http_request blocks the main loop on
-  // ESP-IDF, so the number of requests may not grow with the number of
-  // cards.
+  // Rid to state. The states arrive inside the config poll, in the
+  // `room_states` block the integration renders beside the registry: one
+  // small array per element, keyed by rid. They used to come from a template
+  // rendered by POST /api/template, but that endpoint answers administrators
+  // only and this device's token belongs to a dedicated non-administrator
+  // user, so Home Assistant refused it and every card stayed blank.
 
-  /* The body of a Home Assistant `/api/template` request that renders every
-   * distinct entity a card addresses, one state per line. Empty when there
-   * is nothing to ask about, which is the caller's signal to skip the poll
-   * entirely. */
-  std::string state_request() const;
-  /* Takes the rendered answer apart and stores one state per element. */
-  void apply_states(const std::string &rendered);
+  /* Takes the `room_states` object apart and stores one state per element.
+   * An element the block does not carry keeps what it last knew, the way a
+   * truncated answer used to: a missing key is a poll that said nothing
+   * about the card, not a card that is off. Returns whether anything
+   * actually moved, which is what decides a repaint. */
+  bool apply_room_states(const std::string &room_states);
   /* The body of one `weather.get_forecasts` request for the drawn weather
    * entities, at most two: a day-by-day answer is kilobytes, and the
    * response buffer is not the place to find that out. Empty when no
@@ -401,13 +402,6 @@ class MediaControllerGrid final : public AsyncWebHandler, public Component {
                   size_t total) override;
 
  protected:
-  /* Which entries a poll asks about, and in what order: the ones a card
-   * actually draws, everything but a thermostat first and the thermostats
-   * after them. It is one function because `state_request` writes the
-   * template in this order and `apply_states` reads the answer in it, and
-   * two copies of an order are two chances for it to drift. */
-  std::vector<size_t> polled_order_() const;
-
   /* Replaces the layout, writes it to flash, backs it up and redraws.
    * Everything that changes the grid goes through here, so that no path can
    * forget one of the four. */

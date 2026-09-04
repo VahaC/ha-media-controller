@@ -167,6 +167,9 @@ class ClientConfigSensor(SensorEntity):
         self._attr_device_info = device_info
         self._tracked: set[str] = set()
         self._untrack: Callable[[], None] | None = None
+        # The room states served with the last write, to avoid rewriting the
+        # sensor on events that moved nothing a panel draws.
+        self._last_room_states: dict[str, list[Any]] | None = None
 
     async def async_added_to_hass(self) -> None:
         """Re-publish whenever a proxy or a registry element changes."""
@@ -186,6 +189,7 @@ class ClientConfigSensor(SensorEntity):
         is rebuilt before the payload is written.
         """
         self._async_track_targets()
+        self._last_room_states = self._client.room_states()
         self.async_write_ha_state()
 
     @callback
@@ -212,18 +216,35 @@ class ClientConfigSensor(SensorEntity):
 
     @callback
     def _async_target_state_changed(self, event: Event) -> None:
-        """Refresh only when target capabilities, not power state, change."""
+        """Refresh capabilities on capability changes, republish on state ones.
+
+        The room states ride this sensor, so a toggle must rewrite it: the
+        capability signature deliberately ignores power state, and without the
+        second half below a lamp switched elsewhere would keep its old value
+        here until something reconfigured the panel. Compared rather than
+        blindly written, so that a dimming sweep — dozens of events for one
+        gesture — costs one write per value a panel actually draws.
+        """
         old_state = event.data.get("old_state")
         new_state = event.data.get("new_state")
         if capability_signature(
             old_state.attributes if old_state is not None else None
-        ) == capability_signature(
+        ) != capability_signature(
             new_state.attributes if new_state is not None else None
         ):
+            entity_id = event.data.get("entity_id")
+            if entity_id is not None:
+                self._client.async_refresh_target_capabilities(entity_id)
+        self._async_publish_room_states()
+
+    @callback
+    def _async_publish_room_states(self) -> None:
+        """Write a new state when the rendered room states moved."""
+        states = self._client.room_states()
+        if states == self._last_room_states:
             return
-        entity_id = event.data.get("entity_id")
-        if entity_id is not None:
-            self._client.async_refresh_target_capabilities(entity_id)
+        self._last_room_states = states
+        self.async_write_ha_state()
 
     @property
     def native_value(self) -> str:

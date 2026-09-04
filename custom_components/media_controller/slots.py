@@ -49,6 +49,7 @@ from .transformations import (
     EntityPayload,
     SlotConfig,
     SlotPayload,
+    room_state_values,
     stored_slots,
 )
 
@@ -458,6 +459,28 @@ class ClientConfiguration:
         if state is not None and state.name:
             return state.name
         return entry.target_entity_id
+    def room_states(self) -> dict[str, list[Any]]:
+        """Render the current state of every registry element, keyed by rid.
+
+        Read live from the state machine on every call: the config sensor is
+        polled by panels, and what it serves must be the state as of the
+        request rather than as of the last configuration change. An element
+        whose entity is gone reads as unknown rather than keeping a stale
+        value. The classic ESP32 controller has no registry and gets no
+        block; it learns its four states over the native API instead.
+        """
+        if not self.profile.has_registry:
+            return {}
+        states: dict[str, list[Any]] = {}
+        for entry in self.entries:
+            target = self.hass.states.get(entry.target_entity_id)
+            if target is None:
+                states[entry.rid] = ["unknown"]
+            else:
+                states[entry.rid] = room_state_values(
+                    entry.domain, target.state, target.attributes
+                )
+        return states
 
     def payload(self) -> ClientConfigPayload:
         """Build what this client reads from its config sensor.
@@ -471,6 +494,7 @@ class ClientConfiguration:
         return ClientConfigPayload(
             settings=panel.get("settings"),
             commands=panel.get("commands"),
+            room_states=self.room_states() if registry else None,
             # Every client is told which protocol this integration speaks,
             # panel or not. A client that has no use for it ignores it, which
             # is what the classic ESP32 firmware does.
