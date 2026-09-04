@@ -432,7 +432,8 @@ bool MediaControllerGrid::ingest_entities(const std::string &attributes) {
       entry.togglable = false;
       entry.dimmable = false;
       entry.settable_temp = false;
-      for (JsonVariant control : element["controls"].as<JsonArray>()) {
+      JsonArray controls = element["controls"].as<JsonArray>();
+      for (JsonVariant control : controls) {
         const char *value = control.as<const char *>();
         /* A control this build does not know is ignored rather than treated
          * as an error, so that a future one can be added without breaking a
@@ -605,7 +606,8 @@ bool MediaControllerGrid::parse_layout_(const std::string &document, std::vector
       return true;
     version_ok = true;
 
-    for (JsonObject element : root["cards"].as<JsonArray>()) {
+    JsonArray cards_payload = root["cards"].as<JsonArray>();
+    for (JsonObject element : cards_payload) {
       if (cards.size() >= MAX_CARDS) {
         lost++;
         continue;
