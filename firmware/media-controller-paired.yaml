@@ -1942,10 +1942,15 @@ script:
                   break;
                 case LV_EVENT_CLICKED:
                   // -- A release that ended a sweep, or one that happened
-                  //    while the page was already sliding away, is not a
-                  //    tap. Neither is a tap on an element Home Assistant
-                  //    offered no `toggle` for: a thermostat that cannot be
-                  //    turned off is a card that reads rather than acts. --
+                  // -- while the page was already sliding away, is not a
+                  // -- tap. Neither is a tap on an element Home Assistant
+                  // -- offered no `toggle` for: a thermostat that cannot be
+                  // -- turned off is a card that reads rather than acts. --
+                  ESP_LOGD("action", "tap rid=%08x tog=%d long=%d swipe=%d",
+                           (unsigned) placed[index].rid,
+                           (int) entry->togglable,
+                           (int) (bool) id(room_card_long_active),
+                           (int) (bool) id(switches_swipe_active));
                   if (!id(room_card_long_active) &&
                       !id(switches_swipe_active) && entry->togglable) {
                     id(cmd_entity_toggle)->execute(entry->entity);
