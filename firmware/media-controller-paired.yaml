@@ -631,6 +631,11 @@ script:
   # rather than a native API call, and the entity comes from flash rather than
   # from a substitution.
 
+  # -- Every action a widget performs on Home Assistant goes through here,
+  # -- so a refused call cannot vanish silently the way it used to: the
+  # -- answer is logged, once per outcome, at debug for success and warning
+  # -- for anything else. An http_request on ESP-IDF answers synchronously,
+  # -- so the script parameters below are still alive when it does. --
   - id: ha_action
     mode: parallel
     max_runs: 6
@@ -652,7 +657,27 @@ script:
                   Authorization: !lambda return id(auth_header).c_str();
                   Content-Type: "application/json"
                 body: !lambda return payload;
-                capture_response: false
+                capture_response: true
+                # -- A service answer is `[]`: two bytes, and this is the
+                # -- ceiling with room to spare. --
+                max_response_buffer_size: 512
+                on_response:
+                  then:
+                    - lambda: |-
+                        if (response->status_code == 200) {
+                          ESP_LOGD("action", "%s.%s ok",
+                                   domain.c_str(), service.c_str());
+                        } else {
+                          ESP_LOGW("action", "%s.%s HTTP %d: %s",
+                                   domain.c_str(), service.c_str(),
+                                   response->status_code, payload.c_str());
+                        }
+                on_error:
+                  then:
+                    - lambda: |-
+                        ESP_LOGW("action", "%s.%s request failed: %s",
+                                 domain.c_str(), service.c_str(),
+                                 payload.c_str());
 
   - id: cmd_prev
     mode: parallel
@@ -788,6 +813,7 @@ script:
       entity: string
     then:
       - lambda: |-
+          ESP_LOGD("action", "toggle %s", entity.c_str());
           if (entity.find('.') == std::string::npos) return;
           id(ha_action)->execute(
               std::string("homeassistant"), std::string("toggle"),
