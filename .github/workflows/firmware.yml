@@ -27,21 +27,23 @@ jobs:
         # The classic package is standalone. The paired package intentionally
         # receives Wi-Fi from the importing device YAML, so validate it through
         # a complete local device wrapper instead of pretending the package is
-        # a complete device configuration. Image assets are fetched from
-        # asset_base_url during validation.
+        # a complete device configuration.
         #
-        # grid_component_source is overridden to the checkout. Its default is
-        # this repository on main, which is right for a flashed device and
-        # wrong here: a pull request that changes the component would
-        # otherwise be validated against the copy already on main. The path is
-        # relative to the directory of the configuration being validated,
-        # which is firmware/.
+        # grid_component_source and asset_base_url are overridden to the
+        # checkout. Their defaults are this repository on main, which is right
+        # for a flashed device and wrong here: a pull request that changes the
+        # component or adds an image asset would otherwise be validated
+        # against the copies already on main — and a new asset, which exists
+        # only in the pull request, would fail with a 404 that no code change
+        # can fix. The paths are relative to the directory of the
+        # configuration being validated, which is firmware/.
         run: |
           esphome config firmware/media-controller.yaml
           trap 'rm -f firmware/.ci-paired.yaml' EXIT
           printf '%s\n' \
             'substitutions:' \
             '  grid_component_source: ../components' \
+            '  asset_base_url: assets' \
             '' \
             'packages:' \
             '  paired: !include media-controller-paired.yaml' \
