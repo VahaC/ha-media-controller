@@ -203,6 +203,10 @@ static void handle_entities(PanelWeb *web, SoupServerMessage *message)
         json_builder_add_boolean_value(builder, entity->color_temperature);
         json_builder_set_member_name(builder, "target_temperature");
         json_builder_add_boolean_value(builder, entity->target_temperature);
+        json_builder_set_member_name(builder, "position");
+        json_builder_add_boolean_value(builder, entity->position);
+        json_builder_set_member_name(builder, "stop");
+        json_builder_add_boolean_value(builder, entity->stoppable);
         json_builder_end_object(builder);
     }
     json_builder_end_array(builder);
@@ -212,7 +216,7 @@ static void handle_entities(PanelWeb *web, SoupServerMessage *message)
     json_builder_set_member_name(builder, "icons");
     json_builder_begin_array(builder);
     static const gchar *ICONS[] = {"light-1", "light-2", "desk-lamp",
-                                   "desk-led-strip", "fan", "ac"};
+                                   "desk-led-strip", "fan", "ac", "blind"};
     for (guint i = 0; i < G_N_ELEMENTS(ICONS); i++)
         json_builder_add_string_value(builder, ICONS[i]);
     json_builder_end_array(builder);

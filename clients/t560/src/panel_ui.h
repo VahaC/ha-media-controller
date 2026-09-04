@@ -16,6 +16,8 @@ typedef enum {
     PANEL_UI_SET_ROOM_BRIGHTNESS,
     PANEL_UI_SET_ROOM_COLOR_TEMPERATURE,
     PANEL_UI_SET_ROOM_TARGET_TEMPERATURE,
+    PANEL_UI_SET_ROOM_POSITION,
+    PANEL_UI_STOP_ROOM,
     PANEL_UI_SHOW_PAGE,
     PANEL_UI_SELECT_QUEUE_ITEM,
     PANEL_UI_SELECT_PLAYLIST,
@@ -100,6 +102,10 @@ typedef struct {
      * letter. */
     gdouble setpoint;
     gdouble ambient;
+    /* How far open a cover is, 0 to 100, or -1 when the entity reported no
+     * position. A cover that reports none is not half anything: it is open
+     * or closed, and the card says so in words. */
+    gint position;
 } PanelRoomState;
 
 void panel_ui_set_room(PanelUi *ui, guint index, const PanelRoomState *state);

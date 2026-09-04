@@ -474,6 +474,28 @@ static void handle_ui_event(PanelUiEvent event, const gchar *value, gint index,
         }
         break;
     }
+    case PANEL_UI_SET_ROOM_POSITION: {
+        const PanelEntity *room = configured_room(application, index);
+        if (room != NULL && value != NULL && room->position) {
+            gint position = (gint)g_ascii_strtoll(value, NULL, 10);
+            position = CLAMP(position, 0, 100);
+            gchar *json = room_value_json(room->entity, "position", position);
+            call_service(application, "cover", "set_cover_position", json);
+            g_free(json);
+        }
+        break;
+    }
+    case PANEL_UI_STOP_ROOM: {
+        const PanelEntity *room = configured_room(application, index);
+        /* Only where Home Assistant said the cover can be stopped. A cover
+         * without the feature would refuse the call, and the person pressing
+         * a button that answers nothing would be told nothing. */
+        if (room != NULL && room->stoppable) {
+            call_entity_service(application, "cover", "stop_cover",
+                                room->entity);
+        }
+        break;
+    }
     case PANEL_UI_SET_ROOM_COLOR_TEMPERATURE: {
         const PanelEntity *room = configured_room(application, index);
         if (room != NULL && value != NULL && room->color_temperature) {
@@ -694,6 +716,14 @@ static void update_playlists(PanelApplication *application, JsonObject *state)
  * `state_known` is for; here an unavailable entity is simply not on. */
 static gboolean room_is_active(const PanelEntity *entity, const gchar *state)
 {
+    /* A blind is on when it is not shut. Home Assistant reports `open`,
+     * `closed`, `opening` and `closing`; one that is opening is on its way to
+     * being open and is drawn as on, and one that is closing is still open
+     * until it is not, which is why only `closed` reads as off. */
+    if (entity != NULL && g_strcmp0(entity->domain, "cover") == 0) {
+        return g_str_equal(state, "open") || g_str_equal(state, "opening") ||
+               g_str_equal(state, "closing");
+    }
     if (entity != NULL && g_strcmp0(entity->domain, "climate") == 0) {
         return !g_str_equal(state, "off") &&
                !g_str_equal(state, "unavailable") &&
@@ -723,7 +753,8 @@ static void update_room(PanelApplication *application, guint index,
         .min_color_temp_kelvin = 0,
         .max_color_temp_kelvin = 0,
         .setpoint = NAN,
-        .ambient = NAN
+        .ambient = NAN,
+        .position = -1
     };
     gdouble value = 0.0;
 
@@ -747,6 +778,12 @@ static void update_room(PanelApplication *application, guint index,
         reported.setpoint = value;
     if (json_object_number(attributes, "current_temperature", &value))
         reported.ambient = value;
+    /* A cover costs no extra request either: `current_position` is an
+     * attribute of the document the card was already polled with. A cover
+     * that cannot report one simply leaves this at -1. */
+    if (json_object_number(attributes, "current_position", &value) &&
+        value >= 0.0)
+        reported.position = CLAMP((gint)(value + 0.5), 0, 100);
 
     panel_ui_set_room(application->ui, index, &reported);
 }

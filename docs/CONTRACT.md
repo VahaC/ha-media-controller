@@ -8,7 +8,7 @@ Treat this file as the change-control surface: a change to anything below
 affects released devices in the field. A change to code that is not described
 here affects one component only.
 
-Contract version: **7** (matches integration `1.2.x`).
+Contract version: **8** (matches integration `1.2.x`).
 
 Every version so far has been purely additive. Version 2 added the config
 sensor and let proxy lights forward colour temperature. Version 3 added two
@@ -69,8 +69,30 @@ registry one new **card type**. Version 6 accepted six groups of entities and
 drew two of them, `light` and `switch`; every other group travelled with an
 empty `controls` list, waiting for the card that would draw it. Version 7
 writes the first of those cards, for `climate`, and nothing else. The
-remaining groups — `media_player`, `cover`, `weather` — still travel with an
-empty list and are still ignored by every client.
+remaining groups — `cover` and `weather` — still travel with an empty list and
+are still ignored by every client.
+
+The sixth group, `media_player`, is no longer offered: a panel already plays
+from a media player of its own, chosen on the same page and drawn by the
+player card, so a second one in the registry only took up a place. The payload
+is unchanged by that — an element of any domain still travels, and a client
+still ignores one it cannot draw — so nothing about this version moves. A
+`media_player` element stored by an older build is retired the next time its
+panel is saved.
+
+Version 8 is the next card in that series, and the only thing it adds: the
+**cover card**. A `cover` element resolves to as many as three controls —
+`toggle`, and the two names this version introduces, `position` and `stop` —
+and a blind, a shutter or an awning becomes something a panel can act on
+rather than a tile that answers nothing. Nothing else moves: no field is
+added to the payload, because how far open a cover is arrives as an ordinary
+attribute of the entity a client already polls. `weather` is now the only
+group still travelling with an empty list.
+
+The T560 panel draws the card as of this version. The paired ESP32 does not
+yet, and by the rule below it is entitled not to: it ignores an element whose
+domain it cannot draw, exactly as every panel did with `climate` between
+version 6 and version 7.
 
 That is deliberate, and the rule that makes it possible is already written
 below: **a client that does not know a value in `controls` ignores it, and a
@@ -369,14 +391,14 @@ client profile allows, in any of the groups below, and removes them again.
   domains below. **A client that cannot draw a domain ignores that element**,
   exactly as it ignores a control it does not know, so a group added later
   cannot break a client already in the field.
-- `controls` is the same closed list as in `slots`, plus one value only a
+- `controls` is the closed list `slots` uses, plus the three values only a
   registry element can carry: `toggle`, `brightness`, `color_temp`,
-  `target_temperature`. It is resolved by the integration from the target's
-  capabilities. A client renders from it and never parses
+  `target_temperature`, `position`, `stop`. It is resolved by the integration
+  from the target's capabilities. A client renders from it and never parses
   `supported_color_modes` or `supported_features` itself. As of this version
-  `light`, `switch` and `climate` produce controls; `media_player`, `cover`
-  and `weather` are carried with an empty list, because the cards that would
-  draw them are not written yet.
+  `light`, `switch`, `climate` and `cover` produce controls; `weather` is
+  carried with an empty list, because the card that would draw it is not
+  written yet, as is any domain that is no longer a group.
 - `min_kelvin` and `max_kelvin` appear only when `controls` contains
   `color_temp`, as in `slots`.
 - `min_temp`, `max_temp` and `target_temp_step` appear only when `controls`
@@ -400,9 +422,8 @@ The groups, in payload order:
 | --- | --- | --- |
 | Lights | `light` | yes |
 | Switches | `switch` | yes |
-| Media players | `media_player` | no |
 | Climate | `climate` | yes, since version 7 |
-| Covers | `cover` | no |
+| Covers | `cover` | yes, since version 8 |
 | Weather | `weather` | no |
 
 A "no" in that column is not a promise that the element is useless: it still
@@ -472,6 +493,62 @@ A card an element gives no `target_temperature` still draws and still
 toggles. A card whose element gives neither control is drawn as a reading
 rather than a control, which is the honest thing to show for a thermostat
 this integration can offer no action on.
+
+### Cover cards
+
+New in version 8, and the whole of what that version adds. A `cover` element
+is resolved the way a `climate` one is: the integration reads the cover's
+feature bits and sends the controls a card may draw, and a client never
+inspects `supported_features` itself.
+
+```json
+{
+  "rid": "3f9a01cd",
+  "entity": "cover.living_blind",
+  "name": "Blind",
+  "domain": "cover",
+  "controls": ["toggle", "position", "stop"]
+}
+```
+
+A cover carries **no bounds**. Unlike a setpoint, a position is a percentage
+by definition: 0 is shut and 100 is fully open, in every house and every unit
+system, so there is nothing to send alongside the control.
+
+Each control is claimed only on evidence, and any of them may be absent:
+
+- **`toggle`** means the cover can be both opened and closed. It is claimed
+  only when the entity sets **both** the `OPEN` and `CLOSE` feature bits,
+  because `cover.toggle` decides between the two from the current state: a
+  cover that can only be opened would be given a control that works once and
+  is then refused. `toggle` is the same value with the same meaning that a
+  light, a switch or a thermostat carries; it is not new.
+- **`position`** means the entity sets `SET_POSITION` and a card may ask for
+  any percentage. A cover without it still opens and closes; it simply has no
+  half way.
+- **`stop`** means the entity sets `STOP`. It is the one control this card
+  type needed that no other has: a blind travels for seconds and is stopped
+  part way on purpose, which no percentage can express on a cover that reports
+  no position at all.
+
+How far open the thing currently is, `current_position`, is **state and not a
+capability**: it is an ordinary attribute of the entity a client already
+polls, it changes while the cover is simply being used, and it is therefore
+not in the payload. A client reads it the way it already reads a lamp's
+brightness or a room's temperature.
+
+What a client draws is its own business, and the two panels differ:
+
+| Client | Tap | Beyond a tap |
+| --- | --- | --- |
+| T560 panel | `toggle` | The percentage on the sheet a light's brightness uses, and a STOP button beside it |
+| ESP32-S3 panel | — | No cover card yet; it ignores the element, as the rule below allows |
+| ESP32-S3 controller | — | Not a panel; it reads `slots` and is sent no `entities` |
+
+A card whose element gives no `position` still draws and still toggles, and a
+card that gives none of the three is drawn as a reading rather than a
+control — the honest thing to show for a cover this integration can offer no
+action on.
 
 ### What version 6 breaks
 

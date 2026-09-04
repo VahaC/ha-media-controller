@@ -16,7 +16,7 @@
  * The panel sends it in every status report and reads the integration's own
  * out of the config sensor, so each half can tell that the other is behind.
  * Raise it in the same change that raises the number in that document. */
-#define T560_PANEL_CONTRACT_VERSION 7
+#define T560_PANEL_CONTRACT_VERSION 8
 
 /* How many registry elements this panel will hold. The integration sends its
  * own `entity_limit` and the T560 profile's is the same number; this is the
@@ -82,6 +82,14 @@ typedef struct {
     gdouble min_temp;
     gdouble max_temp;
     gdouble temp_step;
+    /* A cover. `position` is whether the card may drag a percentage open and
+     * `stoppable` whether it may halt one that is travelling. Both are
+     * capabilities; how far open the thing actually is arrives with every
+     * poll like any other state. A cover needs no bounds beside them: a
+     * position is a percentage by definition. See docs/CONTRACT.md, Cover
+     * cards. */
+    gboolean position;
+    gboolean stoppable;
 } PanelEntity;
 
 /* The tablet-local settings Home Assistant owns. They used to live only in

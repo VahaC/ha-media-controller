@@ -15,7 +15,8 @@ RESOURCE_FILES = data/editor.html \
 		 data/icons/fan.png \
 		 data/icons/ac.png \
 		 data/icons/desk-lamp.png \
-		 data/icons/desk-led-strip.png
+		 data/icons/desk-led-strip.png \
+		 data/icons/blind.png
 RESOURCE_SOURCE = build/t560-resources.c
 ICON_NAME = t560-music-panel
 ICON_SIZES = 16 24 32 48 64 128 256 512

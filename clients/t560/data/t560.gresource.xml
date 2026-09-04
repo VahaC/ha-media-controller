@@ -17,5 +17,6 @@
     <file>icons/ac.png</file>
     <file>icons/desk-lamp.png</file>
     <file>icons/desk-led-strip.png</file>
+    <file>icons/blind.png</file>
   </gresource>
 </gresources>

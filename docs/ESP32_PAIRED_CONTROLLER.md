@@ -367,7 +367,12 @@ reports the outcome on `GET /api/entities`.
 | `climate` | toggle | sweeps the setpoint | icon and a tap |
 
 Everything else in the registry is drawn as a card with no action, because no
-card is written for it yet. See **Registry entries** in `docs/CONTRACT.md`.
+card is written for it **here** yet: contract version 8 adds the cover card
+and the T560 draws it, this firmware does not, and a `cover` element reaches
+it carrying controls it ignores. Home Assistant says so — a panel behind the
+contract raises the repair issue described under **Version compatibility** —
+and the remedy is a firmware that draws the card, not a reflash of this one.
+See **Registry entries** in `docs/CONTRACT.md`.
 
 A card two cells square or larger carries its name; a thermostat carries a
 reading above the name as well — the temperature the room is at and the

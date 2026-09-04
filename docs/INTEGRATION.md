@@ -96,8 +96,8 @@ discovered device: press *Configure* and the form asks, in this order:
    is asked until it has answered, and a wrong code can simply be retyped.
 2. **which media player source it plays from**;
 3. **its room entities**, on one page: a list per group — Weather, Lights,
-   Switches, Media players, Climate devices, Covers — that it can add to and
-   remove from freely.
+   Switches, Climate devices, Covers — that it can add to and remove from
+   freely.
 
 Finishing the form is what releases the access token: the panel collects it on
 its next poll, a few seconds later, and switches into normal operation. Nothing
@@ -124,11 +124,13 @@ other: the device keeps its token, its device, and its entity IDs.
 ### Room entities
 
 A panel's room controls are a list with no fixed length. *Configure* shows
-all six groups on one page — Weather, Lights, Switches, Media players, Climate
-devices, Covers — each a selector holding everything in it: adding an entity
-to one adds a tile, clearing one removes it, and there is no numbered slot to
-run out of. One *Submit* saves the lot. A label may be typed for each entity
-below the groups; leave it empty and the entity's own name is used.
+every group on one page — Weather, Lights, Switches, Climate devices, Covers —
+each a selector holding everything in it: adding an entity to one adds a tile,
+clearing one removes it, and there is no numbered slot to run out of. One
+*Submit* saves the lot. A tile is named as Home Assistant names the entity.
+
+There is no group for media players: a panel plays from the source chosen at
+the top of the same page, and that is the player it draws.
 
 Only the ceiling comes from the device type: 100 entities for a
 tablet, 64 for a paired ESP32. Only the tablet offers colour temperature.
@@ -136,11 +138,18 @@ tablet, 64 for a paired ESP32. Only the tablet offers colour temperature.
 Lights, switches and climate have cards on both panels. A thermostat is
 toggled with a tap and its setpoint is moved on the tablet's adjust sheet or
 by a long press on the ESP32; both panels show what the room is at and what it
-is set to. Media players, covers and weather can be added now, but no client
-draws a card for them yet and they are ignored until one does — each becomes a
-card in a contract version of its own, so a panel gains one when it is
-updated and never breaks on a payload that carries one it does not know. See
-[ROOM_SLOTS.md](ROOM_SLOTS.md).
+is set to.
+
+Covers have a card on the **tablet**, as of contract version 8. A tap opens or
+closes the blind, and its ADJUST corner carries how far open it is as a
+percentage — where the cover reports one — and a STOP button, which is what a
+blind that takes ten seconds to travel actually needs. The paired ESP32 has no
+cover card yet and ignores those elements until it does.
+
+Weather can be added now, but no client draws a card for it yet and it is
+ignored until one does — it becomes a card in a contract version of its own,
+so a panel gains it when it is updated and never breaks on a payload that
+carries one it does not know. See [ROOM_SLOTS.md](ROOM_SLOTS.md).
 
 The room controls of an ESP32 running the **classic** firmware are the exception
 to all of this. They are still four numbered slots, they live on the source

@@ -46,8 +46,8 @@ everything below.
 | 2 | Client profiles are a **static registry** in the integration | A new client type is a code change, not a UI action |
 | 3 | ESP32 has no entry of its own | Its four slots stay on the controller config entry, where they already are |
 | 4 | A panel's room controls are an **unbounded registry grouped by domain**; the classic ESP32 keeps exactly four slots | Rewritten in version 6 — see below |
-| 5 | Every element has a **label field**; empty falls back to `friendly_name` | |
-| 6 | The registry accepts **six groups**; `light`, `switch` and `climate` have cards | Rewritten in version 6, extended one group at a time from version 7 — see below |
+| 5 | Every element has a stored label; empty falls back to `friendly_name` | The form stopped asking for one — a tile is named as Home Assistant names the entity |
+| 6 | The registry accepts **five groups**; `light`, `switch`, `climate` and `cover` have cards | Rewritten in version 6, extended one group at a time from version 7 — see below |
 | 7 | The integration **normalizes capabilities** | Clients render from a plain list and never parse `supported_color_modes` |
 | 8 | Legacy **entity IDs** are preserved | Flashed ESP32 devices keep working without a reflash |
 
@@ -86,9 +86,9 @@ which is what made the six-tile tablet and the four-button ESP32 one mechanism.
 It cost the thing users actually asked for: a tablet that draws six tiles and
 no more, on a screen with room for far more than six.
 
-A panel now has a list with no fixed length. The form is a menu of groups —
-Lights, Switches, Media players, Climate, Covers, Weather — and opening one
-shows every entity in it in a single selector that both adds and removes. The
+A panel now has a list with no fixed length. The form is one page of groups —
+Weather, Lights, Switches, Climate devices, Covers — each a single selector
+holding every entity in it, which both adds and removes. The
 only ceiling is the client profile's `entity_limit`: 100 for the tablet, 64
 for the paired ESP32. They differ because the tablet's registry is parsed by a
 GTK application with a filesystem and never travels into a firmware image,
@@ -106,22 +106,28 @@ next time somebody tidied theirs. The integration also records the target's
 entity-registry row ID, so the element follows its entity through exactly that
 rename.
 
-### Decision 6, rewritten: six groups, drawable one at a time
+### Decision 6, rewritten: five groups, drawable one at a time
 
 The original decision was `light` and `switch` only, with no `climate`, no
 `cover` and no `fan`. The registry widens the part of that which was about
 *storage* and keeps the part that was about *drawing*.
 
-The form offers six groups and the payload carries each element's `domain`, so
-a media player, a thermostat, a cover or a weather entity can be added now.
-What most of them do not have yet is a card. `controls` is the closed list
-`toggle`, `brightness`, `color_temp`, `target_temperature`; as of contract
-version 7 `light`, `switch` and `climate` resolve to something in it and the
-rest are carried with an empty list. A client ignores an element whose domain
-it cannot draw — the same rule that already covers an unknown control name,
-and the rule that lets one card type be released at a time. Writing those cards
-is a later phase, and it needs no further contract change, because the
-elements will already be there when it lands.
+The form offers five groups and the payload carries each element's `domain`,
+so a thermostat, a cover or a weather entity can be added now. A media player
+is not among them: a panel plays from its source, which is a media player
+chosen on the same page, and a second one in the registry only took up a
+place. An element of that domain stored by an older build is retired the next
+time its panel is saved.
+One of them does not have a card yet. `controls` is the closed list
+`toggle`, `brightness`, `color_temp`, `target_temperature`, `position`,
+`stop`; as of contract version 8 `light`, `switch`, `climate` and `cover`
+resolve to something in it and `weather` is carried with an empty list. A
+client ignores an element whose domain it cannot draw — the same rule that
+already covers an unknown control name, and the rule that lets one card type
+be released at a time, per client: the cover card is on the T560 as of version
+8 and not yet on the paired ESP32, and neither of them breaks on the other's
+payload. Writing the last card needs no further contract change, because the
+elements are already there.
 
 ### Why proxies and not direct entities — on the classic firmware
 
@@ -319,21 +325,22 @@ of panel needed a new `profile` record and nothing else.
    sitting.
 4. **`entities`** — the registry editor, and one form. Every group is a
    multi-entity selector of its own domain, listed in reading order — Weather,
-   Lights, Switches, Media players, Climate devices, Covers — and each both
-   adds and removes. Below them is one label field per element that already
-   exists. Submitting creates the entry, which is what releases the token; an
-   empty registry is a valid answer and the panel simply draws no room
-   controls until entities are added.
+   Lights, Switches, Climate devices, Covers — and each both adds and removes.
+   Submitting creates the entry, which is what releases the token; an empty
+   registry is a valid answer and the panel simply draws no room controls
+   until entities are added.
 
 There is no menu and no step per group. A registry has no fixed size, but a
 selector does not either, so all six fit one page, and the whole registry is
 rewritten from one submission: a group the form does not send back was
 emptied, which is also how Home Assistant reports a cleared field.
 
-The label fields are keyed by `rid` rather than by entity ID, so a label stays
-attached to its tile when the entity behind it is renamed. Home Assistant has
-no translation for a key it has never seen, so it shows `name_<rid>` verbatim,
-and the step description carries a legend saying which entity each `rid` is.
+Nothing on the page asks for a label. An element still carries one, and a
+stored one is still sent and still preferred over the entity's name, but the
+form used to ask for it in a box keyed by `rid` — the only key that survives a
+rename — which Home Assistant can only render as `name_<rid>` above a legend
+explaining what that meant. A tile named as Home Assistant names its entity is
+worth more than a page of hex.
 
 `Add device` offers the same thing manually, for a panel that cannot announce
 itself, with the panel ID typed in. Editing a panel later opens one page — step

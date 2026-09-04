@@ -150,9 +150,11 @@ static void test_a_future_control_does_not_disturb_the_known_ones(void)
 
     g_assert_true(parse(attributes, &layout, &failure));
     g_assert_cmpuint(entity_count(&layout), ==, 2);
-    /* An element whose every control is unknown is still carried: which
-     * domains this build can draw is the room page's business. */
+    /* `tilt` is the unknown one here; `position` this build knows, and
+     * neither costs the other anything. */
     g_assert_cmpstr(entity_at(&layout, 0)->domain, ==, "cover");
+    g_assert_true(entity_at(&layout, 0)->position);
+    g_assert_false(entity_at(&layout, 0)->stoppable);
     g_assert_false(entity_at(&layout, 0)->target_temperature);
     /* And an unknown name beside a known one costs the known one nothing. */
     g_assert_true(entity_at(&layout, 1)->target_temperature);
@@ -185,6 +187,52 @@ static void test_climate_element_is_read(void)
     g_assert_cmpfloat(entity_at(&layout, 0)->min_temp, ==, 16.5);
     g_assert_cmpfloat(entity_at(&layout, 0)->max_temp, ==, 30.0);
     g_assert_cmpfloat(entity_at(&layout, 0)->temp_step, ==, 0.5);
+
+    g_free(attributes);
+    panel_layout_clear(&layout);
+}
+
+/* Contract version 8: the cover card. A cover carries no bounds of its own
+ * — a position is a percentage — so the controls are the whole of it. */
+static void test_cover_element_is_read(void)
+{
+    PanelLayout layout = {0};
+    gchar *failure = NULL;
+    gchar *attributes = g_strdup_printf(
+        "%s,\"entities\":[{\"rid\":\"3f9a01cd\",\"entity\":\"cover.blind\","
+        "\"name\":\"Blind\",\"domain\":\"cover\","
+        "\"controls\":[\"toggle\",\"position\",\"stop\"]}]",
+        CONTROLLER_ENTITIES);
+
+    g_assert_true(parse(attributes, &layout, &failure));
+    g_assert_cmpuint(entity_count(&layout), ==, 1);
+    g_assert_cmpstr(entity_at(&layout, 0)->domain, ==, "cover");
+    g_assert_true(entity_at(&layout, 0)->togglable);
+    g_assert_true(entity_at(&layout, 0)->position);
+    g_assert_true(entity_at(&layout, 0)->stoppable);
+    g_assert_false(entity_at(&layout, 0)->brightness);
+    g_assert_false(entity_at(&layout, 0)->target_temperature);
+
+    g_free(attributes);
+    panel_layout_clear(&layout);
+}
+
+/* A blind that opens and closes and reports nothing in between. Its card
+ * toggles, and the sheet it opens carries the stop button alone. */
+static void test_cover_without_a_position(void)
+{
+    PanelLayout layout = {0};
+    gchar *failure = NULL;
+    gchar *attributes = g_strdup_printf(
+        "%s,\"entities\":[{\"rid\":\"3f9a01cd\",\"entity\":\"cover.blind\","
+        "\"name\":\"Blind\",\"domain\":\"cover\","
+        "\"controls\":[\"toggle\",\"stop\"]}]", CONTROLLER_ENTITIES);
+
+    g_assert_true(parse(attributes, &layout, &failure));
+    g_assert_cmpuint(entity_count(&layout), ==, 1);
+    g_assert_true(entity_at(&layout, 0)->togglable);
+    g_assert_false(entity_at(&layout, 0)->position);
+    g_assert_true(entity_at(&layout, 0)->stoppable);
 
     g_free(attributes);
     panel_layout_clear(&layout);
@@ -792,6 +840,9 @@ void panel_config_tests_register(void)
     g_test_add_func("/config/future-control",
                     test_a_future_control_does_not_disturb_the_known_ones);
     g_test_add_func("/config/climate", test_climate_element_is_read);
+    g_test_add_func("/config/cover", test_cover_element_is_read);
+    g_test_add_func("/config/cover-no-position",
+                    test_cover_without_a_position);
     g_test_add_func("/config/climate-toggle-only",
                     test_climate_without_a_setpoint);
     g_test_add_func("/config/climate-no-controls",

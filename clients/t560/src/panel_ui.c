@@ -207,17 +207,27 @@ struct _PanelUi {
     GtkWidget *room_setpoint_box;
     GtkWidget *room_setpoint_scale;
     GtkWidget *room_setpoint_value;
+    /* A cover. The percentage is a fourth slider on the same sheet, and STOP
+     * is the one button any of this needed: a blind travels for seconds and
+     * is stopped half way on purpose, which no slider can express. */
+    GtkWidget *room_position_box;
+    GtkWidget *room_position_scale;
+    GtkWidget *room_position_value;
+    GtkWidget *room_stop_button;
     gint room_adjust_index;
     gboolean changing_room_adjustment;
     guint brightness_debounce_source;
     guint temperature_debounce_source;
     guint setpoint_debounce_source;
+    guint position_debounce_source;
     gint pending_brightness_index;
     gint pending_brightness;
     gint pending_temperature_index;
     gint pending_temperature;
     gint pending_setpoint_index;
     gdouble pending_setpoint;
+    gint pending_position_index;
+    gint pending_position;
 };
 
 /* One card on the room page. It knows its own identity, where it sits in
@@ -256,6 +266,10 @@ typedef struct {
      * capability and not a state. */
     gdouble setpoint;
     gdouble ambient;
+    /* How far open a cover is, 0 to 100, or -1 while Home Assistant has
+     * reported no position — either because it has not answered yet or
+     * because this cover has none to report. */
+    gint position;
     /* The colour the user chose for this card, and whether they chose one. */
     guint accent;
     gboolean has_accent;
@@ -449,7 +463,8 @@ static const struct {
     {"desk-lamp", "/com/vahac/t560/icons/desk-lamp.png"},
     {"desk-led-strip", "/com/vahac/t560/icons/desk-led-strip.png"},
     {"fan", "/com/vahac/t560/icons/fan.png"},
-    {"ac", "/com/vahac/t560/icons/ac.png"}
+    {"ac", "/com/vahac/t560/icons/ac.png"},
+    {"blind", "/com/vahac/t560/icons/blind.png"}
 };
 
 static const gchar *icon_resource(const gchar *name)
@@ -475,6 +490,8 @@ static const gchar *icon_for_domain(const gchar *domain)
      * card in the editor. */
     if (g_strcmp0(domain, "climate") == 0)
         return "ac";
+    if (g_strcmp0(domain, "cover") == 0)
+        return "blind";
     return "light-2";
 }
 
@@ -610,7 +627,8 @@ static gboolean card_is_adjustable(const PanelRoomCard *card)
 {
     return card->entity != NULL &&
            (card->entity->brightness || card->entity->color_temperature ||
-            card->entity->target_temperature);
+            card->entity->target_temperature || card->entity->position ||
+            card->entity->stoppable);
 }
 
 /* A temperature as a card and a sheet write one: no unit letter, because the
@@ -677,6 +695,56 @@ static gboolean emit_setpoint_change(gpointer user_data)
     emit_event(ui, PANEL_UI_SET_ROOM_TARGET_TEMPERATURE, value,
                ui->pending_setpoint_index);
     return G_SOURCE_REMOVE;
+}
+
+static gboolean emit_position_change(gpointer user_data)
+{
+    PanelUi *ui = user_data;
+    gchar *value = g_strdup_printf("%d", ui->pending_position);
+
+    ui->position_debounce_source = 0;
+    emit_event(ui, PANEL_UI_SET_ROOM_POSITION, value,
+               ui->pending_position_index);
+    g_free(value);
+    return G_SOURCE_REMOVE;
+}
+
+static void room_position_changed(GtkRange *range, gpointer user_data)
+{
+    PanelUi *ui = user_data;
+    gint value = (gint)gtk_range_get_value(range);
+    gchar *text = g_strdup_printf("%d%%", value);
+
+    gtk_label_set_text(GTK_LABEL(ui->room_position_value), text);
+    g_free(text);
+    if (ui->changing_room_adjustment || ui->room_adjust_index < 0)
+        return;
+
+    ui->pending_position_index = ui->room_adjust_index;
+    ui->pending_position = value;
+    if (ui->position_debounce_source != 0)
+        g_source_remove(ui->position_debounce_source);
+    ui->position_debounce_source = g_timeout_add_full(
+        G_PRIORITY_DEFAULT_IDLE, 350, emit_position_change, ui, NULL);
+}
+
+/* STOP is not debounced and carries no value: it is the one control on this
+ * sheet that has to reach Home Assistant the instant it is pressed, because
+ * what it is for is a blind that is moving right now. */
+static void room_stop_clicked(GtkButton *button, gpointer user_data)
+{
+    (void)button;
+    PanelUi *ui = user_data;
+
+    if (ui->room_adjust_index < 0)
+        return;
+    if (ui->position_debounce_source != 0) {
+        /* A drag that has not been sent yet is abandoned rather than sent
+         * after the stop: the finger has since asked for the opposite. */
+        g_source_remove(ui->position_debounce_source);
+        ui->position_debounce_source = 0;
+    }
+    emit_event(ui, PANEL_UI_STOP_ROOM, NULL, ui->room_adjust_index);
 }
 
 static void room_setpoint_changed(GtkRange *range, gpointer user_data)
@@ -772,6 +840,8 @@ static void open_room_sheet(PanelUi *ui, gint index)
                            entity->color_temperature);
     gtk_widget_set_visible(ui->room_setpoint_box,
                            entity->target_temperature);
+    gtk_widget_set_visible(ui->room_position_box, entity->position);
+    gtk_widget_set_visible(ui->room_stop_button, entity->stoppable);
 
     ui->changing_room_adjustment = TRUE;
     gtk_range_set_range(GTK_RANGE(ui->room_temperature_scale),
@@ -786,6 +856,14 @@ static void open_room_sheet(PanelUi *ui, gint index)
         gtk_range_set_round_digits(GTK_RANGE(ui->room_setpoint_scale),
                                    entity->temp_step < 1.0 ? 1 : 0);
         gtk_range_set_value(GTK_RANGE(ui->room_setpoint_scale), setpoint);
+    }
+    if (entity->position) {
+        /* A cover that has not answered yet opens at closed rather than in
+         * the middle: half open is a position somebody chose, and showing it
+         * before Home Assistant has said so would invite a drag that moves
+         * the blind to where the slider already claimed it was. */
+        gtk_range_set_value(GTK_RANGE(ui->room_position_scale),
+                            card->position >= 0 ? card->position : 0);
     }
     ui->changing_room_adjustment = FALSE;
     gtk_revealer_set_reveal_child(GTK_REVEALER(ui->room_sheet), TRUE);
@@ -1983,9 +2061,19 @@ static void draw_room_adjust(PanelUi *ui, cairo_t *cr, PangoLayout *layout,
  * and nothing else, and this line appears from about two cells up. */
 static gchar *card_reading(const PanelRoomCard *card)
 {
-    if (card->entity == NULL || !card->entity->target_temperature)
+    if (card->entity == NULL || !card->state_known)
         return NULL;
-    if (!card->state_known)
+
+    /* A blind says how far open it is, and where it cannot, it says which of
+     * the two ends it is at. ON and OFF are the fallback of last resort for
+     * everything else on this page and would be the wrong words here. */
+    if (g_strcmp0(card->entity->domain, "cover") == 0) {
+        if (card->position >= 0)
+            return g_strdup_printf("%d%%", card->position);
+        return g_strdup(card->active ? "OPEN" : "CLOSED");
+    }
+
+    if (!card->entity->target_temperature)
         return NULL;
 
     gboolean has_ambient = !isnan(card->ambient);
@@ -2457,6 +2545,7 @@ static void room_cards_rebuild(PanelUi *ui)
         card->temperature_max = entity != NULL ? entity->max_kelvin : 6500;
         card->setpoint = NAN;
         card->ambient = NAN;
+        card->position = -1;
         card->icon = g_strdup(
             placed->icon != NULL
                 ? placed->icon
@@ -2585,6 +2674,38 @@ static GtkWidget *room_adjust_sheet(PanelUi *ui)
                        FALSE, FALSE, 0);
     g_signal_connect(ui->room_setpoint_scale, "value-changed",
                      G_CALLBACK(room_setpoint_changed), ui);
+
+    /* A cover's percentage. The range is the same for every cover there is,
+     * so unlike the setpoint above nothing about it is set per card. */
+    ui->room_position_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
+    GtkWidget *position_header = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    GtkWidget *position_title = new_label("OPEN", "room-control-title");
+    ui->room_position_value = new_label("0%", "room-control-value");
+    gtk_widget_set_halign(position_title, GTK_ALIGN_START);
+    gtk_widget_set_halign(ui->room_position_value, GTK_ALIGN_END);
+    gtk_box_pack_start(GTK_BOX(position_header), position_title,
+                       TRUE, TRUE, 0);
+    gtk_box_pack_end(GTK_BOX(position_header), ui->room_position_value,
+                     FALSE, FALSE, 0);
+    ui->room_position_scale = gtk_scale_new_with_range(
+        GTK_ORIENTATION_HORIZONTAL, 0.0, 100.0, 1.0);
+    gtk_scale_set_draw_value(GTK_SCALE(ui->room_position_scale), FALSE);
+    gtk_widget_set_size_request(ui->room_position_scale, -1, 58);
+    add_css_class(ui->room_position_scale, "room-control-scale");
+    gtk_box_pack_start(GTK_BOX(ui->room_position_box), position_header,
+                       FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(ui->room_position_box),
+                       ui->room_position_scale, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(sheet), ui->room_position_box,
+                       FALSE, FALSE, 0);
+    g_signal_connect(ui->room_position_scale, "value-changed",
+                     G_CALLBACK(room_position_changed), ui);
+
+    ui->room_stop_button = new_button("STOP", "room-sheet-stop", 160, 62);
+    gtk_widget_set_halign(ui->room_stop_button, GTK_ALIGN_START);
+    gtk_box_pack_start(GTK_BOX(sheet), ui->room_stop_button, FALSE, FALSE, 0);
+    g_signal_connect(ui->room_stop_button, "clicked",
+                     G_CALLBACK(room_stop_clicked), ui);
 
     gtk_container_add(GTK_CONTAINER(revealer), sheet);
     ui->room_sheet = revealer;
@@ -2719,6 +2840,8 @@ void panel_ui_free(PanelUi *ui)
         g_source_remove(ui->temperature_debounce_source);
     if (ui->setpoint_debounce_source != 0)
         g_source_remove(ui->setpoint_debounce_source);
+    if (ui->position_debounce_source != 0)
+        g_source_remove(ui->position_debounce_source);
     if (ui->room_animation_tick != 0 && ui->room_area != NULL)
         gtk_widget_remove_tick_callback(ui->room_area,
                                         ui->room_animation_tick);
@@ -3062,6 +3185,7 @@ void panel_ui_install_styles(void)
         ".room-sheet-title{font-size:25px;font-weight:700;color:#f5f9ff}"
         ".room-sheet-subtitle{font-size:14px;color:#7f98b6}"
         ".room-sheet-close{font-size:12px;font-weight:700;color:#6fe7df;background:#122a37;border-color:#337078;border-radius:16px;box-shadow:none}"
+        ".room-sheet-stop{font-size:15px;font-weight:700;color:#ffd9d0;background:#3a1a17;border-color:#7a3128;border-radius:16px;box-shadow:none}"
         ".room-control-title{font-size:13px;font-weight:700;color:#8fa9c7}"
         ".room-control-value{font-size:18px;font-weight:700;color:#67e6de}"
         ".room-temperature-end{font-size:11px;font-weight:700;color:#647d9a}"
@@ -3461,6 +3585,8 @@ void panel_ui_set_room(PanelUi *ui, guint index, const PanelRoomState *state)
         card->setpoint = state->setpoint;
     if (!isnan(state->ambient))
         card->ambient = state->ambient;
+    if (state->position >= 0)
+        card->position = CLAMP(state->position, 0, 100);
 
     if (card->active != state->active || !card->state_known) {
         card->active = state->active;
@@ -3487,6 +3613,10 @@ void panel_ui_set_room(PanelUi *ui, guint index, const PanelRoomState *state)
         if (ui->setpoint_debounce_source == 0 && !isnan(card->setpoint)) {
             gtk_range_set_value(GTK_RANGE(ui->room_setpoint_scale),
                                 card->setpoint);
+        }
+        if (ui->position_debounce_source == 0 && card->position >= 0) {
+            gtk_range_set_value(GTK_RANGE(ui->room_position_scale),
+                                card->position);
         }
         ui->changing_room_adjustment = FALSE;
     }

@@ -83,13 +83,19 @@ class RidTests(unittest.TestCase):
 
 
 class GroupTests(unittest.TestCase):
-    """The six groups, and the order they are rendered in."""
+    """The groups, and the order they are rendered in."""
 
     def test_every_group_maps_to_one_domain(self) -> None:
         self.assertEqual(
             [group.domain for group in registry.GROUPS],
-            ["light", "switch", "media_player", "climate", "cover", "weather"],
+            ["light", "switch", "climate", "cover", "weather"],
         )
+
+    def test_a_retired_group_is_no_longer_offered(self) -> None:
+        """A panel plays from its source, so it never listed one twice."""
+        self.assertNotIn("media_player", registry.GROUP_DOMAINS)
+        self.assertIsNone(registry.group_by_slug("media_players"))
+        self.assertIn("media_player", registry.RETIRED_GROUP_DOMAINS)
 
     def test_a_group_is_found_by_its_form_slug(self) -> None:
         self.assertEqual(registry.group_by_slug("switches").domain, "switch")
@@ -279,7 +285,11 @@ class LimitTests(unittest.TestCase):
 
 
 class LabelTests(unittest.TestCase):
-    """Labels are edited by rid, and survive any script."""
+    """Labels are applied by rid, and survive any script.
+
+    No form asks for one any more, but a stored label is still read and still
+    preferred over the entity's own name, so the rule stays covered.
+    """
 
     def test_a_label_is_applied_by_rid(self) -> None:
         entries = registry.apply_names(

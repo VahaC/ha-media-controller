@@ -18,6 +18,13 @@ CONTROL_COLOR_TEMP = "color_temp"
 # climate card; a client that does not know the name ignores it, which is
 # what lets one card type ship at a time.
 CONTROL_TARGET_TEMPERATURE = "target_temperature"
+# How far open something is, as a percentage a card can drag. Added in
+# contract version 8 with the cover card, alongside `stop`.
+CONTROL_POSITION = "position"
+# Halting something that is moving. It is an action rather than a value, and
+# it is the one control a blind needs that no other card type has: a blind
+# takes seconds to travel and is stopped half way on purpose.
+CONTROL_STOP = "stop"
 
 # Canonical order, so that two equal control sets always compare equal.
 CONTROL_ORDER = (
@@ -25,6 +32,8 @@ CONTROL_ORDER = (
     CONTROL_BRIGHTNESS,
     CONTROL_COLOR_TEMP,
     CONTROL_TARGET_TEMPERATURE,
+    CONTROL_POSITION,
+    CONTROL_STOP,
 )
 
 # Keys of the capability mapping normalize_capabilities returns.
@@ -61,12 +70,14 @@ _LIST_ATTRIBUTES = frozenset({"supported_color_modes", "hvac_modes"})
 LIGHT_DOMAIN = "light"
 SWITCH_DOMAIN = "switch"
 CLIMATE_DOMAIN = "climate"
+COVER_DOMAIN = "cover"
 
 # The domains a client can draw a card for today. Every other domain a user
-# may put in the registry — media_player, cover, weather — is carried with an
-# empty control list until its card exists, and a client ignores an element
-# whose domain it cannot draw. See docs/CONTRACT.md, Registry entries.
-CARD_DOMAINS = (LIGHT_DOMAIN, SWITCH_DOMAIN, CLIMATE_DOMAIN)
+# may put in the registry — weather — is carried with an empty control list
+# until its card exists, and a client ignores an element whose domain it
+# cannot draw. So is a domain that is no longer a group at all.
+# See docs/CONTRACT.md, Registry entries.
+CARD_DOMAINS = (LIGHT_DOMAIN, SWITCH_DOMAIN, CLIMATE_DOMAIN, COVER_DOMAIN)
 
 # Every Home Assistant colour mode except these carries a brightness channel,
 # so brightness is derived from the set difference rather than an allow-list
@@ -89,6 +100,14 @@ CLIMATE_TURN_ON = 256
 # The mode a thermostat is in when it is off. A climate entity that lists it
 # can be turned off and on again, which is what `toggle` means here.
 HVAC_MODE_OFF = "off"
+
+# Bits of Home Assistant's `CoverEntityFeature`, written out for the same
+# reason as the climate ones above. They are part of the public cover API and
+# have not moved.
+COVER_OPEN = 1
+COVER_CLOSE = 2
+COVER_SET_POSITION = 4
+COVER_STOP = 8
 
 # Used only when a thermostat does not report its own bounds, which a real
 # one always does. They are the Home Assistant defaults, and like every
@@ -311,6 +330,8 @@ def normalize_capabilities(
         return {CAP_CONTROLS: (CONTROL_TOGGLE,)}
     if domain == CLIMATE_DOMAIN:
         return _climate_capabilities(attributes or {})
+    if domain == COVER_DOMAIN:
+        return _cover_capabilities(attributes or {})
     if domain != LIGHT_DOMAIN:
         return {CAP_CONTROLS: ()}
 
@@ -399,6 +420,36 @@ def _climate_capabilities(attributes: Mapping[str, Any]) -> dict[str, Any]:
 
     capabilities[CAP_CONTROLS] = order_controls(controls)
     return capabilities
+
+
+def _cover_capabilities(attributes: Mapping[str, Any]) -> dict[str, Any]:
+    """Convert a cover's attributes to the controls a card may draw.
+
+    Three of them, and each on the feature bit that names it:
+
+    * `toggle` needs **both** open and close. `cover.toggle` decides from the
+      current state which of the two to call, so a blind that can only be
+      opened would be given a control that works once.
+    * `position` needs `SET_POSITION`, the percentage a card drags. A cover
+      without it still opens and closes; it simply has no half way.
+    * `stop` needs `STOP`. It is what makes a travelling blind stoppable, and
+      a cover that reports no stop feature is left without the control rather
+      than with a button Home Assistant would refuse.
+
+    A cover reports no bounds: `current_position` is a percentage by
+    definition, so unlike a thermostat there is nothing to send alongside.
+    """
+    features = _integer(attributes.get("supported_features"))
+
+    controls: list[str] = []
+    if features & COVER_OPEN and features & COVER_CLOSE:
+        controls.append(CONTROL_TOGGLE)
+    if features & COVER_SET_POSITION:
+        controls.append(CONTROL_POSITION)
+    if features & COVER_STOP:
+        controls.append(CONTROL_STOP)
+
+    return {CAP_CONTROLS: order_controls(controls)}
 
 
 def capability_signature(attributes: Mapping[str, Any] | None) -> tuple[Any, ...]:

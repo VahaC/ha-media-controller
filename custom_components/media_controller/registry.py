@@ -65,18 +65,24 @@ class RegistryGroup:
     domain: str
 
 
-# In payload order, which is also the order the form lists them in. Only the
-# first three have cards in any client today; the rest are accepted so that
-# the registry is already carrying them when a card is written, and a client
+# In payload order. The form has a reading order of its own. Only the first
+# three have cards in any client today; the rest are accepted so that the
+# registry is already carrying them when a card is written, and a client
 # ignores an element whose domain it cannot draw.
 GROUPS: tuple[RegistryGroup, ...] = (
     RegistryGroup("lights", "light"),
     RegistryGroup("switches", "switch"),
-    RegistryGroup("media_players", "media_player"),
     RegistryGroup("climate", "climate"),
     RegistryGroup("covers", "cover"),
     RegistryGroup("weather", "weather"),
 )
+
+# Groups that were offered once and are not any more. Their elements are
+# retired the next time a panel is saved: nothing can edit them, and one that
+# stayed would keep a place in the registry that nobody could reach.
+# `media_player` was dropped because a panel already has a media player of its
+# own — its source — chosen on the same page and drawn by the player card.
+RETIRED_GROUP_DOMAINS: tuple[str, ...] = ("media_player",)
 
 GROUP_DOMAINS: tuple[str, ...] = tuple(group.domain for group in GROUPS)
 _GROUP_ORDER: dict[str, int] = {
@@ -285,10 +291,15 @@ def apply_names(
     entries: Iterable[RegistryEntry],
     names: Mapping[str, str],
 ) -> list[RegistryEntry]:
-    """Apply the labels a form submitted, keyed by rid.
+    """Apply labels to elements, keyed by rid.
 
-    An element the mapping does not mention is left alone, so a form that
-    showed only one group cannot clear the labels of another.
+    An element the mapping does not mention is left alone, so a caller that
+    knows about some of the registry cannot clear the labels of the rest.
+
+    Nothing in the flows calls this today: the settings page stopped asking
+    for a label, and a tile is named as Home Assistant names its entity. A
+    stored label is still read, still sent and still preferred over that name,
+    so this is what writes one when something asks for labels again.
     """
     updated: list[RegistryEntry] = []
     for entry in entries:

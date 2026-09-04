@@ -27,7 +27,7 @@ with the code it is showing.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 import logging
 import time
 from typing import Any
@@ -68,7 +68,6 @@ from .const import (
     ZEROCONF_PROP_PANEL_ID,
     ZEROCONF_PROP_PROFILE,
     panel_unique_id,
-    registry_name_key,
     slot_entity_key,
     slot_label_key,
 )
@@ -90,9 +89,9 @@ from .profiles import (
 )
 from .registry import (
     GROUPS,
+    RETIRED_GROUP_DOMAINS,
     RegistryEntry,
     RegistryGroup,
-    apply_names,
     group_by_slug,
     group_selection,
     replace_group,
@@ -179,7 +178,6 @@ FORM_GROUP_ORDER: tuple[str, ...] = (
     "weather",
     "lights",
     "switches",
-    "media_players",
     "climate",
     "covers",
 )
@@ -205,12 +203,11 @@ class RegistryFlowMixin:
     of its own domain, so adding a light and a thermostat is one visit and one
     Submit; nothing here opens a dialog on top of a dialog.
 
-    Two things follow from `rid` being the identity of an element rather than
-    of the entity behind it. Deselecting an entity **deletes** its element and
-    retires its rid, which is why `_retired` travels with the registry and is
-    stored beside it; and a label is edited by rid, so renaming an entity in
-    Home Assistant never detaches the label from the tile. The label boxes are
-    the tail of the same form, one per element that already exists.
+    `rid` is the identity of an element rather than of the entity behind it,
+    so deselecting an entity **deletes** its element and retires its rid; that
+    is why `_retired` travels with the registry and is stored beside it. A
+    tile is labelled by the entity's own Home Assistant name, and nothing here
+    asks for a second one.
 
     A flow with more to ask than the registry adds its own fields through
     `_registry_extra_fields`, rather than putting them behind a menu.
@@ -255,21 +252,12 @@ class RegistryFlowMixin:
                     domain=group.domain, multiple=True
                 )
             )
-        for entry in self._form_entries():
-            fields[vol.Optional(registry_name_key(entry.rid))] = (
-                selector.TextSelector()
-            )
 
         suggested: dict[str, Any] = {
             **self._registry_extra_suggested(),
             **{
                 group.slug: group_selection(self._registry, group.domain)
                 for group in _form_groups()
-            },
-            **{
-                registry_name_key(entry.rid): entry.name
-                for entry in self._registry
-                if entry.name
             },
         }
         return self.async_show_form(
@@ -288,17 +276,21 @@ class RegistryFlowMixin:
     ) -> str | None:
         """Rewrite every group from one submission.
 
-        A field the form did not send back is an emptied one: Home Assistant
-        drops an optional field that has no value, so a cleared picker and a
-        cleared label box both arrive as an absence. Every box the form put on
-        screen is therefore read as blank unless the submission says
-        otherwise. Nothing is kept until every group has been rewritten, so
-        the limit is checked against the whole registry.
+        A group the form did not send back is an emptied one: Home Assistant
+        drops an optional field that has no value, and clearing the picker is
+        the only way to empty a group. Nothing is kept until every group has
+        been rewritten, so the limit is checked against the whole registry.
         """
-        names = {entry.rid: "" for entry in self._form_entries()}
-        names.update(_submitted_names(user_input))
-        registry = self._registry
-        retired = list(self._retired)
+        registry = [
+            entry
+            for entry in self._registry
+            if entry.domain not in RETIRED_GROUP_DOMAINS
+        ]
+        retired = list(self._retired) + [
+            entry.rid
+            for entry in self._registry
+            if entry.domain in RETIRED_GROUP_DOMAINS
+        ]
         for group in GROUPS:
             registry, newly_retired = replace_group(
                 registry,
@@ -311,7 +303,7 @@ class RegistryFlowMixin:
         if len(registry) > self._profile.entity_limit:
             return "too_many_entities"
 
-        self._registry = apply_names(registry, names)
+        self._registry = registry
         self._retired = retired
         return None
 
@@ -346,24 +338,8 @@ class RegistryFlowMixin:
             "remaining": str(
                 max(self._profile.entity_limit - len(self._registry), 0)
             ),
-            "legend": _registry_legend(self._form_entries()),
             **self._registry_extra_placeholders(),
         }
-
-    @callback
-    def _form_entries(self) -> list[RegistryEntry]:
-        """Return the elements in the order the form lists them."""
-        ordered: list[RegistryEntry] = []
-        for group in _form_groups():
-            ordered.extend(
-                entry
-                for entry in self._registry
-                if entry.domain == group.domain
-            )
-        listed = {entry.rid for entry in ordered}
-        return ordered + [
-            entry for entry in self._registry if entry.rid not in listed
-        ]
 
     @callback
     def _stored_registry(self) -> list[dict[str, Any]]:
@@ -377,30 +353,6 @@ class RegistryFlowMixin:
             entry.as_stored()
             for entry in seed_registry_ids(self.hass, self._registry)
         ]
-
-
-def _submitted_names(user_input: Mapping[str, Any]) -> dict[str, str]:
-    """Read the label fields of the registry form, keyed by rid."""
-    prefix = registry_name_key("")
-    return {
-        key[len(prefix):]: str(value or "")
-        for key, value in user_input.items()
-        if key.startswith(prefix)
-    }
-
-
-def _registry_legend(entries: Iterable[RegistryEntry]) -> str:
-    """Say which entity each label field belongs to.
-
-    The label fields are keyed by rid, because that is what survives an entity
-    being renamed, and Home Assistant shows a field key it has no translation
-    for verbatim. This is what makes those keys readable.
-    """
-    lines = [
-        f"- `{entry.rid}` — {entry.target_entity_id}"
-        for entry in entries
-    ]
-    return "\n".join(lines) if lines else "*Nothing in this group yet.*"
 
 
 def _player_schema() -> vol.Schema:

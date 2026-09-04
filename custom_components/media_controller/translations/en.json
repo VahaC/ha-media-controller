@@ -57,12 +57,11 @@
       },
       "entities": {
         "title": "Room entities",
-        "description": "{profile} draws one tile for every entity listed here. Each list both adds and removes: an entity you clear is deleted from the registry and does not come back with the same identity. {remaining} of {entity_limit} places are free.\n\nEach label box is named after the element's stable ID, because that is what survives an entity being renamed in Home Assistant. Leave one empty to use the entity's own name. An entity added just now gets its label box the next time this page is opened.\n\n{legend}",
+        "description": "{profile} draws one tile for every entity listed here, named as Home Assistant names it. Each list both adds and removes: an entity you clear is deleted and does not come back with the same identity. {remaining} of {entity_limit} places are free.",
         "data": {
           "weather": "Weather",
           "lights": "Lights",
           "switches": "Switches",
-          "media_players": "Media players",
           "climate": "Climate devices",
           "covers": "Covers"
         }
@@ -119,13 +118,12 @@
       },
       "panel_init": {
         "title": "Panel options",
-        "description": "Everything {name} is configured with, on one page. It is a {profile} and draws one tile for every entity listed below; {remaining} of {entity_limit} places are free. Each list both adds and removes: an entity you clear is deleted from the registry and does not come back with the same identity.\n\nEach label box is named after the element's stable ID, because that is what survives an entity being renamed in Home Assistant. Leave one empty to use the entity's own name. An entity added just now gets its label box the next time this page is opened.\n\n{legend}",
+        "description": "Everything {name} is configured with, on one page. It is a {profile} and draws one tile for every entity listed below, named as Home Assistant names it; {remaining} of {entity_limit} places are free. Each list both adds and removes: an entity you clear is deleted and does not come back with the same identity.",
         "data": {
           "controller_entry_id": "Media player source",
           "weather": "Weather",
           "lights": "Lights",
           "switches": "Switches",
-          "media_players": "Media players",
           "climate": "Climate devices",
           "covers": "Covers"
         }

@@ -128,11 +128,6 @@ def slot_label_key(index: int) -> str:
     return f"slot_{index}_label"
 
 
-def registry_name_key(rid: str) -> str:
-    """Return the config-flow field name holding one element's label."""
-    return f"name_{rid}"
-
-
 def slot_translation_key(index: int) -> str:
     """Return the entity translation key of a slot proxy."""
     return f"slot_{index}"

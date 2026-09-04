@@ -23,6 +23,8 @@ static void read_controls(JsonArray *controls, PanelEntity *entity)
     entity->brightness = FALSE;
     entity->color_temperature = FALSE;
     entity->target_temperature = FALSE;
+    entity->position = FALSE;
+    entity->stoppable = FALSE;
     if (controls == NULL)
         return;
 
@@ -38,6 +40,10 @@ static void read_controls(JsonArray *controls, PanelEntity *entity)
             entity->color_temperature = TRUE;
         else if (g_str_equal(control, "target_temperature"))
             entity->target_temperature = TRUE;
+        else if (g_str_equal(control, "position"))
+            entity->position = TRUE;
+        else if (g_str_equal(control, "stop"))
+            entity->stoppable = TRUE;
     }
 }
 

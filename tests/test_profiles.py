@@ -33,11 +33,12 @@ class CapabilityTests(unittest.TestCase):
         self.assertNotIn("min_kelvin", capabilities)
 
     def test_a_domain_with_no_card_yet_gets_no_controls(self) -> None:
-        # The first three are registry groups that have no card written yet,
-        # so they are already there when one is; `sensor` is not a group at
-        # all and stands for any domain that reaches this rule by accident.
-        # Both must produce no controls rather than a toggle nothing honours.
-        for domain in ("media_player", "cover", "weather", "sensor"):
+        # `weather` is the one registry group left with no card written yet,
+        # so it is already there when one is; `media_player` is a group no
+        # longer offered and `sensor` was never one, and both stand for any
+        # domain that reaches this rule by accident. All must produce no
+        # controls rather than a toggle nothing honours.
+        for domain in ("media_player", "weather", "sensor"):
             with self.subTest(domain=domain):
                 self.assertEqual(
                     profiles.normalize_capabilities(domain, {})["controls"],
@@ -45,11 +46,55 @@ class CapabilityTests(unittest.TestCase):
                 )
 
     def test_the_drawable_domains_are_named(self) -> None:
-        # Contract version 7 adds the third. Each remaining group joins this
-        # tuple in a version of its own.
+        # Contract version 7 adds the third and version 8 the fourth. Each
+        # remaining group joins this tuple in a version of its own.
         self.assertEqual(
-            profiles.CARD_DOMAINS, ("light", "switch", "climate")
+            profiles.CARD_DOMAINS, ("light", "switch", "climate", "cover")
         )
+
+    def test_a_cover_that_opens_closes_stops_and_positions(self) -> None:
+        capabilities = profiles.normalize_capabilities(
+            "cover", {"supported_features": 1 | 2 | 4 | 8}
+        )
+        self.assertEqual(
+            capabilities["controls"], ("toggle", "position", "stop")
+        )
+        # A position is a percentage, so a cover sends no bounds of its own.
+        self.assertNotIn("min_temp", capabilities)
+        self.assertNotIn("min_kelvin", capabilities)
+
+    def test_a_cover_that_only_opens_cannot_toggle(self) -> None:
+        # `cover.toggle` decides between opening and closing from the state,
+        # so a cover that cannot do both would be given a control that works
+        # once and then refuses.
+        capabilities = profiles.normalize_capabilities(
+            "cover", {"supported_features": 1}
+        )
+        self.assertEqual(capabilities["controls"], ())
+
+    def test_a_cover_without_stop_or_position_only_toggles(self) -> None:
+        capabilities = profiles.normalize_capabilities(
+            "cover", {"supported_features": 1 | 2}
+        )
+        self.assertEqual(capabilities["controls"], ("toggle",))
+
+    def test_a_cover_that_reports_no_features_has_no_controls(self) -> None:
+        for attributes in ({}, {"supported_features": None}):
+            with self.subTest(attributes=attributes):
+                self.assertEqual(
+                    profiles.normalize_capabilities("cover", attributes)[
+                        "controls"
+                    ],
+                    (),
+                )
+
+    def test_a_position_only_cover_keeps_its_slider(self) -> None:
+        # An awning that reports SET_POSITION and neither open nor close is
+        # unusual, but the slider is still the whole of what it can do.
+        capabilities = profiles.normalize_capabilities(
+            "cover", {"supported_features": 4}
+        )
+        self.assertEqual(capabilities["controls"], ("position",))
 
     def test_onoff_light_has_no_brightness(self) -> None:
         capabilities = profiles.normalize_capabilities(
