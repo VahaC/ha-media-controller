@@ -15,7 +15,7 @@
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/VahaC/ha-media-controller/issues",
   "requirements": [],
-  "version": "1.4.3-dev",
+  "version": "1.4.4-dev",
   "zeroconf": [
     "_media-controller._tcp.local."
   ]

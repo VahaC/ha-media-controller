@@ -3791,6 +3791,15 @@ gint64 panel_ui_room_forecast_at(PanelUi *ui, guint index)
                                                      index))->forecast_at;
 }
 
+void panel_ui_touch_room_forecast(PanelUi *ui, guint index)
+{
+    g_return_if_fail(ui->room_cards != NULL);
+    g_return_if_fail(index < ui->room_cards->len);
+
+    ((PanelRoomCard *)g_ptr_array_index(ui->room_cards, index))->forecast_at =
+        g_get_monotonic_time();
+}
+
 /* Two stack children answer to one page name. "player" is what navigation
  * emits, what Home Assistant sends, and what the panel reports; which of the
  * two is shown is the skin's business and nobody else's. */

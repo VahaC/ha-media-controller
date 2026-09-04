@@ -169,6 +169,22 @@ gboolean home_assistant_client_call_service(HomeAssistantClient *client,
     return started;
 }
 
+/* Like the above, but asking for the service's response data: without
+ * `?return_response` Home Assistant answers a bare `[]`, however much
+ * forecast it holds. */
+gboolean home_assistant_client_call_service_response(
+    HomeAssistantClient *client, const gchar *domain, const gchar *service,
+    const gchar *json, HomeAssistantResponse callback, gpointer user_data)
+{
+    gchar *url = g_strdup_printf("%s/api/services/%s/%s?return_response",
+                                 client->base_url, domain, service);
+    gboolean started = send_request(client, "POST", url, json,
+                                    G_PRIORITY_DEFAULT, callback, user_data,
+                                    NULL);
+    g_free(url);
+    return started;
+}
+
 gboolean home_assistant_client_post_path(HomeAssistantClient *client,
                                          const gchar *path,
                                          const gchar *json,

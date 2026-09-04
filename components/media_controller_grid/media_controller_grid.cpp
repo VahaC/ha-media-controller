@@ -958,6 +958,15 @@ std::string MediaControllerGrid::forecast_request() const {
 }
 
 void MediaControllerGrid::apply_forecast(const std::string &body) {
+  /* With ?return_response the answer wraps per-entity forecasts under
+   * "service_response"; without it the answer is a bare empty list. Each
+   * element reads the forecast that follows its own name under that block,
+   * so a stale "forecast" attribute on some other member never reads as
+   * the forecast. */
+  size_t scope = body.find("\"service_response\"");
+  if (scope == std::string::npos)
+    scope = 0;
+
   for (auto &entry : this->entries_) {
     if (entry.domain != DOMAIN_WEATHER)
       continue;
@@ -965,7 +974,7 @@ void MediaControllerGrid::apply_forecast(const std::string &body) {
     /* The answer is keyed by entity ID, so each element reads the forecast
      * that follows its own name rather than the first array in the body. */
     const std::string needle = "\"" + entry.entity + "\"";
-    const size_t named = body.find(needle);
+    const size_t named = body.find(needle, scope);
     if (named == std::string::npos)
       continue;
     const size_t listed = body.find("\"forecast\"", named);

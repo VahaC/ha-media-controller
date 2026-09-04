@@ -1200,7 +1200,10 @@ script:
                      !id(pending_forecast_body).empty();
           then:
             - http_request.post:
-                url: "${ha_url}/api/services/weather/get_forecasts"
+                # -- With the response asked for: without ?return_response
+                # -- Home Assistant answers a bare empty list, however much
+                # -- forecast it holds. --
+                url: "${ha_url}/api/services/weather/get_forecasts?return_response"
                 request_headers:
                   Authorization: !lambda return id(auth_header).c_str();
                   Content-Type: "application/json"

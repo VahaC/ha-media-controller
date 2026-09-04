@@ -133,6 +133,9 @@ void panel_ui_set_room(PanelUi *ui, guint index, const PanelRoomState *state);
 void panel_ui_set_room_forecast(PanelUi *ui, guint index,
                                 const PanelWeatherDay *days, guint count);
 gint64 panel_ui_room_forecast_at(PanelUi *ui, guint index);
+/* Marks a forecast fetch as attempted without changing the rows: a failed
+ * request backs off for the interval rather than retrying every second. */
+void panel_ui_touch_room_forecast(PanelUi *ui, guint index);
 void panel_ui_show_page(PanelUi *ui, const gchar *page, const gchar *title);
 /* Chooses how the whole interface is drawn, not only the player page: the
  * navigation bar and the room page follow the skin too. Safe to call before

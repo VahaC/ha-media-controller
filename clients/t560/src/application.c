@@ -1255,37 +1255,54 @@ typedef struct {
     gchar *entity;
 } ForecastRequest;
 
-/* The first "forecast" array anywhere under this answer. The service wraps
- * it per entity — {"weather.home": {"forecast": [...]}} — and the entity a
- * request named is the only one this panel looks for, so the first array
- * found is the answer. */
-static JsonArray *find_forecast_array(JsonObject *object)
+/* The "forecast" array for one entity in a get_forecasts answer. The answer
+ * wraps it per entity — under "service_response" when ?return_response was
+ * asked for — so the entity a request named is looked up by name rather
+ * than taking the first array found: a stale "forecast" attribute on some
+ * other member must never read as the forecast. */
+static JsonArray *find_forecast_array(JsonObject *object, const gchar *entity)
 {
-    GList *members = json_object_get_members(object);
+    JsonObject *wrapping = json_optional_object(object, "service_response");
     JsonArray *found = NULL;
 
-    for (GList *item = members; item != NULL && found == NULL;
-         item = item->next) {
-        JsonNode *node = json_object_get_member(object, item->data);
-        if (node == NULL)
-            continue;
-        if (JSON_NODE_HOLDS_ARRAY(node) &&
-            g_strcmp0(item->data, "forecast") == 0) {
-            found = json_node_get_array(node);
-        } else if (JSON_NODE_HOLDS_OBJECT(node)) {
-            found = find_forecast_array(json_node_get_object(node));
-        }
+    if (wrapping != NULL) {
+        JsonObject *named = json_optional_object(wrapping, entity);
+        if (named != NULL)
+            found = json_optional_array(named, "forecast");
     }
-    g_list_free(members);
+    if (found == NULL) {
+        JsonObject *named = json_optional_object(object, entity);
+        if (named != NULL)
+            found = json_optional_array(named, "forecast");
+    }
+    if (found == NULL) {
+        GList *members = json_object_get_members(object);
+
+        for (GList *item = members; item != NULL && found == NULL;
+             item = item->next) {
+            JsonNode *node = json_object_get_member(object, item->data);
+            if (node == NULL)
+                continue;
+            if (JSON_NODE_HOLDS_ARRAY(node) &&
+                g_strcmp0(item->data, "forecast") == 0) {
+                found = json_node_get_array(node);
+            } else if (JSON_NODE_HOLDS_OBJECT(node)) {
+                found = find_forecast_array(json_node_get_object(node),
+                                            entity);
+            }
+        }
+        g_list_free(members);
+    }
     return found;
 }
 
 /* The coming days out of one forecast answer. The first entry is today,
  * which the card already shows as its current reading, so the rows start
  * with the day after it — as many as there are data and room for. */
-static guint collect_forecast_days(JsonObject *root, PanelWeatherDay *days)
+static guint collect_forecast_days(JsonObject *root, const gchar *entity,
+                                     PanelWeatherDay *days)
 {
-    JsonArray *forecast = find_forecast_array(root);
+    JsonArray *forecast = find_forecast_array(root, entity);
     guint count = 0;
 
     if (forecast == NULL)
@@ -1336,30 +1353,58 @@ static void forecast_finished(guint status_code, GBytes *body,
     PanelApplication *application = request->application;
 
     application->forecast_pending = FALSE;
-    if (error == NULL && status_code == 200 && body != NULL &&
-        application->ui != NULL) {
-        gsize length = 0;
-        const gchar *data = g_bytes_get_data(body, &length);
-        JsonParser *parser = json_parser_new();
+    /* A rebuild in between may have moved the cards: only the card that
+     * still names this entity may keep the answer — or the backoff below,
+     * which stops a failing entity from being asked again every second. */
+    if (application->ui != NULL) {
+        const PanelEntity *entity =
+            panel_ui_card_entity(application->ui, request->index);
 
-        if (json_parser_load_from_data(parser, data, (gssize)length, NULL) &&
-            JSON_NODE_HOLDS_OBJECT(json_parser_get_root(parser))) {
-            PanelWeatherDay days[PANEL_WEATHER_FORECAST_MAX];
-            guint count = collect_forecast_days(
-                json_node_get_object(json_parser_get_root(parser)), days);
+        if (entity != NULL && g_strcmp0(entity->entity, request->entity) == 0) {
+            if (error == NULL && status_code == 200 && body != NULL) {
+                gsize length = 0;
+                const gchar *data = g_bytes_get_data(body, &length);
+                JsonParser *parser = json_parser_new();
+                gboolean parsed =
+                    json_parser_load_from_data(parser, data, (gssize)length,
+                                               NULL) &&
+                    JSON_NODE_HOLDS_OBJECT(json_parser_get_root(parser));
 
-            /* A rebuild in between may have moved the cards: only the card
-             * that still names this entity may keep the answer. */
-            if (count > 0) {
-                const PanelEntity *entity = panel_ui_card_entity(
-                    application->ui, request->index);
-                if (entity != NULL &&
-                    g_strcmp0(entity->entity, request->entity) == 0)
-                    panel_ui_set_room_forecast(application->ui,
-                                               request->index, days, count);
+                if (parsed) {
+                    PanelWeatherDay days[PANEL_WEATHER_FORECAST_MAX];
+                    guint count = collect_forecast_days(
+                        json_node_get_object(json_parser_get_root(parser)),
+                        request->entity, days);
+
+                    if (count > 0) {
+                        panel_ui_set_room_forecast(application->ui,
+                                                   request->index, days,
+                                                   count);
+                    } else {
+                        g_warning("No daily forecast for %s in the answer",
+                                  request->entity);
+                        panel_ui_touch_room_forecast(application->ui,
+                                                     request->index);
+                    }
+                } else {
+                    g_warning("Unreadable forecast answer for %s",
+                              request->entity);
+                    panel_ui_touch_room_forecast(application->ui,
+                                                 request->index);
+                }
+                g_object_unref(parser);
+            } else {
+                gchar *reason =
+                    error != NULL
+                        ? g_strdup(error->message)
+                        : g_strdup_printf("Home Assistant HTTP %u",
+                                          status_code);
+                g_warning("Forecast request for %s failed: %s",
+                          request->entity, reason);
+                g_free(reason);
+                panel_ui_touch_room_forecast(application->ui, request->index);
             }
         }
-        g_object_unref(parser);
     }
     g_free(request->entity);
     g_free(request);
@@ -1394,9 +1439,11 @@ static void maybe_poll_forecast(PanelApplication *application, gint64 now)
         request->application = application;
         request->index = i;
         request->entity = g_strdup(entity->entity);
-        if (home_assistant_client_call_service(application->client, "weather",
-                                               "get_forecasts", json,
-                                               forecast_finished, request)) {
+        /* With the response asked for: without ?return_response Home
+         * Assistant answers a bare empty list. */
+        if (home_assistant_client_call_service_response(
+                application->client, "weather", "get_forecasts", json,
+                forecast_finished, request)) {
             application->forecast_pending = TRUE;
         } else {
             g_free(request->entity);

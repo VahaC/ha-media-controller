@@ -18,11 +18,16 @@ gboolean home_assistant_client_get_state(HomeAssistantClient *client,
                                          gpointer user_data,
                                          GDestroyNotify user_data_destroy);
 gboolean home_assistant_client_call_service(HomeAssistantClient *client,
-                                            const gchar *domain,
-                                            const gchar *service,
-                                            const gchar *json,
-                                            HomeAssistantResponse callback,
-                                            gpointer user_data);
+                                             const gchar *domain,
+                                             const gchar *service,
+                                             const gchar *json,
+                                             HomeAssistantResponse callback,
+                                             gpointer user_data);
+/* A service call that answers with the service's response data, such as
+ * weather.get_forecasts. Without it the answer is a bare empty list. */
+gboolean home_assistant_client_call_service_response(
+    HomeAssistantClient *client, const gchar *domain, const gchar *service,
+    const gchar *json, HomeAssistantResponse callback, gpointer user_data);
 /* The pairing request is the only one a panel makes before it has a token,
  * so a NULL token is valid and simply omits the Authorization header. */
 gboolean home_assistant_client_post_path(HomeAssistantClient *client,
