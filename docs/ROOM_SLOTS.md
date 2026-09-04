@@ -317,16 +317,18 @@ of panel needed a new `profile` record and nothing else.
    configured this becomes `new_controller`, which asks for a Music Assistant
    player and builds one, so that pairing the first panel is still one
    sitting.
-4. **`entities`** — the registry editor. A menu of the six groups plus
-   **Done**, with a running count of what is configured and how much of the
-   limit is left. Choosing **Done** creates the entry, which is what releases
-   the token; an empty registry is a valid answer and the panel simply draws
-   no room controls until entities are added.
-5. **`group`** — the form behind every group. One multi-entity selector
-   restricted to that group's domain, which both adds and removes, and one
-   label field per element already in the group. All six groups render this
-   same step, so they cost one form and one set of strings rather than six of
-   each; which group is being edited travels in the flow.
+4. **`entities`** — the registry editor, and one form. Every group is a
+   multi-entity selector of its own domain, listed in reading order — Weather,
+   Lights, Switches, Media players, Climate devices, Covers — and each both
+   adds and removes. Below them is one label field per element that already
+   exists. Submitting creates the entry, which is what releases the token; an
+   empty registry is a valid answer and the panel simply draws no room
+   controls until entities are added.
+
+There is no menu and no step per group. A registry has no fixed size, but a
+selector does not either, so all six fit one page, and the whole registry is
+rewritten from one submission: a group the form does not send back was
+emptied, which is also how Home Assistant reports a cleared field.
 
 The label fields are keyed by `rid` rather than by entity ID, so a label stays
 attached to its tile when the entity behind it is renamed. Home Assistant has
@@ -334,9 +336,13 @@ no translation for a key it has never seen, so it shows `name_<rid>` verbatim,
 and the step description carries a legend saying which entity each `rid` is.
 
 `Add device` offers the same thing manually, for a panel that cannot announce
-itself, with the panel ID typed in. Editing a panel later offers a menu of the
-source choice and the registry editor; the device type is not offered again,
-because it decides the registry limit and how a stale build is updated.
+itself, with the panel ID typed in. Editing a panel later opens one page — step
+`panel_init` — carrying the source choice above the same registry form; the
+device type is not offered again, because it decides the registry limit and
+how a stale build is updated. The step is `panel_init` rather than `init` so
+that it can be titled apart from the source options flow, and it is a real
+step because Home Assistant re-runs the shown step by name when the dialog is
+opened.
 
 ## Capability normalization
 

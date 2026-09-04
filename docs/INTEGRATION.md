@@ -95,8 +95,9 @@ discovered device: press *Configure* and the form asks, in this order:
    showing a code from an earlier attempt. Nothing is stored and nothing else
    is asked until it has answered, and a wrong code can simply be retyped.
 2. **which media player source it plays from**;
-3. **its room entities**, in a menu of groups it can add to and remove from
-   freely.
+3. **its room entities**, on one page: a list per group — Weather, Lights,
+   Switches, Media players, Climate devices, Covers — that it can add to and
+   remove from freely.
 
 Finishing the form is what releases the access token: the panel collects it on
 its next poll, a few seconds later, and switches into normal operation. Nothing
@@ -116,21 +117,20 @@ claim the same Home Assistant device.
 
 Each panel is its own config entry and its own Home Assistant device, with its
 own config sensor, linked to the source it reads. *Configure* on a panel device
-offers a menu of the source choice and the room entities, so moving a panel to
-another Music Assistant player is a remapping like any other: the device keeps
-its token, its device, and its entity IDs.
+opens one page carrying the source choice and every room-entity list, so
+moving a panel to another Music Assistant player is a remapping like any
+other: the device keeps its token, its device, and its entity IDs.
 
 ### Room entities
 
-A panel's room controls are a list with no fixed length. *Configure* → *Room
-entities* shows the six groups — Lights, Switches, Media players, Climate,
-Covers, Weather — with a running count of what is configured. Opening a group
-shows one selector holding everything in it: adding an entity to that selector
-adds a tile, clearing one removes it, and there is no numbered slot to run out
-of. A label may be typed for each; leave it empty and the entity's own name is
-used.
+A panel's room controls are a list with no fixed length. *Configure* shows
+all six groups on one page — Weather, Lights, Switches, Media players, Climate
+devices, Covers — each a selector holding everything in it: adding an entity
+to one adds a tile, clearing one removes it, and there is no numbered slot to
+run out of. One *Submit* saves the lot. A label may be typed for each entity
+below the groups; leave it empty and the entity's own name is used.
 
-Only the group's size ceiling comes from the device type: 100 entities for a
+Only the ceiling comes from the device type: 100 entities for a
 tablet, 64 for a paired ESP32. Only the tablet offers colour temperature.
 
 Lights, switches and climate have cards on both panels. A thermostat is

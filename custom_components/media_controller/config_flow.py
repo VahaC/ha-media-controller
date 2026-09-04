@@ -48,7 +48,6 @@ from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 from .const import (
     CONF_CONTROLLER_ENTRY_ID,
     CONF_ENTITIES,
-    CONF_GROUP_ENTITIES,
     CONF_PAIRING_CODE,
     CONF_REFRESH_TOKEN_ID,
     CONF_RETIRED_RIDS,
@@ -173,204 +172,198 @@ def _slot_fields(profile: ClientProfile) -> dict[Any, Any]:
     return fields
 
 
-# The registry menu's last option: it is not a group, it finishes the editing.
-REGISTRY_DONE_STEP = "entities_done"
+# The order the registry form lists its groups in. Payload order lives in
+# registry.GROUPS, because that is the client's; this is the reading order of
+# one page of settings, and a group this list forgets is simply shown last.
+FORM_GROUP_ORDER: tuple[str, ...] = (
+    "weather",
+    "lights",
+    "switches",
+    "media_players",
+    "climate",
+    "covers",
+)
+
+
+def _form_groups() -> tuple[RegistryGroup, ...]:
+    """Return every group, in the order the form reads best in."""
+    listed = [
+        group
+        for slug in FORM_GROUP_ORDER
+        if (group := group_by_slug(slug)) is not None
+    ]
+    named = {group.slug for group in listed}
+    return tuple(listed) + tuple(
+        group for group in GROUPS if group.slug not in named
+    )
 
 
 class RegistryFlowMixin:
     """Editing a panel's entity registry, shared by both of its flows.
 
-    The registry is grouped by domain and has no fixed size, so it cannot be
-    one form of N slots. It is a menu of groups instead: opening a group shows
-    every entity currently in it, and the same control both adds and removes.
+    The whole registry is **one form**. Every group is a multi-entity picker
+    of its own domain, so adding a light and a thermostat is one visit and one
+    Submit; nothing here opens a dialog on top of a dialog.
 
     Two things follow from `rid` being the identity of an element rather than
     of the entity behind it. Deselecting an entity **deletes** its element and
     retires its rid, which is why `_retired` travels with the registry and is
     stored beside it; and a label is edited by rid, so renaming an entity in
-    Home Assistant never detaches the label from the tile.
+    Home Assistant never detaches the label from the tile. The label boxes are
+    the tail of the same form, one per element that already exists.
+
+    A flow with more to ask than the registry adds its own fields through
+    `_registry_extra_fields`, rather than putting them behind a menu.
     """
 
     hass: Any
     _profile: ClientProfile
     _registry: list[RegistryEntry]
     _retired: list[str]
-    _group: RegistryGroup = GROUPS[0]
 
-    async def _async_registry_done(self) -> ConfigFlowResult:
-        """Finish the flow with the registry as it now stands."""
+    async def _async_registry_done(
+        self,
+        user_input: Mapping[str, Any],
+    ) -> ConfigFlowResult:
+        """Store the edited registry; the owning flow decides where."""
         raise NotImplementedError
 
-    # ------------------------------------------------------------ the menu
+    # -------------------------------------------------------------- the form
 
     async def async_step_entities(
         self,
         user_input: dict[str, Any] | None = None,
     ) -> ConfigFlowResult:
-        """Offer the groups, and the way out of the editor."""
-        return self.async_show_menu(
-            step_id="entities",
-            menu_options=[group.slug for group in GROUPS]
-            + [REGISTRY_DONE_STEP],
-            description_placeholders={
-                "profile": self._profile.name,
-                "summary": self._registry_summary(),
-            },
-        )
-
-    @callback
-    def _registry_summary(self) -> str:
-        """Describe what is in the registry, group by group."""
-        # Markdown, because that is how Home Assistant renders a step
-        # description: single newlines collapse, so these are list items.
-        lines = [
-            f"- {_group_title(group)}: "
-            f"{len(group_selection(self._registry, group.domain))}"
-            for group in GROUPS
-        ]
-        lines.append(
-            f"\nUsing {len(self._registry)} of "
-            f"{self._profile.entity_limit} places."
-        )
-        return "\n".join(lines)
-
-    # ----------------------------------------------------------- the groups
-
-    async def async_step_lights(
-        self,
-        user_input: dict[str, Any] | None = None,
-    ) -> ConfigFlowResult:
-        """Edit the lights group."""
-        return self._async_open_group("lights")
-
-    async def async_step_switches(
-        self,
-        user_input: dict[str, Any] | None = None,
-    ) -> ConfigFlowResult:
-        """Edit the switches group."""
-        return self._async_open_group("switches")
-
-    async def async_step_media_players(
-        self,
-        user_input: dict[str, Any] | None = None,
-    ) -> ConfigFlowResult:
-        """Edit the media players group."""
-        return self._async_open_group("media_players")
-
-    async def async_step_climate(
-        self,
-        user_input: dict[str, Any] | None = None,
-    ) -> ConfigFlowResult:
-        """Edit the climate group."""
-        return self._async_open_group("climate")
-
-    async def async_step_covers(
-        self,
-        user_input: dict[str, Any] | None = None,
-    ) -> ConfigFlowResult:
-        """Edit the covers group."""
-        return self._async_open_group("covers")
-
-    async def async_step_weather(
-        self,
-        user_input: dict[str, Any] | None = None,
-    ) -> ConfigFlowResult:
-        """Edit the weather group."""
-        return self._async_open_group("weather")
-
-    @callback
-    def _async_open_group(self, slug: str) -> ConfigFlowResult:
-        """Remember which group is being edited and show its form.
-
-        Every group renders the same step, so the six menu entries above cost
-        one form and one set of strings rather than six of each.
-        """
-        group = group_by_slug(slug)
-        if group is not None:
-            self._group = group
-        return self._async_group_form()
-
-    async def async_step_group(
-        self,
-        user_input: dict[str, Any] | None = None,
-    ) -> ConfigFlowResult:
-        """Apply one group's membership and labels, then return to the menu."""
+        """Show every group at once, and apply what comes back."""
         if user_input is None:
-            return self._async_group_form()
-
-        registry, retired = replace_group(
-            self._registry,
-            self._group.domain,
-            user_input.get(CONF_GROUP_ENTITIES) or (),
-            retired=self._retired,
-        )
-        if len(registry) > self._profile.entity_limit:
-            return self._async_group_form(
-                user_input=user_input,
-                errors={CONF_GROUP_ENTITIES: "too_many_entities"},
-            )
-
-        self._registry = apply_names(registry, _submitted_names(user_input))
-        self._retired = self._retired + retired
-        return await self.async_step_entities()
+            return self._async_registry_form()
+        if (error := self._async_apply_registry(user_input)) is not None:
+            return self._async_registry_form(user_input, {"base": error})
+        return await self._async_registry_done(user_input)
 
     @callback
-    def _async_group_form(
+    def _async_registry_form(
         self,
-        user_input: dict[str, Any] | None = None,
+        user_input: Mapping[str, Any] | None = None,
         errors: dict[str, str] | None = None,
     ) -> ConfigFlowResult:
-        """Show the membership and the labels of the group being edited."""
-        current = [
-            entry
-            for entry in self._registry
-            if entry.domain == self._group.domain
-        ]
-        fields: dict[Any, Any] = {
-            vol.Optional(CONF_GROUP_ENTITIES): selector.EntitySelector(
+        """Render the one page: the flow's own fields, then every group."""
+        fields: dict[Any, Any] = dict(self._registry_extra_fields())
+        for group in _form_groups():
+            fields[vol.Optional(group.slug)] = selector.EntitySelector(
                 selector.EntitySelectorConfig(
-                    domain=self._group.domain, multiple=True
+                    domain=group.domain, multiple=True
                 )
             )
-        }
-        for entry in current:
+        for entry in self._form_entries():
             fields[vol.Optional(registry_name_key(entry.rid))] = (
                 selector.TextSelector()
             )
 
         suggested: dict[str, Any] = {
-            CONF_GROUP_ENTITIES: [
-                entry.target_entity_id for entry in current
-            ],
+            **self._registry_extra_suggested(),
+            **{
+                group.slug: group_selection(self._registry, group.domain)
+                for group in _form_groups()
+            },
             **{
                 registry_name_key(entry.rid): entry.name
-                for entry in current
+                for entry in self._registry
                 if entry.name
             },
         }
         return self.async_show_form(
-            step_id="group",
+            step_id=self._registry_step_id(),
             data_schema=self.add_suggested_values_to_schema(
-                vol.Schema(fields), user_input or suggested
+                vol.Schema(fields), dict(user_input or suggested)
             ),
             errors=errors or {},
-            description_placeholders={
-                "group": _group_title(self._group),
-                "profile": self._profile.name,
-                "entity_limit": str(self._profile.entity_limit),
-                "remaining": str(
-                    max(self._profile.entity_limit - len(self._registry), 0)
-                ),
-                "legend": _registry_legend(current),
-            },
+            description_placeholders=self._registry_placeholders(),
         )
 
-    async def async_step_entities_done(
+    @callback
+    def _async_apply_registry(
         self,
-        user_input: dict[str, Any] | None = None,
-    ) -> ConfigFlowResult:
-        """Leave the editor and let the flow that owns it store the result."""
-        return await self._async_registry_done()
+        user_input: Mapping[str, Any],
+    ) -> str | None:
+        """Rewrite every group from one submission.
+
+        A field the form did not send back is an emptied one: Home Assistant
+        drops an optional field that has no value, so a cleared picker and a
+        cleared label box both arrive as an absence. Every box the form put on
+        screen is therefore read as blank unless the submission says
+        otherwise. Nothing is kept until every group has been rewritten, so
+        the limit is checked against the whole registry.
+        """
+        names = {entry.rid: "" for entry in self._form_entries()}
+        names.update(_submitted_names(user_input))
+        registry = self._registry
+        retired = list(self._retired)
+        for group in GROUPS:
+            registry, newly_retired = replace_group(
+                registry,
+                group.domain,
+                user_input.get(group.slug) or (),
+                retired=retired,
+            )
+            retired.extend(newly_retired)
+
+        if len(registry) > self._profile.entity_limit:
+            return "too_many_entities"
+
+        self._registry = apply_names(registry, names)
+        self._retired = retired
+        return None
+
+    # ------------------------------------------------- what a flow may change
+
+    @callback
+    def _registry_step_id(self) -> str:
+        """Return the step ID the form is rendered and translated under."""
+        return "entities"
+
+    @callback
+    def _registry_extra_fields(self) -> dict[Any, Any]:
+        """Return the fields the owning flow puts above the groups."""
+        return {}
+
+    @callback
+    def _registry_extra_suggested(self) -> dict[str, Any]:
+        """Return the current values of those fields."""
+        return {}
+
+    @callback
+    def _registry_extra_placeholders(self) -> dict[str, str]:
+        """Return anything the owning flow's description needs."""
+        return {}
+
+    @callback
+    def _registry_placeholders(self) -> dict[str, str]:
+        """Describe the registry to the step's description."""
+        return {
+            "profile": self._profile.name,
+            "entity_limit": str(self._profile.entity_limit),
+            "remaining": str(
+                max(self._profile.entity_limit - len(self._registry), 0)
+            ),
+            "legend": _registry_legend(self._form_entries()),
+            **self._registry_extra_placeholders(),
+        }
+
+    @callback
+    def _form_entries(self) -> list[RegistryEntry]:
+        """Return the elements in the order the form lists them."""
+        ordered: list[RegistryEntry] = []
+        for group in _form_groups():
+            ordered.extend(
+                entry
+                for entry in self._registry
+                if entry.domain == group.domain
+            )
+        listed = {entry.rid for entry in ordered}
+        return ordered + [
+            entry for entry in self._registry if entry.rid not in listed
+        ]
 
     @callback
     def _stored_registry(self) -> list[dict[str, Any]]:
@@ -386,13 +379,8 @@ class RegistryFlowMixin:
         ]
 
 
-def _group_title(group: RegistryGroup) -> str:
-    """Return the heading one group is listed under."""
-    return group.slug.replace("_", " ").capitalize()
-
-
 def _submitted_names(user_input: Mapping[str, Any]) -> dict[str, str]:
-    """Read the label fields of one group form, keyed by rid."""
+    """Read the label fields of the registry form, keyed by rid."""
     prefix = registry_name_key("")
     return {
         key[len(prefix):]: str(value or "")
@@ -952,7 +940,10 @@ class MediaControllerConfigFlow(
             data=_stored_controller(player_entity, []),
         )
 
-    async def _async_registry_done(self) -> ConfigFlowResult:
+    async def _async_registry_done(
+        self,
+        user_input: Mapping[str, Any],
+    ) -> ConfigFlowResult:
         """Finish the panel once its room entities have been chosen.
 
         Leaving the registry editor is what releases the token: it is minted
@@ -1195,7 +1186,7 @@ class MediaControllerOptionsFlow(OptionsFlowWithReload):
 
 
 class PanelOptionsFlow(RegistryFlowMixin, OptionsFlowWithReload):
-    """Edit what one panel plays from and the room entities it draws.
+    """Edit what one panel plays from and the room entities it draws, at once.
 
     The device type is not offered again: it decides the size of the registry
     and how the panel is updated, so changing it is a delete-and-add
@@ -1203,10 +1194,10 @@ class PanelOptionsFlow(RegistryFlowMixin, OptionsFlowWithReload):
     player is a remapping like any other and used to require deleting the
     panel and pairing the tablet again.
 
-    The two are a menu rather than one form: a registry has no fixed size, so
-    it cannot share a form with a single dropdown. Options are stored whole,
-    so each branch writes both halves — the one it asked about and the one it
-    left alone.
+    Both are one form. A panel has little enough to configure that a menu only
+    added clicks, and options are stored whole, so one submission writes the
+    source and the registry together rather than each branch having to write
+    the half it did not ask about.
     """
 
     # Read once from the entry, by _async_load, and then edited in place by
@@ -1219,17 +1210,47 @@ class PanelOptionsFlow(RegistryFlowMixin, OptionsFlowWithReload):
         self,
         user_input: dict[str, Any] | None = None,
     ) -> ConfigFlowResult:
-        """Offer the two things a panel has.
+        """Enter at the step every options flow has to start from."""
+        return await self.async_step_panel_init(user_input)
 
-        The menu is rendered as `panel_init` rather than `init`: both options
-        flows of this domain start at `async_step_init`, and a shared step ID
-        would make them share a title and a description too.
+    async def async_step_panel_init(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> ConfigFlowResult:
+        """Show the whole of a panel's configuration on one page.
+
+        The step is `panel_init` rather than `init`: both options flows of
+        this domain start at `async_step_init`, and a shared step ID would
+        make them share a title and a description too. It is a real step and
+        not merely a step ID passed to the form, because Home Assistant
+        re-runs the shown step by name when the dialog is opened.
         """
         self._async_load()
-        return self.async_show_menu(
-            step_id="panel_init",
-            menu_options=["controller_link", "entities"],
-        )
+        return await self.async_step_entities(user_input)
+
+    @callback
+    def _registry_step_id(self) -> str:
+        """Render and translate the registry form as the panel's own page."""
+        return "panel_init"
+
+    @callback
+    def _registry_extra_fields(self) -> dict[Any, Any]:
+        """Ask for the source above the groups, on the same page."""
+        return {
+            vol.Required(
+                CONF_CONTROLLER_ENTRY_ID
+            ): _controller_selector(self.hass),
+        }
+
+    @callback
+    def _registry_extra_suggested(self) -> dict[str, Any]:
+        """Start the source field on the source in use."""
+        return {CONF_CONTROLLER_ENTRY_ID: self._controller_entry_id()}
+
+    @callback
+    def _registry_extra_placeholders(self) -> dict[str, str]:
+        """Name the panel being configured."""
+        return {"name": self.config_entry.title}
 
     @callback
     def _async_load(self) -> None:
@@ -1263,45 +1284,15 @@ class PanelOptionsFlow(RegistryFlowMixin, OptionsFlowWithReload):
             CONF_RETIRED_RIDS: list(self._retired),
         }
 
-    async def async_step_controller_link(
+    async def _async_registry_done(
         self,
-        user_input: dict[str, Any] | None = None,
+        user_input: Mapping[str, Any],
     ) -> ConfigFlowResult:
-        """Move a panel to another media player source."""
-        self._async_load()
-        if user_input is not None:
-            return self.async_create_entry(
-                data=self._options(user_input[CONF_CONTROLLER_ENTRY_ID])
-            )
-
-        return self.async_show_form(
-            step_id="controller_link",
-            data_schema=self.add_suggested_values_to_schema(
-                vol.Schema(
-                    {
-                        vol.Required(
-                            CONF_CONTROLLER_ENTRY_ID
-                        ): _controller_selector(self.hass),
-                    }
-                ),
-                {CONF_CONTROLLER_ENTRY_ID: self._controller_entry_id()},
-            ),
-            description_placeholders={
-                "name": self.config_entry.title,
-                "profile": self._profile.name,
-            },
+        """Store both halves of the page and reload the panel."""
+        controller_entry_id = (
+            user_input.get(CONF_CONTROLLER_ENTRY_ID)
+            or self._controller_entry_id()
         )
-
-    async def async_step_entities(
-        self,
-        user_input: dict[str, Any] | None = None,
-    ) -> ConfigFlowResult:
-        """Open the registry editor on the stored registry."""
-        self._async_load()
-        return await super().async_step_entities(user_input)
-
-    async def _async_registry_done(self) -> ConfigFlowResult:
-        """Store the edited registry and reload the panel."""
         return self.async_create_entry(
-            data=self._options(self._controller_entry_id())
+            data=self._options(str(controller_entry_id))
         )

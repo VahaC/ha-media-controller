@@ -133,11 +133,6 @@ def registry_name_key(rid: str) -> str:
     return f"name_{rid}"
 
 
-# The multi-entity selector one registry group form is built around. Every
-# group uses the same field name: only one group is ever on screen at a time.
-CONF_GROUP_ENTITIES = "group_entities"
-
-
 def slot_translation_key(index: int) -> str:
     """Return the entity translation key of a slot proxy."""
     return f"slot_{index}"

@@ -57,22 +57,14 @@
       },
       "entities": {
         "title": "Room entities",
-        "description": "{profile} draws one tile for every entity listed here. Pick a group to add entities to it or remove them again; there is no fixed number of slots and no fixed order beyond the groups themselves.\n\n{summary}",
-        "menu_options": {
+        "description": "{profile} draws one tile for every entity listed here. Each list both adds and removes: an entity you clear is deleted from the registry and does not come back with the same identity. {remaining} of {entity_limit} places are free.\n\nEach label box is named after the element's stable ID, because that is what survives an entity being renamed in Home Assistant. Leave one empty to use the entity's own name. An entity added just now gets its label box the next time this page is opened.\n\n{legend}",
+        "data": {
+          "weather": "Weather",
           "lights": "Lights",
           "switches": "Switches",
           "media_players": "Media players",
-          "climate": "Climate",
-          "covers": "Covers",
-          "weather": "Weather",
-          "entities_done": "Done"
-        }
-      },
-      "group": {
-        "title": "{group}",
-        "description": "Choose the entities {profile} should draw in this group. The same list both adds and removes: an entity you clear is deleted from the registry and does not come back with the same identity. {remaining} of {entity_limit} places are free.\n\nEach label box below is named after the element's stable ID, because that is what survives an entity being renamed in Home Assistant. Leave one empty to use the entity's own name. An entity added just now gets its label box the next time this form is opened.\n\n{legend}",
-        "data": {
-          "group_entities": "Entities"
+          "climate": "Climate devices",
+          "covers": "Covers"
         }
       }
     },
@@ -127,37 +119,15 @@
       },
       "panel_init": {
         "title": "Panel options",
-        "description": "What would you like to change?",
-        "menu_options": {
-          "controller_link": "Media player source",
-          "entities": "Room entities"
-        }
-      },
-      "controller_link": {
-        "title": "Media player source",
-        "description": "Choose the media player source {name} plays from. It is a {profile}. Its token, its room entities and its entity IDs all stay as they are.",
+        "description": "Everything {name} is configured with, on one page. It is a {profile} and draws one tile for every entity listed below; {remaining} of {entity_limit} places are free. Each list both adds and removes: an entity you clear is deleted from the registry and does not come back with the same identity.\n\nEach label box is named after the element's stable ID, because that is what survives an entity being renamed in Home Assistant. Leave one empty to use the entity's own name. An entity added just now gets its label box the next time this page is opened.\n\n{legend}",
         "data": {
-          "controller_entry_id": "Media player source"
-        }
-      },
-      "entities": {
-        "title": "Room entities",
-        "description": "{profile} draws one tile for every entity listed here. Pick a group to add entities to it or remove them again; there is no fixed number of slots and no fixed order beyond the groups themselves.\n\n{summary}",
-        "menu_options": {
+          "controller_entry_id": "Media player source",
+          "weather": "Weather",
           "lights": "Lights",
           "switches": "Switches",
           "media_players": "Media players",
-          "climate": "Climate",
-          "covers": "Covers",
-          "weather": "Weather",
-          "entities_done": "Done"
-        }
-      },
-      "group": {
-        "title": "{group}",
-        "description": "Choose the entities {profile} should draw in this group. The same list both adds and removes: an entity you clear is deleted from the registry and does not come back with the same identity. {remaining} of {entity_limit} places are free.\n\nEach label box below is named after the element's stable ID, because that is what survives an entity being renamed in Home Assistant. Leave one empty to use the entity's own name. An entity added just now gets its label box the next time this form is opened.\n\n{legend}",
-        "data": {
-          "group_entities": "Entities"
+          "climate": "Climate devices",
+          "covers": "Covers"
         }
       }
     },
