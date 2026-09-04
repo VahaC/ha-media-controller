@@ -40,12 +40,15 @@ no attention.
 
 ## Validation status
 
-`esphome config` and a full ESPHome 2026.8.0 compile pass — 38.0% RAM, 21.9%
-flash, within a rounding error of the classic firmware. **This firmware has not
-yet run on the physical device.** Work through the
-[hardware checklist](#hardware-verification) before treating it as done; the
-one-second poll and its effect on `Loop Time` is the part that cannot be judged
-from a build.
+`esphome config` and a full ESPHome 2026.8.0 compile pass — 38.7% RAM, 22.9%
+flash, against the classic firmware's 38.0% and 21.9%. The difference is the
+room grid: the external component, its gzipped editor page, ArduinoJson, the
+HTTP server, and four more image assets. **This firmware has not yet run on the
+physical device.** Work through the
+[hardware checklist](#hardware-verification) before treating it as done. Three
+things cannot be judged from a build: the one-second poll and its effect on
+`Loop Time`, the cost of building a full grid of 64 cards in one go, and
+whether a 60 px card is legible and hittable in the hand.
 
 ## Prerequisites
 
@@ -168,20 +171,24 @@ config sensor is what names all the others, which is why it is fetched every
 cycle and not merely when a layout changes: it is also the channel Home
 Assistant sends screen and page commands through.
 
-Room entities are polled at a fifth of that rate, one request each. An
-`http_request` on ESP-IDF blocks the main loop, so six requests a second would
-be six stalls a second in front of LVGL. A lamp somebody switched elsewhere can
-take five seconds to catch up; a lamp switched *here* does not wait, because the
-button asks for a fresh read as soon as Home Assistant has had time to act.
+Room entities are polled at a fifth of that rate, in **one** request for the
+whole page. An `http_request` on ESP-IDF blocks the main loop, so the number of
+requests may not grow with the number of cards: a template that renders every
+entity the grid draws answers for one card and for sixty-four alike. A lamp
+somebody switched elsewhere can take five seconds to catch up; a lamp switched
+*here* does not wait, because the card asks for a fresh read as soon as Home
+Assistant has had time to act.
 
 The queue is fetched when the track title changes rather than on every tick,
 because it is the one large payload. Playlists have an interval of their own.
 Both intervals are owned by Home Assistant and arrive with the rest.
 
 Everything it learned — the token, the config sensor, the player, the queue and
-playlist sensors and the four slot entities — is kept in flash, so a device that
-boots while Home Assistant is down still draws its last known room and asks for
-the right entities the moment it comes back.
+playlist sensors — is kept in flash, so a device that boots while Home Assistant
+is down asks for the right entities the moment it comes back. The room
+**arrangement** is in flash too, in a blob of its own, because it is the user's
+own work rather than something Home Assistant can send again; the registry it
+arranges is Home Assistant's and arrives with the first poll.
 
 ## What Home Assistant gains
 
@@ -200,7 +207,7 @@ maintained firmware, so nothing in your own configuration changes. If Home
 Assistant is the older one, the device says so in its ESPHome log instead:
 
 ```text
-[W][config]: Home Assistant speaks contract 4 and this firmware needs 5:
+[W][config]: Home Assistant speaks contract 5 and this firmware needs 6:
 update Media Controller
 ```
 
@@ -217,27 +224,115 @@ Two contract features are deliberately not wired up:
 - **Battery.** It is mains powered, so the package does not report a battery
   value. This is optional in the contract.
 
-## Room slots
+## Room controls
 
-> **This firmware has not caught up with contract version 6.** As of that
-> version a panel is no longer sent a `slots` block at all: its room controls
-> are an unbounded registry in `entities`, keyed by `rid`, naming real
-> entities rather than proxies. This firmware still parses `slots`, so it
-> receives nothing it recognises and shows no room controls. Home Assistant
-> raises a repair issue naming the device; see
-> [CONTRACT.md](CONTRACT.md#version-compatibility) and
-> [ROOM_SLOTS.md](ROOM_SLOTS.md#the-registry-contract-version-6). Teaching the
-> brace-depth parser to walk `entities` instead is the next phase of that work
-> and has not been done. Everything below describes what this build does
-> today.
+The room page is an **8 x 8 grid of 60 px cells** built at runtime, and what is
+on it is decided in two places that never meet:
 
-Four, the number of buttons on the room page. Unlike the classic firmware, none
-of them is tied to a domain: the entity arrives with the payload and the
-firmware reads the domain off it, so a switch in slot 1 and a light in slot 4
-both work. A long press dims a light and is ignored by a switch.
+- **Home Assistant owns the registry.** The `entities` block of the config
+  sensor says what this device may control: a `rid`, a real entity ID, a name,
+  a domain and a list of controls, up to the 64 the `esp32_s3_panel` profile
+  allows. Add and remove them in the device's options; see
+  [ROOM_SLOTS.md](ROOM_SLOTS.md).
+- **The device owns the arrangement.** Where each card sits and how large it is
+  lives on the device, in NVS, and is edited in a small web page the device
+  serves. Home Assistant has no opinion about it.
 
-Colour temperature is not offered. The device has four buttons and a long-press
-brightness gesture, and no control to set a temperature with.
+A card is keyed on `rid` and never on an entity ID. A Home Assistant entity ID
+is renamed by the user at will, and a layout keyed on one would scatter the
+next time somebody tidied their entity IDs.
+
+A tap toggles. A long press dims a light and is ignored by a switch. Colour
+temperature is still not offered: the device has a tap and a long press, and no
+control to set a temperature with.
+
+The page carries no heading and no hint. Eight rows of exactly 60 px need all
+480 of them, and "tap to toggle | hold lights to dim" stops being true the
+moment the person arranging the page decides what is on it.
+
+Before anybody opens the editor the device lays the registry out for itself, as
+2 x 2 cards in registry order, so the page is useful the moment it is configured
+in Home Assistant rather than after a second, undiscoverable step.
+
+### Why only this firmware has a grid
+
+The classic firmware never gets one, and this is a property of the variant
+rather than a phase of work that has not happened yet.
+
+ESPHome binds an entity ID at compile time in **both** directions: a
+`homeassistant` sensor names the entity it reads, and a `homeassistant.service`
+call names the entity it writes. A card that arrives at runtime carries an
+entity ID that was not in the image, so a classic device could neither read its
+state nor act on it. That is why the classic firmware has four numbered slots
+backed by proxy entities: a proxy is a compile-time name that Home Assistant can
+repoint behind it, and it is the only way that build can follow a change made in
+the Home Assistant UI.
+
+This firmware resolves both at runtime — it holds a token and calls the REST
+API — so a card it was never flashed with works. The classic firmware keeps its
+four fixed buttons and its `slots` payload, unchanged and un-deprecated.
+
+### The layout editor
+
+The device serves the editor on **port 80**, at `http://<device-ip>/`. It is the
+same page the T560 panel serves; the two differ only where the device does.
+
+**It has no password, on purpose.** A phone is where a grid gets arranged, and a
+device that had to be logged into would not be. What makes the missing password
+survivable is the shape of the API rather than a promise:
+
+- there are exactly **seven routes**, and not one of them is a general proxy to
+  Home Assistant. Nothing there can read a state, call an arbitrary service, or
+  reach an entity the device does not already draw;
+- the registry is served from the payload the device has already parsed, so a
+  request to the editor never becomes a request to Home Assistant;
+- the Home Assistant token never leaves the device and is readable through no
+  route;
+- **Restore** puts back the copy Home Assistant holds, so the worst an
+  unauthenticated caller can do to a layout is undone by one button.
+
+> **Do not forward this port through a router, and do not expose the device's
+> IP address to the internet.** Everything above is a statement about what is
+> reachable from the local network. It is not a substitute for a password, and
+> nothing here is safe to publish.
+
+The three writes are `POST` rather than the `PUT` and `DELETE` the T560 panel
+uses. ESPHome's ESP-IDF web server registers URI handlers for `GET`, `POST` and
+`OPTIONS` only, so a `PUT` never reaches a handler at all. The routes are:
+
+| Route | Purpose |
+| --- | --- |
+| `GET /` | the editor page, one gzipped asset in flash |
+| `GET /api/entities` | the registry, the artwork, the grid size, the last restore |
+| `GET /api/layout` | the arrangement on screen |
+| `POST /api/layout` | adopt and persist an arrangement |
+| `POST /api/layout/restore` | ask for the copy Home Assistant holds |
+| `GET /api/skins` | the skins this build draws, and the one on screen |
+| `POST /api/skin` | ask Home Assistant for a skin |
+
+`POST /api/skin` calls `select.select_option` on this device's own *Player
+Skin* select and nothing else, and the name is checked against the three skins
+this build draws before it is sent. Home Assistant stays the owner of the value:
+the device writes nothing locally and adopts the new skin on its next poll.
+
+Restoring is asked for and then watched rather than answered in one request:
+fetching the copy from Home Assistant blocks the device's main loop, so the
+device takes the request, answers `queued`, does the work on its own loop, and
+reports the outcome on `GET /api/entities`.
+
+### Where the layout lives
+
+On the device it is one NVS blob of 512 bytes: 64 records of 8 bytes, each
+holding the `rid`, the cell, the span and the icon. It is a blob and not a
+string global because `max_restore_data_length` is capped at 254 bytes, which a
+grid was never going to fit.
+
+After every save the device also sends a copy to Home Assistant, at
+`/api/media_controller/panel_layout/<panel_id>`, where `panel_id` is the MAC
+this device paired and reports with. Home Assistant stores it opaquely and never
+parses it. That copy is what makes a wiped or replaced device recover its own
+arrangement: press **Restore** in the editor. A save that cannot reach Home
+Assistant still succeeds locally and says so.
 
 ## Hardware verification
 
@@ -253,22 +348,39 @@ None of this has run on the physical device yet.
    feels; the volume and the progress ring are where it shows.
 5. The queue loads, highlights the current entry, and jumps on selection.
 6. Playlists load, Unicode names render, and a selected playlist starts.
-7. All four room buttons show state and toggle. Put a `switch` in slot 1 and a
-   `light` in slot 4 to prove the domain is read at runtime.
-8. Change a slot target in Home Assistant. The button repoints within a poll,
-   with no reflash. This is the whole point of the firmware.
-9. Reboot with Home Assistant stopped. The device must keep its token, draw its
-   last known room, and recover on its own when Home Assistant returns.
-10. Delete the panel in Home Assistant. The device must return to a pairing
+7. The room page draws a card per registry element, 2 x 2 by default, and each
+   one shows state and toggles. Mix a `switch` and a `light` to prove the
+   domain is read at runtime; a long press must dim the light and do nothing
+   to the switch.
+8. Fill the registry to its limit of 64 elements, with Cyrillic names, and
+   confirm the config payload is not cut off: the cards must all appear and
+   the log must show `The registry now carries 64 element(s)`. A truncated
+   response is silent, which is what made this worth checking.
+9. Open `http://<device-ip>/` from a phone. Move a card, resize it, change its
+   icon, save. The page redraws within a second and the layout survives a
+   reboot.
+10. Erase the device's flash and reflash it, then press **Restore** in the
+    editor. The arrangement must come back from Home Assistant.
+11. Change the skin in the editor. Home Assistant's *Player Skin* select moves,
+    and the device follows on its next poll.
+12. Change a registry element in Home Assistant. The card repoints within a
+    poll, with no reflash. This is the whole point of the firmware.
+13. Reboot with Home Assistant stopped. The device must keep its token, draw
+    its last known arrangement from flash, and recover on its own when Home
+    Assistant returns.
+14. Delete the panel in Home Assistant. The device must return to a pairing
     code by itself.
-11. The screen switch, brightness number, page selector and restart button on
+15. The screen switch, brightness number, page selector and restart button on
     the panel device all work, and the restart does **not** repeat on the next
     boot.
-12. Watch `Media Controller Heap Free`, `Heap Min Free` and `Loop Time` under
-    the poll load. Two blocking requests a second in the steady state is the new
-    cost, briefly more when the room page refreshes. `Loop Time` is the number
-    to watch: an `http_request` on ESP-IDF blocks the main loop, so this is the
-    change most likely to show up as a stutter. If it does, raise **Update
-    interval** on the panel device — Home Assistant owns it and no reflash is
-    needed.
-13. A classic device on the same Home Assistant keeps working throughout.
+16. Watch `Media Controller Heap Free`, `Heap Min Free`, `Free PSRAM` and
+    `Loop Time` under the poll load. Two blocking requests a second in the
+    steady state is the cost, plus one more every five seconds for the room
+    states. `Loop Time` is the number to watch: an `http_request` on ESP-IDF
+    blocks the main loop, so this is the change most likely to show up as a
+    stutter. Watch it again while a full grid is rebuilt — 64 cards is about
+    190 LVGL objects created at once — and while the editor is open. If it
+    stutters, raise **Update interval** on the panel device; Home Assistant
+    owns it and no reflash is needed.
+17. A classic device on the same Home Assistant keeps working throughout: its
+    four buttons, its heading, its hint and its `slots` payload are untouched.

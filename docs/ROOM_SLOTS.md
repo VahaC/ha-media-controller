@@ -793,13 +793,25 @@ device.
    limits, the grouped flow, the removal of panel slots and their proxies, and
    this document and [CONTRACT.md](CONTRACT.md). Nothing about the classic
    ESP32 changed.
-2. **T560.** Not started. `PanelRoom` becomes a registry element keyed by
-   `rid`, `PANEL_ROOM_MAX` rises to the profile limit, and the room page stops
-   assuming a fixed tile count. Only `T560_PANEL_CONTRACT_VERSION` has been
-   raised so far, so that the two halves compare the same number.
-3. **Paired ESP32 firmware.** Not started. Its brace-depth parser walks
-   `slots` and has to walk `entities` instead.
-4. **The grid the user arranges on the device.** The reason `rid` exists. It
-   is a later phase again, and it lands on the paired firmware only — the
-   classic firmware has four buttons at absolute LVGL geometry and cannot
-   have one. See [ROADMAP.md](ROADMAP.md) §4.
+2. **T560.** Done: the registry keyed by `rid`, the grid the user arranges,
+   the editor the panel serves, and the durable copy of the layout the backup
+   endpoint holds.
+3. **Paired ESP32 firmware.** Done: it reads `entities` with the `json`
+   component rather than by brace depth, its config-sensor response buffer is
+   32 kB so that sixty-four Cyrillic names are not cut off in flight, and its
+   room page is the grid below rather than four fixed buttons.
+4. **The grid the user arranges on the device.** The reason `rid` exists. Done
+   on both panels, and on the paired firmware **only** among the two ESP32
+   builds: the classic firmware has four buttons at absolute LVGL geometry,
+   resolves entity IDs and service domains while compiling, and cannot have
+   one. That is a property of the variant rather than an unfinished phase.
+   See [ROADMAP.md](ROADMAP.md) §4 and
+   [ESP32_PAIRED_CONTROLLER.md](ESP32_PAIRED_CONTROLLER.md#why-only-this-firmware-has-a-grid).
+
+   The two grids share a document format and nothing else. It is version 1,
+   `{"v":1,"cols":..,"rows":..,"cards":[{"x","y","w","h","rid","icon"}]}`,
+   with geometry in **cells** and identity in `rid`; each client honours the
+   grid size the document names and refuses a version it does not know. The
+   T560 draws 10 x 14 cells and the ESP32 8 x 8 of 60 px, and each stores it
+   the way its hardware allows — a file next to `config.ini` on the tablet, a
+   512-byte NVS blob on the ESP32.

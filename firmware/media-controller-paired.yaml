@@ -38,14 +38,33 @@ substitutions:
   # sensor, so each half can tell that the other is behind. Raise it in the
   # same change that raises the number in that document; it is not a knob to
   # turn per device.
-  contract_version: "5"
+  contract_version: "6"
   asset_base_url: "https://raw.githubusercontent.com/VahaC/ha-media-controller/main/firmware/assets"
+
+  # Where the room-grid external component is fetched from. It is a
+  # substitution for the same reason asset_base_url is one: a device pulls
+  # this file by raw URL and has no checkout to point at, while a working
+  # tree and CI have one and must validate the component in front of them
+  # rather than the one already on main. Override it with a path relative to
+  # the directory of the configuration being validated, for example
+  # `../components`.
+  grid_component_source: "github://VahaC/ha-media-controller@main"
 
 # The interface — display, touchscreen, LVGL pages, theme — is shared with
 # media-controller.yaml and lives next to this file. See its header for the
 # names the two halves agree on.
 packages:
   ui: !include media-controller-ui.yaml
+
+# The room grid and the editor this device serves for arranging it. It is an
+# external component because two parts of it cannot be written as lambdas: a
+# POD written to NVS through make_preference, and an AsyncWebHandler on
+# web_server_base. It knows nothing about Home Assistant — everything that
+# reaches it is installed into the component from this file, in on_boot
+# below, and lands in a cmd_ script here. See components/media_controller_grid/.
+external_components:
+  - source: ${grid_component_source}
+    components: [media_controller_grid]
 
 esphome:
   name: ${device_name}
@@ -60,9 +79,53 @@ esphome:
     priority: -200
     then:
       - lambda: id(auth_header) = "Bearer " + id(ha_token);
+      # -- The four things the grid component needs from this half of the
+      # -- firmware. They are installed rather than compiled in so that the
+      # -- component holds no URL, no token and no entity ID: the same seam
+      # -- media-controller-ui.yaml describes, for the same reason. --
+      - lambda: |-
+          id(room_page_index) = (int) id(page_room_grid)->index;
+          id(room_grid)->set_redraw_listener([]() {
+            id(rebuild_room_grid)->execute();
+          });
+          id(room_grid)->set_backup_writer([](std::string document) {
+            id(backup_room_layout)->execute(document);
+          });
+          id(room_grid)->set_restore_requester([]() {
+            id(restore_room_layout)->execute();
+          });
+          id(room_grid)->set_skin_writer([](std::string skin) {
+            id(cmd_skin_select)->execute(skin);
+          });
+          id(room_grid)->set_skin(id(screen_style).current_option());
+      - script.execute: rebuild_room_grid
       - script.execute: show_start_page
 
 api:
+
+# -------------------- THE LAYOUT EDITOR --------------------
+# One TCP listen socket and no UI on top of it: the only thing served here is
+# the layout editor, and web_server would add an entity dashboard nobody asked
+# for. On ESP32 web_server_base autoloads web_server_idf.
+#
+# There is no authentication, deliberately, and the seven routes are narrow
+# enough that this is a decision rather than an oversight. See the header of
+# components/media_controller_grid/media_controller_grid.h, and the warning in
+# docs/ESP32_PAIRED_CONTROLLER.md about not exposing this port outside the
+# house.
+web_server_base:
+
+media_controller_grid:
+  id: room_grid
+  port: 80
+  # The layouts the interface draws, in the spelling docs/CONTRACT.md uses.
+  # The editor offers exactly these and the component refuses anything else
+  # before it is passed on, so this route cannot write an arbitrary value into
+  # an arbitrary entity.
+  skins:
+    - classic
+    - minimal_ring
+    - cover_card
 
 # -------------------- DISCOVERY --------------------
 # What makes Home Assistant offer to add this device. The integration reads
@@ -263,28 +326,38 @@ globals:
     restore_value: true
     max_restore_data_length: 128
 
-  # -- Four separate globals rather than one container: only a plain
-  # -- std::string can be restored, and these have to survive a reboot for the
-  # -- room page to work before the first poll answers. --
-  - id: slot1_entity
+  # -- The one entity in the payload this device *writes*: the Player Skin
+  # -- select on its own Home Assistant device. Home Assistant stays the owner
+  # -- of the value; the on-device picker writes here and the new skin arrives
+  # -- back the ordinary way, in settings.player_skin. Absent when the
+  # -- integration named none, which greys the picker in the editor. --
+  - id: skin_select_entity
     type: std::string
     restore_value: true
     max_restore_data_length: 128
 
-  - id: slot2_entity
-    type: std::string
-    restore_value: true
-    max_restore_data_length: 128
+  # -- The room registry itself is **not** a global. Sixty-four elements with
+  # -- Cyrillic names are far past the 254 bytes a restoring string global can
+  # -- hold, and the grid that arranges them is a POD in its own NVS blob; see
+  # -- components/media_controller_grid/. What survives a reboot there is the
+  # -- arrangement, which is the user's own work. The registry is Home
+  # -- Assistant's and comes back with the first poll.
 
-  - id: slot3_entity
+  # -- The rendered /api/template request for every entity a card addresses.
+  # -- Built once per poll rather than twice, because the poll asks whether
+  # -- there is anything to request and then sends it. --
+  - id: pending_state_request
     type: std::string
-    restore_value: true
-    max_restore_data_length: 128
+    restore_value: false
 
-  - id: slot4_entity
-    type: std::string
-    restore_value: true
-    max_restore_data_length: 128
+  # -- Set while a long press is sweeping a card's brightness, so the release
+  # -- that ends it does not also toggle the light. The four fixed buttons of
+  # -- the interface keep one of these per button; the grid has one, because
+  # -- only one card can be under a finger. --
+  - id: room_card_long_active
+    type: bool
+    restore_value: false
+    initial_value: "false"
 
   # -- Checksum of the layout. Equal values mean there is nothing to lay out
   # -- again, which is what keeps a once-a-second poll cheap. --
@@ -405,7 +478,7 @@ globals:
   # -- stalls a second in front of LVGL; a lamp somebody else switched can wait
   # -- five seconds, and a lamp switched here refreshes immediately because the
   # -- button asks for it. --
-  - id: last_slot_poll_ms
+  - id: last_room_poll_ms
     type: uint32_t
     restore_value: false
     initial_value: "0"
@@ -536,61 +609,6 @@ globals:
             depth--;
             if (depth == 0) return body.substr(p, i - p + 1);
           }
-        }
-        return std::string();
-      }
-
-  # -- The entity of one slot. The interface package carries a parser that
-  # -- reads a slot's label; this one reads the entity behind the button,
-  # -- which is the field that makes a reflash unnecessary. --
-  - id: slot_entity_parser
-    type: std::string (*)(const std::string &, int)
-    restore_value: no
-    initial_value: |-
-      [](const std::string &body, int slot) -> std::string {
-        size_t slots_pos = body.find("\"slots\":");
-        if (slots_pos == std::string::npos) return std::string();
-        size_t i = body.find('[', slots_pos);
-        if (i == std::string::npos) return std::string();
-
-        int depth = 0;
-        size_t object_start = std::string::npos;
-        for (; i < body.size(); i++) {
-          char c = body[i];
-          if (c == '"') {
-            i++;
-            while (i < body.size()) {
-              if (body[i] == '\\') i++;
-              else if (body[i] == '"') break;
-              i++;
-            }
-            continue;
-          }
-          if (c == '{') {
-            if (depth == 0) object_start = i;
-            depth++;
-            continue;
-          }
-          if (c == '}') {
-            depth--;
-            if (depth != 0 || object_start == std::string::npos) continue;
-            std::string object = body.substr(object_start,
-                                             i - object_start + 1);
-            object_start = std::string::npos;
-            size_t slot_pos = object.find("\"slot\":");
-            if (slot_pos == std::string::npos) continue;
-            if (atoi(object.c_str() + slot_pos + 7) != slot) continue;
-            size_t e = object.find("\"entity\":\"");
-            if (e == std::string::npos) return std::string();
-            e += 10;
-            std::string entity;
-            for (size_t k = e; k < object.size(); k++) {
-              if (object[k] == '"') break;
-              entity += object[k];
-            }
-            return entity;
-          }
-          if (c == ']' && depth == 0) break;
         }
         return std::string();
       }
@@ -747,52 +765,38 @@ script:
                    "\",\"media_id\":\"" + uri +
                    "\",\"media_type\":\"playlist\"}";
 
-  # -- Slots are addressed by number. Which entity that is, and therefore
-  # -- which domain the call belongs to, is read from flash. This is the whole
-  # -- point of the paired firmware: nothing here is decided at compile time. --
-  - id: cmd_slot_toggle
+  # -- A card is addressed by its entity, which the grid component resolved
+  # -- from the rid the card stores. The domain is read off the entity, so the
+  # -- same script drives a lamp and a socket. This is the whole point of the
+  # -- paired firmware: nothing here is decided at compile time. --
+  - id: cmd_entity_toggle
     mode: parallel
     max_runs: 4
     parameters:
-      slot: int
+      entity: string
     then:
       - lambda: |-
-          std::string entity;
-          switch (slot) {
-            case 1: entity = id(slot1_entity); break;
-            case 2: entity = id(slot2_entity); break;
-            case 3: entity = id(slot3_entity); break;
-            case 4: entity = id(slot4_entity); break;
-          }
           size_t dot = entity.find('.');
           if (dot == std::string::npos) return;
           id(ha_action)->execute(
               entity.substr(0, dot), std::string("toggle"),
               "{\"entity_id\":\"" + entity + "\"}");
-      # -- Room state is otherwise polled slowly. A tile the person just
+      # -- Room state is otherwise polled slowly. A card the person just
       # -- pressed must not wait for that, so ask again once Home Assistant
       # -- has had time to act. --
       - delay: 400ms
-      - lambda: id(last_slot_poll_ms) = millis();
-      - script.execute: poll_slots
+      - lambda: id(last_room_poll_ms) = millis();
+      - script.execute: poll_room_states
 
-  # -- Only a light can be dimmed. A switch in this slot simply ignores the
-  # -- long press. --
-  - id: cmd_slot_brightness
+  # -- Only a light can be dimmed. A switch simply ignores the long press. --
+  - id: cmd_entity_brightness
     mode: parallel
     max_runs: 4
     parameters:
-      slot: int
+      entity: string
       pct: int
     then:
       - lambda: |-
-          std::string entity;
-          switch (slot) {
-            case 1: entity = id(slot1_entity); break;
-            case 2: entity = id(slot2_entity); break;
-            case 3: entity = id(slot3_entity); break;
-            case 4: entity = id(slot4_entity); break;
-          }
           if (entity.rfind("light.", 0) != 0) return;
           char buf[8];
           snprintf(buf, sizeof(buf), "%d", pct);
@@ -800,6 +804,54 @@ script:
               std::string("light"), std::string("turn_on"),
               "{\"entity_id\":\"" + entity +
               "\",\"brightness_pct\":" + buf + "}");
+
+  # -- The one entity in the payload this device writes. Home Assistant owns
+  # -- the value: this asks for a skin and changes nothing locally, and the
+  # -- new one arrives back the ordinary way, in settings.player_skin. The
+  # -- name was already checked against the skins this build draws before it
+  # -- got here, so this route cannot write an arbitrary value. --
+  - id: cmd_skin_select
+    mode: restart
+    parameters:
+      skin: string
+    then:
+      - if:
+          condition:
+            lambda: return !id(skin_select_entity).empty();
+          then:
+            - script.execute:
+                id: ha_action
+                domain: "select"
+                service: "select_option"
+                payload: !lambda |-
+                  return "{\"entity_id\":\"" + id(skin_select_entity) +
+                         "\",\"option\":\"" + skin + "\"}";
+          else:
+            - logger.log: "Home Assistant named no skin entity for this device"
+
+  # -- The four fixed room buttons the interface package draws. This firmware
+  # -- never shows that page: under contract version 6 a panel is sent no
+  # -- `slots` block at all, so there is no entity behind a slot number and
+  # -- room_page_index points at the grid instead. The scripts stay because
+  # -- the interface names them and both firmwares answer to the same seam. --
+  - id: cmd_slot_toggle
+    parameters:
+      slot: int
+    then:
+      - logger.log:
+          format: "Slot %d is not used by this firmware; the room grid is"
+          args: [slot]
+          level: DEBUG
+
+  - id: cmd_slot_brightness
+    parameters:
+      slot: int
+      pct: int
+    then:
+      - logger.log:
+          format: "Slot %d is not used by this firmware; the room grid is"
+          args: [slot]
+          level: DEBUG
 
   - id: play_queue_item
     then:
@@ -1027,48 +1079,49 @@ script:
                           id(media_position).publish_state(p);
                         }
 
-  # -- One request per configured slot. An empty slot costs nothing. --
-  - id: poll_slots
+  # -- Every card's state in one request.
+  # --
+  # -- The four fixed buttons asked `/api/states/<entity>` once per button.
+  # -- Sixty-four cards cannot: http_request blocks the main loop on ESP-IDF,
+  # -- so the number of requests may not grow with the number of cards. A
+  # -- template renders every entity a card addresses in one answer, which is
+  # -- one request whether there is one card on the page or sixty-four.
+  # --
+  # -- The request names only entities that are already drawn on this device,
+  # -- and the template it sends is built here rather than taken from
+  # -- anywhere: nothing a caller can reach chooses what it asks for. --
+  - id: poll_room_states
     mode: restart
     then:
-      - lambda: |-
-          if (id(ha_token).empty()) return;
-          if (!id(slot1_entity).empty()) id(poll_slot)->execute(1);
-          if (!id(slot2_entity).empty()) id(poll_slot)->execute(2);
-          if (!id(slot3_entity).empty()) id(poll_slot)->execute(3);
-          if (!id(slot4_entity).empty()) id(poll_slot)->execute(4);
-
-  - id: poll_slot
-    mode: parallel
-    max_runs: 4
-    parameters:
-      slot: int
-    then:
-      - http_request.get:
-          url: !lambda |-
-            std::string entity;
-            switch (slot) {
-              case 1: entity = id(slot1_entity); break;
-              case 2: entity = id(slot2_entity); break;
-              case 3: entity = id(slot3_entity); break;
-              case 4: entity = id(slot4_entity); break;
-            }
-            return "${ha_url}/api/states/" + entity;
-          request_headers:
-            Authorization: !lambda return id(auth_header).c_str();
-          capture_response: true
-          max_response_buffer_size: 2048
-          on_response:
-            then:
-              - lambda: |-
-                  if (response->status_code != 200) return;
-                  bool on = id(json_field)(body, "state") == "on";
-                  switch (slot) {
-                    case 1: id(light1_state).publish_state(on); break;
-                    case 2: id(light2_state).publish_state(on); break;
-                    case 3: id(fan_switch_state).publish_state(on); break;
-                    case 4: id(ac_switch_state).publish_state(on); break;
-                  }
+      - lambda: id(pending_state_request) = id(room_grid)->state_request();
+      - if:
+          condition:
+            lambda: |-
+              return !id(ha_token).empty() &&
+                     !id(pending_state_request).empty();
+          then:
+            - http_request.post:
+                url: "${ha_url}/api/template"
+                request_headers:
+                  Authorization: !lambda return id(auth_header).c_str();
+                  Content-Type: "application/json"
+                body: !lambda return id(pending_state_request);
+                capture_response: true
+                # -- One short word per card and a separator: sixty-four cards
+                # -- render to about four hundred bytes. --
+                max_response_buffer_size: 2048
+                on_response:
+                  then:
+                    - if:
+                        condition:
+                          lambda: return response->status_code == 200;
+                        then:
+                          - lambda: id(room_grid)->apply_states(body);
+                          - script.execute: refresh_room_cards
+                        else:
+                          - lambda: |-
+                              ESP_LOGW("room", "State template HTTP %d",
+                                       response->status_code);
 
   # -- The config sensor names every other entity, so it is requested every
   # -- cycle rather than as rarely as a layout alone would need: it is also
@@ -1088,7 +1141,18 @@ script:
                 request_headers:
                   Authorization: !lambda return id(auth_header).c_str();
                 capture_response: true
-                max_response_buffer_size: 8192
+                # -- Sixty-four registry elements with Cyrillic names are
+                # -- about thirteen kilobytes, and 8192 does not hold them.
+                # -- An overflowing buffer is not an error here: the response
+                # -- is cut off mid-flight, the parse simply finds less than
+                # -- it expected, and nothing appears in the log. That is the
+                # -- trap TB-9 left, and this is the same fix.
+                # --
+                # -- Not 64 kB: the buffer is allocated at its full size on
+                # -- every request (http_request.h:517) and the config sensor
+                # -- is fetched once per poll_interval_ms, which is once a
+                # -- second. --
+                max_response_buffer_size: 32768
                 on_response:
                   then:
                     - lambda: |-
@@ -1102,7 +1166,7 @@ script:
                           return;
                         }
                         if (response->status_code != 200) {
-                          ESP_LOGW("slots", "Config sensor HTTP %d",
+                          ESP_LOGW("room", "Config sensor HTTP %d",
                                    response->status_code);
                           return;
                         }
@@ -1183,14 +1247,20 @@ script:
                                                             "player_skin");
                         }
 
-                        // -- The four slot entities. They are what makes a
-                        //    button repointable without a reflash, so they
-                        //    are read on every payload, not only when the
-                        //    revision moved. --
-                        id(slot1_entity) = id(slot_entity_parser)(attrs, 1);
-                        id(slot2_entity) = id(slot_entity_parser)(attrs, 2);
-                        id(slot3_entity) = id(slot_entity_parser)(attrs, 3);
-                        id(slot4_entity) = id(slot_entity_parser)(attrs, 4);
+                        // -- The Player Skin select on this device's own Home
+                        //    Assistant device, and the only entity in the
+                        //    payload this firmware writes. Outside the
+                        //    revision on purpose: which entity holds the skin
+                        //    is not layout. --
+                        id(skin_select_entity) = id(json_field)(
+                            attrs, "skin_select");
+                        id(room_grid)->set_skin_writable(
+                            !id(skin_select_entity).empty());
+                        // -- What the on-device picker has to show: the skin
+                        //    on screen, not the one Home Assistant last
+                        //    mentioned. --
+                        id(room_grid)->set_skin(
+                            id(screen_style).current_option());
 
                         // -- The revision covers the layout and nothing else,
                         //    so an unchanged one costs no widget work. --
@@ -1213,14 +1283,21 @@ script:
                               skin: !lambda return id(pending_skin);
                     - script.execute: read_commands
                     - script.execute: apply_commands
+                    # -- The registry is handed over only when the revision
+                    # -- moved. Walking sixty-four elements with ArduinoJson
+                    # -- once a second would be pure churn for a list that
+                    # -- changes twice in the life of a device, and the
+                    # -- revision exists to say when it did. --
                     - if:
                         condition:
                           lambda: return id(layout_changed);
                         then:
-                          - script.execute:
-                              id: apply_slots
-                              payload: !lambda |-
-                                return id(pending_attributes);
+                          - lambda: |-
+                              if (id(room_grid)->ingest_entities(
+                                      id(pending_attributes))) {
+                                id(rebuild_room_grid)->execute();
+                                id(last_room_poll_ms) = 0;
+                              }
 
   - id: refresh_queue
     mode: restart
@@ -1400,6 +1477,313 @@ script:
             - delay: 2s
             - lambda: App.safe_reboot();
 
+  # ════════════════════════════════════════════════════════════
+  # THE ROOM GRID
+  # ════════════════════════════════════════════════════════════
+  # Eight columns by eight rows of exactly 60 px, over the whole 480x480
+  # screen. That is why page_room_grid carries no heading and no "tap to
+  # toggle" hint: with them the work area is about 405 px and a row collapses
+  # to 50. The hint stops being true the moment a person arranges the page
+  # themselves, anyway.
+  #
+  # This page is drawn here rather than in media-controller-ui.yaml for the
+  # same reason page_pairing is: the classic firmware can never have it. It
+  # resolves entity IDs while compiling, in both directions, so a card handed
+  # to it at runtime would have nothing to call. That is a property of the
+  # variant and not a gap; see docs/ESP32_PAIRED_CONTROLLER.md. The interface
+  # keeps its four fixed buttons, and this firmware points room_page_index
+  # here instead.
+  #
+  # Cards are built when the layout or the registry changes and at no other
+  # time. Rebuilding a grid of sixty-four cards per frame would be exactly the
+  # unbounded heap churn AGENTS.md forbids; LVGL takes its memory from the
+  # heap here (ESPHome sets LV_USE_STDLIB_MALLOC to LV_STDLIB_CUSTOM), which
+  # makes the churn possible rather than acceptable.
+
+  - id: rebuild_room_grid
+    then:
+      - lambda: |-
+          // -- LVGL widgets exist only after the interface package's on_boot
+          //    has run. Everything that gets here earlier is redone by the
+          //    explicit call at the end of this firmware's own on_boot. --
+          if (!id(ui_ready)) return;
+
+          lv_obj_t *root = (lv_obj_t *) id(room_grid_root);
+          lv_obj_clean(root);
+
+          // -- An empty grid says so rather than showing a blank screen that
+          //    reads as a broken device. --
+          const auto &cards = id(room_grid)->cards();
+          lv_obj_t *empty[] = {
+            (lv_obj_t *) id(lbl_room_grid_empty),
+            (lv_obj_t *) id(lbl_room_grid_hint),
+          };
+          for (auto *label : empty) {
+            if (cards.empty()) {
+              lv_obj_remove_flag(label, LV_OBJ_FLAG_HIDDEN);
+            } else {
+              lv_obj_add_flag(label, LV_OBJ_FLAG_HIDDEN);
+            }
+          }
+
+          for (size_t i = 0; i < cards.size(); i++) {
+            const auto &card = cards[i];
+            const auto *entry = id(room_grid)->entry(card.rid);
+
+            // -- The cell is exactly 60 px. The card leaves three of them on
+            //    each side unpainted, so two neighbours read as two cards
+            //    rather than one slab; the geometry underneath is still whole
+            //    cells. --
+            lv_obj_t *tile = lv_obj_create(root);
+            lv_obj_set_pos(tile, card.x() * 60 + 3, card.y() * 60 + 3);
+            lv_obj_set_size(tile, card.w() * 60 - 6, card.h() * 60 - 6);
+            lv_obj_set_user_data(tile, (void *) (uintptr_t) i);
+            lv_obj_remove_flag(tile, LV_OBJ_FLAG_SCROLLABLE);
+            // -- lv_obj_create leaves an object unclickable, and a card that
+            //    is not clickable gets no long press either. --
+            lv_obj_add_flag(tile, LV_OBJ_FLAG_CLICKABLE);
+            // -- So a drag across a card still reaches the page and changes
+            //    it, exactly as it does over the four fixed buttons. --
+            lv_obj_add_flag(tile, LV_OBJ_FLAG_GESTURE_BUBBLE);
+
+            // -- The palette of the room page, which apply_theme deliberately
+            //    does not touch: the four fixed buttons are not themed
+            //    either, and a card that repainted itself would be a second
+            //    owner for a colour that already has one. --
+            lv_obj_set_style_pad_all(tile, 0, 0);
+            lv_obj_set_style_radius(tile, card.w() >= 2 ? 18 : 12, 0);
+            lv_obj_set_style_bg_color(tile, lv_color_hex(0x303050), 0);
+            lv_obj_set_style_bg_grad_color(tile, lv_color_hex(0x11111f), 0);
+            lv_obj_set_style_bg_grad_dir(tile, LV_GRAD_DIR_VER, 0);
+            lv_obj_set_style_bg_opa(tile, LV_OPA_COVER, 0);
+            lv_obj_set_style_border_width(tile, 2, 0);
+            lv_obj_set_style_border_color(tile, lv_color_hex(0x505078), 0);
+            lv_obj_set_style_bg_color(tile, lv_color_hex(0x151526),
+                                      LV_STATE_PRESSED);
+            lv_obj_set_style_bg_grad_color(tile, lv_color_hex(0x272742),
+                                           LV_STATE_PRESSED);
+            lv_obj_set_style_border_color(tile, lv_color_hex(0x00cfff),
+                                          LV_STATE_PRESSED);
+
+            // -- The artwork. A stored icon wins; without one the domain
+            //    decides, which is what makes a card useful before anybody
+            //    has opened the editor. Never scaled at draw time: each of
+            //    these is a 40x40 asset of its own, because this build sets
+            //    LV_COLOR_16_SWAP and LVGL cannot transform a swapped
+            //    RGB565 source. --
+            image::Image *art = id(card_icon_light1);
+            if (card.icon == 1) art = id(card_icon_light1);
+            else if (card.icon == 2) art = id(card_icon_light2);
+            else if (card.icon == 3) art = id(card_icon_fan);
+            else if (card.icon == 4) art = id(card_icon_ac);
+            else if (entry != nullptr &&
+                     entry->domain == media_controller_grid::DOMAIN_SWITCH) {
+              art = id(card_icon_ac);
+            }
+
+            // -- A one-cell card is 54 px of paint and has room for the icon
+            //    or the name, not both. The icon is the half that still says
+            //    what the card is at a glance. --
+            bool labelled = card.w() >= 2 && card.h() >= 2;
+
+            lv_obj_t *icon = lv_image_create(tile);
+            lv_image_set_src(icon, art->get_lv_image_dsc());
+            lv_obj_remove_flag(icon, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_align(icon, LV_ALIGN_CENTER, 0, labelled ? -12 : 0);
+
+            if (labelled) {
+              lv_obj_t *name = lv_label_create(tile);
+              lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+              lv_obj_set_width(name, card.w() * 60 - 16);
+              lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, 0);
+              // -- roboto_16 and not montserrat: a registry name is whatever
+              //    the user typed, and the Roboto faces in this build carry
+              //    the Cyrillic glyphs the built-in fonts do not. --
+              lv_obj_set_style_text_font(name, id(roboto_16)->get_lv_font(), 0);
+              lv_obj_set_style_text_color(name, lv_color_hex(0xd8d8f0), 0);
+              lv_label_set_text(name, entry != nullptr && !entry->name.empty()
+                                          ? entry->name.c_str()
+                                          : "—");
+              lv_obj_align(name, LV_ALIGN_BOTTOM_MID, 0, -6);
+            }
+
+            // -- One callback for every card. Which card it is comes from the
+            //    index in the object's user data, and the entity behind it
+            //    from the registry, so nothing about a card is captured and
+            //    nothing goes stale when the registry moves under it. --
+            lv_obj_add_event_cb(tile, [](lv_event_t *e) {
+              lv_obj_t *pressed =
+                  (lv_obj_t *) lv_event_get_current_target(e);
+              size_t index =
+                  (size_t) (uintptr_t) lv_obj_get_user_data(pressed);
+              const auto &placed = id(room_grid)->cards();
+              if (index >= placed.size()) return;
+              auto *entry = id(room_grid)->entry(placed[index].rid);
+              if (entry == nullptr) return;
+
+              switch (lv_event_get_code(e)) {
+                case LV_EVENT_PRESSED:
+                  id(room_card_long_active) = false;
+                  break;
+                case LV_EVENT_LONG_PRESSED:
+                  id(room_card_long_active) = true;
+                  break;
+                case LV_EVENT_LONG_PRESSED_REPEAT: {
+                  // -- Only a light can be dimmed. The sweep runs up, turns
+                  //    round at the top and comes back down, exactly as the
+                  //    four fixed buttons do; the value is local because a
+                  //    light reports the brightness it reached, not the one
+                  //    the finger is heading for. --
+                  if (!entry->dimmable) break;
+                  float pct = entry->pct + entry->direction * 4.0f;
+                  if (pct >= 100.0f) { pct = 100.0f; entry->direction = -1; }
+                  if (pct <= 1.0f) { pct = 1.0f; entry->direction = 1; }
+                  entry->pct = pct;
+                  id(cmd_entity_brightness)->execute(entry->entity,
+                                                     (int) pct);
+                  break;
+                }
+                case LV_EVENT_CLICKED:
+                  // -- A release that ended a brightness sweep, or one that
+                  //    happened while the page was already sliding away, is
+                  //    not a tap. --
+                  if (!id(room_card_long_active) &&
+                      !id(switches_swipe_active)) {
+                    id(cmd_entity_toggle)->execute(entry->entity);
+                  }
+                  id(room_card_long_active) = false;
+                  break;
+                default:
+                  break;
+              }
+            }, LV_EVENT_ALL, nullptr);
+          }
+
+          ESP_LOGD("room", "Built %u room card(s)",
+                   (unsigned) cards.size());
+      - script.execute: refresh_room_cards
+
+  # -- What a state poll changes, and the only thing it changes: the cards
+  # -- themselves are not rebuilt, because nothing about their geometry moved.
+  # -- Children are walked by index, which is the order rebuild_room_grid
+  # -- created them in. --
+  - id: refresh_room_cards
+    then:
+      - lambda: |-
+          if (!id(ui_ready)) return;
+          lv_obj_t *root = (lv_obj_t *) id(room_grid_root);
+          const auto &cards = id(room_grid)->cards();
+          uint32_t built = lv_obj_get_child_count(root);
+
+          for (size_t i = 0; i < cards.size() && i < built; i++) {
+            lv_obj_t *tile = lv_obj_get_child(root, (int32_t) i);
+            const auto *entry = id(room_grid)->entry(cards[i].rid);
+
+            // -- Three states and not two. A card whose element Home
+            //    Assistant no longer carries, or whose entity is
+            //    unavailable, must not read as "off": off is a fact and this
+            //    is the absence of one. --
+            bool known = entry != nullptr && !entry->state.empty() &&
+                         entry->state != "unavailable" &&
+                         entry->state != "unknown";
+            bool on = known && entry->state == "on";
+
+            lv_obj_set_style_border_color(
+                tile,
+                !known ? lv_color_hex(0x59303c)
+                       : (on ? lv_color_hex(0x00cfff)
+                             : lv_color_hex(0x505078)),
+                0);
+
+            lv_obj_t *icon = lv_obj_get_child(tile, 0);
+            if (icon != NULL) {
+              lv_obj_set_style_img_recolor(icon, lv_color_hex(0x1a1a2c), 0);
+              lv_obj_set_style_img_recolor_opa(icon, on ? LV_OPA_TRANSP : 150,
+                                               0);
+              lv_obj_set_style_img_opa(icon, known ? LV_OPA_COVER : 90, 0);
+            }
+          }
+
+  # ════════════════════════════════════════════════════════════
+  # THE ROOM LAYOUT BACKUP
+  # ════════════════════════════════════════════════════════════
+  # The grid lives on this device: it is edited here, in the page the grid
+  # component serves, and Home Assistant has no opinion about it. What Home
+  # Assistant has is somewhere durable to put a copy, which is the one thing
+  # this device cannot provide for itself — erasing flash, or replacing the
+  # board, loses the NVS blob. The panel_id is derived from the MAC, the same
+  # one this device paired and reports with, so a reflashed device finds its
+  # own copy again and no other device can read it.
+  #
+  # The body is the layout document, byte for byte. Home Assistant never
+  # parses it: the grid format belongs to the client that draws it.
+
+  - id: backup_room_layout
+    mode: restart
+    parameters:
+      document: string
+    then:
+      - if:
+          condition:
+            lambda: return !id(ha_token).empty();
+          then:
+            - http_request.send:
+                method: PUT
+                url: !lambda |-
+                  return "${ha_url}/api/media_controller/panel_layout/" +
+                         get_mac_address();
+                request_headers:
+                  Authorization: !lambda return id(auth_header).c_str();
+                  Content-Type: "text/plain"
+                body: !lambda return document;
+                capture_response: false
+
+  # -- Asked for by the editor, answered on the main loop. An http_request on
+  # -- ESP-IDF blocks it, so this cannot run inside the HTTP handler that was
+  # -- asked; the component takes the request, answers "queued", and hears
+  # -- the outcome here. --
+  - id: restore_room_layout
+    mode: restart
+    then:
+      - if:
+          condition:
+            lambda: return !id(ha_token).empty();
+          then:
+            - http_request.get:
+                url: !lambda |-
+                  return "${ha_url}/api/media_controller/panel_layout/" +
+                         get_mac_address();
+                request_headers:
+                  Authorization: !lambda return id(auth_header).c_str();
+                capture_response: true
+                # -- The ceiling the backup endpoint itself enforces. --
+                max_response_buffer_size: 16384
+                on_response:
+                  then:
+                    - lambda: |-
+                        if (response->status_code == 200) {
+                          id(room_grid)->restore_finished(true, body, "");
+                        } else if (response->status_code == 404) {
+                          id(room_grid)->restore_finished(
+                              false, "",
+                              "Home Assistant holds no copy of this layout.");
+                        } else {
+                          char buf[64];
+                          snprintf(buf, sizeof(buf),
+                                   "Home Assistant answered HTTP %d.",
+                                   response->status_code);
+                          id(room_grid)->restore_finished(false, "", buf);
+                        }
+                on_error:
+                  then:
+                    - lambda: |-
+                        id(room_grid)->restore_finished(
+                            false, "", "Home Assistant could not be reached.");
+          else:
+            - lambda: |-
+                id(room_grid)->restore_finished(
+                    false, "", "This device is not paired yet.");
+
   # -- Home Assistant cannot ask this device anything, so what it knows about
   # -- it is pushed. There is no battery to report; the integration expects an
   # -- absent one. --
@@ -1494,9 +1878,9 @@ interval:
             id(poll_player)->execute();
           }
 
-          if (now - id(last_slot_poll_ms) >= id(poll_interval_ms) * 5) {
-            id(last_slot_poll_ms) = now;
-            id(poll_slots)->execute();
+          if (now - id(last_room_poll_ms) >= id(poll_interval_ms) * 5) {
+            id(last_room_poll_ms) = now;
+            id(poll_room_states)->execute();
           }
 
           // -- Fetch as soon as the config sensor has named the playlists
@@ -1517,12 +1901,101 @@ interval:
             id(report_status)->execute();
           }
 
-# -------------------- THE PAIRING PAGE --------------------
+# -------------------- ROOM CARD ARTWORK --------------------
+# The same four files the interface already draws at 128 px, decoded again at
+# the size a grid card uses. A second asset rather than a scale: this build
+# sets LV_COLOR_16_SWAP and leaves LV_DRAW_SW_SUPPORT_SWAPPED off, so LVGL
+# cannot transform a swapped RGB565 source at all. Declared here so the
+# classic firmware pays no flash for artwork it has no grid to draw.
+image:
+  - platform: file
+    file: "${asset_base_url}/1lamp.png"
+    id: card_icon_light1
+    resize: 40x40
+    type: RGB
+    transparency: alpha_channel
+  - platform: file
+    file: "${asset_base_url}/2lamps.png"
+    id: card_icon_light2
+    resize: 40x40
+    type: RGB
+    transparency: alpha_channel
+  - platform: file
+    file: "${asset_base_url}/fan.png"
+    id: card_icon_fan
+    resize: 40x40
+    type: RGB
+    transparency: alpha_channel
+  - platform: file
+    file: "${asset_base_url}/ac.png"
+    id: card_icon_ac
+    resize: 40x40
+    type: RGB
+    transparency: alpha_channel
+
+# -------------------- THE PAGES THIS FIRMWARE ADDS --------------------
 # Appended to the pages the interface package defines; the classic firmware
-# never compiles it. It is the only screen this firmware adds, and the only
-# one a person sees before the device belongs to a Home Assistant.
+# compiles neither. The room grid replaces the four fixed buttons on this
+# variant, and the pairing screen is what a person sees before the device
+# belongs to a Home Assistant.
 lvgl:
   pages:
+    # -- The room grid. Empty at compile time on purpose: what is on it comes
+    # -- from the layout in flash and the registry in the config sensor, and
+    # -- rebuild_room_grid is the only thing that puts anything here.
+    # --
+    # -- No heading and no hint. Eight rows of exactly 60 px need all 480, and
+    # -- "tap to toggle | hold lights to dim" stops being true the moment the
+    # -- person arranging the page decides what is on it. --
+    - id: page_room_grid
+      # -- Stated rather than assumed. A cell is exactly 60 px only if the
+      # -- grid starts at the very top left of the screen, and a page that
+      # -- inherited any padding would push all eight columns inwards and
+      # -- clip the eighth. --
+      pad_all: 0
+      border_width: 0
+      on_load:
+        - lambda: id(current_page) = "room";
+        - lambda: id(switches_swipe_active) = false;
+      on_swipe_right:
+        - lambda: id(switches_swipe_active) = true;
+        - script.execute: nav_home_move_right
+      on_swipe_left:
+        - lambda: id(switches_swipe_active) = true;
+        - script.execute: nav_home_move_left
+      widgets:
+        - obj:
+            id: room_grid_root
+            width: 480
+            height: 480
+            align: TOP_LEFT
+            x: 0
+            y: 0
+            bg_opa: TRANSP
+            border_width: 0
+            radius: 0
+            pad_all: 0
+            clickable: false
+            scrollable: false
+            gesture_bubble: true
+
+        - label:
+            id: lbl_room_grid_empty
+            text: "No room controls yet"
+            text_font: roboto_22
+            text_color: 0x77779a
+            align: CENTER
+            hidden: true
+
+        - label:
+            id: lbl_room_grid_hint
+            text: "Add them to this device in Home Assistant"
+            text_font: roboto_16
+            text_color: 0x55556f
+            align: CENTER
+            y: 34
+            hidden: true
+
     - id: page_pairing
       widgets:
         - label:

@@ -1,0 +1,736 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Room layout</title>
+<!--
+  The layout editor the paired ESP32-S3 firmware serves on the device itself.
+
+  This is the T560 panel's clients/t560/data/editor.html, and it is meant to
+  stay recognisably the same page: same board, same palette, same words. It
+  differs in exactly three ways, and all three are the device talking rather
+  than the page changing its mind:
+
+  * the three writes are POST. ESPHome's ESP-IDF web server registers URI
+    handlers for GET, POST and OPTIONS only, so a PUT or a DELETE never
+    reaches a handler at all;
+  * restoring is asked for and then watched. Fetching the copy from Home
+    Assistant blocks the device's main loop, so it cannot be answered inside
+    the request; the device reports the outcome on /api/entities instead;
+  * the colour control appears only when the device says it draws one.
+    `supports.colors` is false here: the room cards of this firmware are
+    drawn from the interface's own palette.
+-->
+
+<style>
+:root {
+  --bg: #0a121d;
+  --panel: #111d2d;
+  --edge: #253a54;
+  --edge-soft: #1a2941;
+  --text: #eaf1fb;
+  --muted: #8fa9c7;
+  --accent: #4dd0e1;
+  --accent-dark: #0b2a30;
+  --danger: #e2657a;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-text-size-adjust: 100%;
+}
+header {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 12px 16px; border-bottom: 1px solid var(--edge);
+  background: var(--panel); position: sticky; top: 0; z-index: 5;
+}
+h1 { font-size: 17px; margin: 0; font-weight: 700; letter-spacing: .3px; }
+.spacer { flex: 1 1 auto; }
+button, select {
+  font: inherit; color: var(--text); background: #16273c;
+  border: 1px solid var(--edge); border-radius: 9px; padding: 8px 13px;
+  cursor: pointer; min-height: 40px;
+}
+button:hover, select:hover { border-color: #375a80; }
+button.primary { background: var(--accent-dark); border-color: #2f7f88; color: var(--accent); font-weight: 700; }
+button.primary[disabled] { opacity: .45; cursor: default; }
+button.danger { color: var(--danger); border-color: #59303c; }
+button:disabled { opacity: .45; cursor: default; }
+main { display: flex; gap: 16px; padding: 16px; align-items: flex-start; flex-wrap: wrap; }
+#board {
+  flex: 1 1 380px; max-width: 640px; min-width: 300px;
+  background: var(--panel); border: 1px solid var(--edge);
+  border-radius: 14px; padding: 8px; touch-action: none; position: relative;
+}
+#cells { display: grid; gap: 2px; position: absolute; inset: 8px; }
+
+.cell { background: #0d1826; border-radius: 3px; }
+#cards { position: absolute; inset: 8px; }
+.card {
+  position: absolute; border-radius: 9px; padding: 6px;
+  background: linear-gradient(#213856, #0b1828);
+  border: 1px solid #3b5678; color: var(--text);
+  font-size: 11px; line-height: 1.2; overflow: hidden; cursor: grab;
+  display: flex; flex-direction: column; justify-content: flex-end;
+  touch-action: none; user-select: none; -webkit-user-select: none;
+}
+.card.selected { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(77,208,225,.35); }
+.card.unknown { background: #131a24; border-color: #3a2530; color: #b98b98; }
+.card .name { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card .kind { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .6px; }
+.card .swatch { position: absolute; top: 6px; left: 6px; width: 8px; height: 8px; border-radius: 4px; }
+.grip {
+  position: absolute; right: 0; bottom: 0; width: 22px; height: 22px;
+  cursor: nwse-resize; touch-action: none;
+}
+.grip::after {
+  content: ""; position: absolute; right: 4px; bottom: 4px;
+  width: 9px; height: 9px; border-right: 2px solid var(--accent);
+  border-bottom: 2px solid var(--accent); opacity: .8;
+}
+aside { flex: 1 1 300px; min-width: 280px; display: flex; flex-direction: column; gap: 14px; }
+section { background: var(--panel); border: 1px solid var(--edge); border-radius: 14px; padding: 14px; }
+section h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 1.1px; color: var(--muted); margin: 0 0 10px; }
+.group-title { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin: 12px 0 6px; }
+.group-title:first-child { margin-top: 0; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip {
+  background: #16273c; border: 1px solid var(--edge); border-radius: 999px;
+  padding: 7px 12px; font-size: 13px; cursor: pointer; min-height: 36px;
+}
+.chip.placed { opacity: .42; }
+.chip.armed { border-color: var(--accent); color: var(--accent); }
+.row { display: flex; gap: 8px; align-items: center; margin-bottom: 9px; flex-wrap: wrap; }
+.row label { flex: 0 0 78px; color: var(--muted); font-size: 13px; }
+.row select, .row input { flex: 1 1 120px; min-width: 0; }
+input[type=color] { padding: 2px; height: 40px; background: #16273c; border: 1px solid var(--edge); border-radius: 9px; }
+/* In the header rather than beside the palette: this is the only feedback the
+   page gives for Save, Restore and the skin, and on a phone the sidebar is
+   below the whole grid, where a message would never be seen. */
+#status { flex: 1 0 100%; font-size: 13px; color: var(--muted); min-height: 20px; }
+#status.error { color: var(--danger); }
+#status.ok { color: var(--accent); }
+.hint { color: var(--muted); font-size: 13px; margin: 0; }
+/* Adding a card is the one action with no control of its own — it is two
+   taps, in two different places — so it says so where the entities are. */
+#palette-hint { margin-bottom: 11px; }
+@media (max-width: 760px) {
+  main { padding: 10px; gap: 10px; }
+  header { padding: 10px 12px; }
+  #board { max-width: none; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>Room layout</h1>
+  <div class="spacer"></div>
+  <select id="skin" title="Player skin"></select>
+  <button id="restore" class="danger" title="Replace this layout with the copy saved in Home Assistant">Restore</button>
+  <button id="save" class="primary" disabled>Save</button>
+  <div id="status">Loading…</div>
+</header>
+
+<main>
+  <div id="board">
+    <div id="cells"></div>
+    <div id="cards"></div>
+  </div>
+
+  <aside>
+    <section>
+      <h2>Selected card</h2>
+      <div id="editor">
+        <p class="hint" id="no-selection">Tap a card to edit it, or pick an entity below and tap a free cell.</p>
+        <div id="fields" hidden>
+          <div class="row">
+            <label for="entity">Entity</label>
+            <select id="entity"></select>
+          </div>
+          <div class="row">
+            <label for="icon">Icon</label>
+            <select id="icon"></select>
+          </div>
+          <div class="row" id="color-row">
+            <label for="color">Colour</label>
+            <input type="color" id="color" value="#4dd0e1">
+            <button id="clear-color">Default</button>
+          </div>
+          <div class="row">
+            <label>Size</label>
+            <span id="size" class="hint"></span>
+          </div>
+          <div class="row">
+            <button id="delete" class="danger">Remove card</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Entities</h2>
+      <p class="hint" id="palette-hint">Pick one, then tap a free cell on the
+        grid.</p>
+      <div id="palette"></div>
+    </section>
+
+  </aside>
+</main>
+
+<script>
+"use strict";
+
+var grid = { v: 1, cols: 8, rows: 8, cards: [] };
+var entities = [];
+var icons = [];
+/* What the device says it can draw. Absent keys read as "yes", so a
+   device that says nothing gets the page it always had. */
+var supports = { colors: true };
+var selected = -1;
+var armed = null;
+var dirty = false;
+
+var boardEl = document.getElementById("board");
+var cellsEl = document.getElementById("cells");
+var cardsEl = document.getElementById("cards");
+var statusEl = document.getElementById("status");
+var saveEl = document.getElementById("save");
+var fieldsEl = document.getElementById("fields");
+var noSelectionEl = document.getElementById("no-selection");
+
+function say(text, kind) {
+  statusEl.textContent = text;
+  statusEl.className = kind || "";
+}
+
+function markDirty(value) {
+  dirty = value;
+  saveEl.disabled = !value;
+}
+
+function entityFor(rid) {
+  for (var i = 0; i < entities.length; i++) {
+    if (entities[i].rid === rid) { return entities[i]; }
+  }
+  return null;
+}
+
+/* The board keeps the grid's own proportions, so a card is the same shape
+   here as it is on the tablet. */
+function sizeBoard() {
+  var width = boardEl.clientWidth - 16;
+  var cell = width / grid.cols;
+  boardEl.style.height = (cell * grid.rows + 16) + "px";
+  cellsEl.style.gridTemplateColumns = "repeat(" + grid.cols + ", 1fr)";
+  cellsEl.style.gridTemplateRows = "repeat(" + grid.rows + ", 1fr)";
+  layoutCards();
+}
+
+function cellSize() {
+  return {
+    w: cardsEl.clientWidth / grid.cols,
+    h: cardsEl.clientHeight / grid.rows
+  };
+}
+
+function drawCells() {
+  cellsEl.textContent = "";
+  var total = grid.cols * grid.rows;
+  for (var i = 0; i < total; i++) {
+    var cell = document.createElement("div");
+    cell.className = "cell";
+    cellsEl.appendChild(cell);
+  }
+}
+
+function overlaps(a, b) {
+  return a.x < b.x + b.w && b.x < a.x + a.w &&
+         a.y < b.y + b.h && b.y < a.y + a.h;
+}
+
+function fits(card, ignoreIndex) {
+  if (card.w < 1 || card.h < 1) { return false; }
+  if (card.x < 0 || card.y < 0) { return false; }
+  if (card.x + card.w > grid.cols || card.y + card.h > grid.rows) { return false; }
+  for (var i = 0; i < grid.cards.length; i++) {
+    if (i === ignoreIndex) { continue; }
+    if (overlaps(card, grid.cards[i])) { return false; }
+  }
+  return true;
+}
+
+/* Driven by the cards and not by the nodes, and it stops at the first node
+   that is missing. Resizing the board and replacing the arrangement both run
+   through here, and after a restore the old nodes are still in the document
+   while `grid.cards` is already the new, possibly shorter, list. */
+function layoutCards() {
+  var size = cellSize();
+  var nodes = cardsEl.children;
+  for (var i = 0; i < grid.cards.length; i++) {
+    var card = grid.cards[i];
+    var node = nodes[i];
+    if (!node) { break; }
+    node.style.left = (card.x * size.w) + "px";
+    node.style.top = (card.y * size.h) + "px";
+    node.style.width = (card.w * size.w - 3) + "px";
+    node.style.height = (card.h * size.h - 3) + "px";
+  }
+}
+
+function renderCards() {
+  cardsEl.textContent = "";
+  for (var i = 0; i < grid.cards.length; i++) {
+    cardsEl.appendChild(cardNode(grid.cards[i], i));
+  }
+  layoutCards();
+  renderPalette();
+  renderEditor();
+}
+
+function cardNode(card, index) {
+  var entity = entityFor(card.rid);
+  var node = document.createElement("div");
+  node.className = "card" + (index === selected ? " selected" : "") +
+                   (entity ? "" : " unknown");
+  node.dataset.index = String(index);
+
+  if (card.color) {
+    var swatch = document.createElement("span");
+    swatch.className = "swatch";
+    swatch.style.background = card.color;
+    node.appendChild(swatch);
+  }
+
+  var kind = document.createElement("div");
+  kind.className = "kind";
+  kind.textContent = entity ? entity.domain : "unknown";
+  var name = document.createElement("div");
+  name.className = "name";
+  name.textContent = entity ? entity.name : card.rid;
+  node.appendChild(kind);
+  node.appendChild(name);
+
+  var grip = document.createElement("div");
+  grip.className = "grip";
+  node.appendChild(grip);
+
+  node.addEventListener("pointerdown", function (event) {
+    startDrag(event, index, event.target === grip);
+  });
+  return node;
+}
+
+/* One handler for both moving and resizing: the difference is only which of
+   the card's numbers the pointer changes. */
+function startDrag(event, index, resizing) {
+  event.preventDefault();
+  select(index);
+
+  var origin = grid.cards[index];
+  var start = { x: origin.x, y: origin.y, w: origin.w, h: origin.h };
+  var size = cellSize();
+  var fromX = event.clientX;
+  var fromY = event.clientY;
+  var node = cardsEl.children[index];
+  var moved = false;
+
+  function move(moveEvent) {
+    var dx = Math.round((moveEvent.clientX - fromX) / size.w);
+    var dy = Math.round((moveEvent.clientY - fromY) / size.h);
+    if (dx === 0 && dy === 0 && !moved) { return; }
+    moved = true;
+
+    var candidate = { x: start.x, y: start.y, w: start.w, h: start.h,
+                      rid: origin.rid };
+    if (resizing) {
+      candidate.w = Math.max(1, start.w + dx);
+      candidate.h = Math.max(1, start.h + dy);
+    } else {
+      candidate.x = Math.max(0, start.x + dx);
+      candidate.y = Math.max(0, start.y + dy);
+    }
+    if (!fits(candidate, index)) { return; }
+
+    origin.x = candidate.x;
+    origin.y = candidate.y;
+    origin.w = candidate.w;
+    origin.h = candidate.h;
+    layoutCards();
+    renderEditor();
+    markDirty(true);
+  }
+
+  function up() {
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", up);
+    window.removeEventListener("pointercancel", up);
+  }
+
+  node.setPointerCapture && node.setPointerCapture(event.pointerId);
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", up);
+  window.addEventListener("pointercancel", up);
+}
+
+/* A tap on empty board space places the armed entity there. */
+boardEl.addEventListener("pointerdown", function (event) {
+  if (event.target.closest(".card")) { return; }
+  if (!armed) { select(-1); return; }
+
+  var rect = cardsEl.getBoundingClientRect();
+  var size = cellSize();
+  var x = Math.floor((event.clientX - rect.left) / size.w);
+  var y = Math.floor((event.clientY - rect.top) / size.h);
+  var card = { x: x, y: y, w: 2, h: 2, rid: armed };
+
+  if (!fits(card, -1)) {
+    card.w = 1;
+    card.h = 1;
+    if (!fits(card, -1)) {
+      say("There is no room for a card there.", "error");
+      return;
+    }
+  }
+  grid.cards.push(card);
+  armed = null;
+  selected = grid.cards.length - 1;
+  markDirty(true);
+  renderCards();
+  say("Card added.", "ok");
+});
+
+function select(index) {
+  selected = index;
+  var nodes = cardsEl.children;
+  for (var i = 0; i < nodes.length; i++) {
+    nodes[i].classList.toggle("selected", i === index);
+  }
+  renderEditor();
+}
+
+function renderEditor() {
+  var card = selected >= 0 ? grid.cards[selected] : null;
+  fieldsEl.hidden = !card;
+  noSelectionEl.hidden = !!card;
+  if (!card) { return; }
+
+  var entitySelect = document.getElementById("entity");
+  entitySelect.textContent = "";
+  var known = entityFor(card.rid);
+  if (!known) {
+    var missing = document.createElement("option");
+    missing.value = card.rid;
+    missing.textContent = "Unknown (" + card.rid + ")";
+    entitySelect.appendChild(missing);
+  }
+  for (var i = 0; i < entities.length; i++) {
+    var option = document.createElement("option");
+    option.value = entities[i].rid;
+    option.textContent = entities[i].name + " — " + entities[i].domain;
+    entitySelect.appendChild(option);
+  }
+  entitySelect.value = card.rid;
+
+  var iconSelect = document.getElementById("icon");
+  iconSelect.textContent = "";
+  var auto = document.createElement("option");
+  auto.value = "";
+  auto.textContent = "Automatic";
+  iconSelect.appendChild(auto);
+  for (var j = 0; j < icons.length; j++) {
+    var iconOption = document.createElement("option");
+    iconOption.value = icons[j];
+    iconOption.textContent = icons[j];
+    iconSelect.appendChild(iconOption);
+  }
+  iconSelect.value = card.icon || "";
+
+  document.getElementById("color").value = card.color || "#4dd0e1";
+  document.getElementById("size").textContent =
+    card.w + " x " + card.h + " cells at " + card.x + "," + card.y;
+}
+
+function renderPalette() {
+  var palette = document.getElementById("palette");
+  var hint = document.getElementById("palette-hint");
+  palette.textContent = "";
+
+  var placed = {};
+  for (var i = 0; i < grid.cards.length; i++) { placed[grid.cards[i].rid] = true; }
+
+  var groups = [];
+  var byDomain = {};
+  for (var j = 0; j < entities.length; j++) {
+    var domain = entities[j].domain || "other";
+    if (!byDomain[domain]) { byDomain[domain] = []; groups.push(domain); }
+    byDomain[domain].push(entities[j]);
+  }
+  if (!groups.length) {
+    /* Nothing to pick, so telling somebody to pick one would be noise. */
+    hint.hidden = true;
+    var empty = document.createElement("p");
+    empty.className = "hint";
+    empty.textContent = "This device has no room controls yet. Add them " +
+                        "to the device in Home Assistant.";
+    palette.appendChild(empty);
+    return;
+  }
+  hint.hidden = false;
+
+  for (var g = 0; g < groups.length; g++) {
+    var title = document.createElement("div");
+    title.className = "group-title";
+    title.textContent = groups[g];
+    palette.appendChild(title);
+
+    var chips = document.createElement("div");
+    chips.className = "chips";
+    byDomain[groups[g]].forEach(function (entity) {
+      var chip = document.createElement("button");
+      chip.className = "chip" + (placed[entity.rid] ? " placed" : "") +
+                       (armed === entity.rid ? " armed" : "");
+      chip.textContent = entity.name;
+      chip.title = entity.entity;
+      chip.addEventListener("click", function () {
+        armed = armed === entity.rid ? null : entity.rid;
+        renderPalette();
+        say(armed ? "Now tap a free cell to place it." : "");
+      });
+      chips.appendChild(chip);
+    });
+    palette.appendChild(chips);
+  }
+}
+
+document.getElementById("entity").addEventListener("change", function () {
+  if (selected < 0) { return; }
+  grid.cards[selected].rid = this.value;
+  markDirty(true);
+  renderCards();
+});
+
+document.getElementById("icon").addEventListener("change", function () {
+  if (selected < 0) { return; }
+  if (this.value) { grid.cards[selected].icon = this.value; }
+  else { delete grid.cards[selected].icon; }
+  markDirty(true);
+});
+
+document.getElementById("color").addEventListener("change", function () {
+  if (selected < 0 || !supports.colors) { return; }
+  grid.cards[selected].color = this.value;
+  markDirty(true);
+  renderCards();
+});
+
+document.getElementById("clear-color").addEventListener("click", function () {
+  if (selected < 0 || !supports.colors) { return; }
+  delete grid.cards[selected].color;
+  markDirty(true);
+  renderCards();
+});
+
+document.getElementById("delete").addEventListener("click", function () {
+  if (selected < 0) { return; }
+  grid.cards.splice(selected, 1);
+  selected = -1;
+  markDirty(true);
+  renderCards();
+});
+
+document.getElementById("save").addEventListener("click", function () {
+  say("Saving…");
+  fetch("/api/layout", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(grid)
+  }).then(function (response) {
+    return response.json().then(function (body) {
+      if (!response.ok) { throw new Error(body.error || "Save failed"); }
+      return body;
+    });
+  }).then(function (body) {
+    markDirty(false);
+    /* "Sent" and not "stored". The device posts the copy and does not wait
+       for the answer — an HTTP request blocks its main loop — so this is
+       what it can honestly claim. Restore is where you find out whether the
+       copy arrived. */
+    say(body.backup === true
+        ? "Saved, and a copy was sent to Home Assistant."
+        : "Saved on the device. No copy was sent to Home Assistant; this " +
+          "device is not paired yet.",
+        body.backup === true ? "ok" : "error");
+  }).catch(function (error) {
+    say(String(error.message || error), "error");
+  });
+});
+
+/* Asks the device how the restore it was given ended.
+
+   It cannot be answered inside the request that started it: fetching the
+   copy from Home Assistant blocks the device's main loop, so the device
+   takes the request, answers "queued", and does the work on its own
+   loop. The outcome then arrives on /api/entities, which is the route
+   that says what this device's situation is. */
+function awaitRestore(attempts) {
+  if (attempts <= 0) {
+    return Promise.reject(new Error("The device did not finish restoring."));
+  }
+  return new Promise(function (resolve) { setTimeout(resolve, 700); })
+    .then(function () { return fetch("/api/entities"); })
+    .then(function (response) { return response.json(); })
+    .then(function (body) {
+      var restore = body.restore || {};
+      if (restore.state === "pending") { return awaitRestore(attempts - 1); }
+      if (restore.state === "failed") {
+        throw new Error(restore.message || "Restore failed.");
+      }
+      return restore.message || "";
+    });
+}
+
+document.getElementById("restore").addEventListener("click", function () {
+  if (!window.confirm("Replace this layout with the copy saved in Home " +
+                      "Assistant?")) { return; }
+  say("Restoring…");
+  fetch("/api/layout/restore", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{}"
+  })
+    .then(function (response) {
+      return response.json().then(function (body) {
+        if (!response.ok) { throw new Error(body.error || "Restore failed"); }
+        return body;
+      });
+    })
+    .then(function () { return awaitRestore(12); })
+    .then(function (note) {
+      return loadLayout().then(function () { return note; });
+    })
+    .then(function (note) {
+      markDirty(false);
+      say(note
+          ? "Restored from Home Assistant. " + note
+          : "Restored from Home Assistant.", "ok");
+    })
+    .catch(function (error) { say(String(error.message || error), "error"); });
+});
+
+/* Asks the device what skin it is drawing until it answers with the one
+   that was requested. The request only reaches Home Assistant, which owns
+   the value; the device adopts it on its next poll. Reporting "sent"
+   would tell the reader nothing about whether it worked, and this page
+   shows no preview of the skin, so this is the only honest confirmation
+   there is. */
+function confirmSkin(name, attempts) {
+  if (attempts <= 0) { return Promise.resolve(false); }
+  return new Promise(function (resolve) { setTimeout(resolve, 600); })
+    .then(function () { return fetch("/api/skins"); })
+    .then(function (response) { return response.json(); })
+    .then(function (body) {
+      if (body.current === name) { return true; }
+      return confirmSkin(name, attempts - 1);
+    });
+}
+
+document.getElementById("skin").addEventListener("change", function () {
+  var name = this.value;
+  var select = this;
+  say("Asking Home Assistant for the " + name + " skin…");
+  select.disabled = true;
+  fetch("/api/skin", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ skin: name })
+  }).then(function (response) {
+    return response.json().then(function (body) {
+      if (!response.ok) { throw new Error(body.error || "Could not set skin"); }
+      return body;
+    });
+  }).then(function () {
+    say("Asked. Waiting for the device to pick it up…");
+    return confirmSkin(name, 10);
+  }).then(function (applied) {
+    select.disabled = false;
+    if (applied) {
+      say("The device is drawing the " + name + " skin.", "ok");
+    } else {
+      /* Home Assistant took it, so this is not a failure: the device is
+         offline, or simply slow to poll. */
+      say("Home Assistant accepted " + name + ", but the device has not " +
+          "picked it up yet.");
+    }
+  }).catch(function (error) {
+    select.disabled = false;
+    say(String(error.message || error), "error");
+  });
+});
+
+function loadLayout() {
+  return fetch("/api/layout").then(function (r) { return r.json(); })
+    .then(function (body) {
+      grid = {
+        v: 1,
+        cols: body.cols || 8,
+        rows: body.rows || 8,
+        cards: body.cards || []
+      };
+      selected = -1;
+      drawCells();
+      sizeBoard();
+      renderCards();
+    });
+}
+
+function loadEntities() {
+  return fetch("/api/entities").then(function (r) { return r.json(); })
+    .then(function (body) {
+      entities = body.entities || [];
+      icons = body.icons || [];
+      var says = body.supports || {};
+      supports.colors = says.colors !== false;
+      /* Hidden rather than disabled: a control that cannot do anything
+         is better absent than present and inert. */
+      document.getElementById("color-row").hidden = !supports.colors;
+    });
+}
+
+function loadSkins() {
+  return fetch("/api/skins").then(function (r) { return r.json(); })
+    .then(function (body) {
+      var select = document.getElementById("skin");
+      select.textContent = "";
+      (body.skins || []).forEach(function (name) {
+        var option = document.createElement("option");
+        option.value = name;
+        option.textContent = name;
+        select.appendChild(option);
+      });
+      if (body.current) { select.value = body.current; }
+      select.disabled = !body.writable;
+      select.title = body.writable
+        ? "Player skin"
+        : "Home Assistant has not told this device which entity holds the skin";
+    });
+}
+
+window.addEventListener("resize", sizeBoard);
+window.addEventListener("beforeunload", function (event) {
+  if (dirty) { event.preventDefault(); event.returnValue = ""; }
+});
+
+loadEntities()
+  .then(loadLayout)
+  .then(loadSkins)
+  .then(function () { say("Ready."); })
+  .catch(function (error) {
+    say("Could not load the device: " + (error.message || error), "error");
+  });
+</script>
+</body>
+</html>

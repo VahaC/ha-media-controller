@@ -23,6 +23,14 @@
 #                                 play_queue_item
 #   Scripts this file offers.     ui_apply_skin(skin) — the layout named in
 #                                 the config sensor, in contract spelling
+#   Globals this file offers.     room_page_index — which LVGL page the room
+#                                 controls live on, as an index into the
+#                                 lvgl pages list. -1, the default, means the
+#                                 four fixed buttons this file draws. A
+#                                 firmware that builds its own room page
+#                                 appends it to lvgl.pages and writes its
+#                                 index here at boot; navigation then goes
+#                                 there instead. See show_room_page.
 #   State this file reads.        media_title, media_artist, player_state,
 #                                 volume_level, media_position, media_duration,
 #                                 entity_picture, shuffle_state, repeat_state,
@@ -546,7 +554,34 @@ script:
           condition:
             lambda: return page == "room";
           then:
-            - lvgl.page.show: page_switches
+            - script.execute:
+                id: show_room_page
+                animation: 0
+
+  # -- The room controls are the one page a firmware may replace. This file
+  # -- draws four fixed buttons, which is everything the classic firmware can
+  # -- ever have: it resolves entity IDs while compiling, so a card it was not
+  # -- flashed with cannot exist. A firmware that learns its room controls at
+  # -- runtime appends a page of its own and points room_page_index at it.
+  # --
+  # -- Resolved through the page index rather than by naming a page, because
+  # -- naming one would mean this file knowing about a page only one firmware
+  # -- compiles. `animation` is 0 for none, 1 to move left, 2 to move right;
+  # -- an int rather than an enum because a script parameter cannot be one. --
+  - id: show_room_page
+    parameters:
+      animation: int
+    then:
+      - lambda: |-
+          lvgl::LvPageType *fallback = id(page_switches);
+          size_t index = id(room_page_index) >= 0
+                             ? (size_t) id(room_page_index)
+                             : fallback->index;
+          lv_screen_load_anim_t anim = LV_SCREEN_LOAD_ANIM_NONE;
+          if (animation == 1) anim = LV_SCREEN_LOAD_ANIM_MOVE_LEFT;
+          else if (animation == 2) anim = LV_SCREEN_LOAD_ANIM_MOVE_RIGHT;
+          fallback->get_parent()->show_page(
+              index, anim, anim == LV_SCREEN_LOAD_ANIM_NONE ? 0 : 300);
 
   # -- Swipe navigation entry points. Every page-to-page swipe goes through one
   # -- of these so the debounce applies uniformly in both directions. --
@@ -563,10 +598,9 @@ script:
               id(last_nav_ms) = now;
               return true;
           then:
-            - lvgl.page.show:
-                id: page_switches
-                animation: MOVE_LEFT
-                time: 300ms
+            - script.execute:
+                id: show_room_page
+                animation: 1
 
   - id: nav_to_switches_move_right
     then:
@@ -581,10 +615,9 @@ script:
               id(last_nav_ms) = now;
               return true;
           then:
-            - lvgl.page.show:
-                id: page_switches
-                animation: MOVE_RIGHT
-                time: 300ms
+            - script.execute:
+                id: show_room_page
+                animation: 2
 
   - id: nav_home_move_left
     then:
@@ -1721,6 +1754,16 @@ globals:
     type: std::string
     restore_value: no
     initial_value: '"player"'
+
+  # Which LVGL page the room controls are on, as an index into the pages list.
+  # -1 means the four fixed buttons on page_switches, which is all the classic
+  # firmware can ever have. A firmware that builds its room page at runtime
+  # appends it to lvgl.pages and writes its index here at boot. See
+  # show_room_page and the header of this file.
+  - id: room_page_index
+    type: int
+    restore_value: no
+    initial_value: '-1'
 
   # Timestamp of the last swipe-driven page change. A screen load animation runs
   # for 300 ms, and a single drag can otherwise be recognised again by the page

@@ -29,10 +29,20 @@ jobs:
         # a complete local device wrapper instead of pretending the package is
         # a complete device configuration. Image assets are fetched from
         # asset_base_url during validation.
+        #
+        # grid_component_source is overridden to the checkout. Its default is
+        # this repository on main, which is right for a flashed device and
+        # wrong here: a pull request that changes the component would
+        # otherwise be validated against the copy already on main. The path is
+        # relative to the directory of the configuration being validated,
+        # which is firmware/.
         run: |
           esphome config firmware/media-controller.yaml
           trap 'rm -f firmware/.ci-paired.yaml' EXIT
           printf '%s\n' \
+            'substitutions:' \
+            '  grid_component_source: ../components' \
+            '' \
             'packages:' \
             '  paired: !include media-controller-paired.yaml' \
             '' \

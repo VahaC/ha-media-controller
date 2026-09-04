@@ -22,6 +22,7 @@ them, and do not "tidy" them into `clients/`:**
 | `firmware/media-controller-paired.yaml` | The same, for every device on the paired firmware. |
 | `firmware/media-controller-ui.yaml` | Reached by a **relative `!include`** from both files above. A device fetches only the file it names; the include is resolved inside the clone ESPHome makes of this repository, so renaming or moving this file breaks devices that never mention it. |
 | `firmware/assets/` | Fetched at compile time through `asset_base_url`, a raw GitHub URL. |
+| `components/media_controller_grid/` | Fetched at compile time by every paired device, as an ESPHome `external_components` Git source pinned to this repository. ESPHome looks for `components/` or `esphome/components/` at the repository root, which is why it is not under `firmware/`. |
 | `hacs.json` | Must stay at the repository root. |
 
 The tablet panel had no such constraint — it is installed over SSH from a local

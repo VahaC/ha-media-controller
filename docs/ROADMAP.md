@@ -160,15 +160,18 @@ arrangement is stored against those `rid`s — is a paired-firmware feature
 only**. Planning it as something both firmwares eventually get would be
 planning something that cannot be built.
 
-That does not break the shared interface package, and it must not be allowed
-to. The room page is already built by `apply_slots`, one of the three
-payload-to-widget scripts named in the header, and the seam holds precisely
-because the interface does not know where its payload came from. The registry
-work replaces what that script is given, on one firmware, and adds a second
-script beside it rather than teaching the interface which firmware it is
-running on.
+That did not break the shared interface package, and it must not be allowed
+to. What the interface gained is one integer, `room_page_index`: which LVGL
+page the room controls are on. It defaults to the four fixed buttons the
+interface itself draws, and a firmware that builds its own room page appends
+that page and writes its index there at boot. Navigation resolves the page
+through the index instead of naming one, so the interface never learns which
+firmware it is running on and never names a page only one of them compiles.
 
-The order is: the tablet first, because it has a filesystem, a real JSON
+The grid page itself lives in `media-controller-paired.yaml`, for the same
+reason the pairing page does: the classic firmware can never have it.
+
+The order was: the tablet first, because it has a filesystem, a real JSON
 parser and a screen with room for a hundred tiles; the paired firmware second;
-the on-device grid last, on the paired firmware alone. See
-[ROOM_SLOTS.md](ROOM_SLOTS.md#the-registry-contract-version-6).
+the on-device grid last, on the paired firmware alone. All three have landed.
+See [ROOM_SLOTS.md](ROOM_SLOTS.md#the-registry-contract-version-6).

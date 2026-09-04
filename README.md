@@ -70,18 +70,21 @@ firmware/media-controller-ui.yaml     Shared ESPHome interface: display, LVGL, t
 firmware/media-controller.yaml        Classic transport: native API, flashed config
 firmware/media-controller-paired.yaml Paired transport: REST, config from Home Assistant
 firmware/assets/                      Image assets, fetched at compile time
+components/media_controller_grid/     ESPHome external component: the paired room grid and its editor
 clients/t560/                         GTK3 tablet panel (C, Python helpers)
 docs/                                 Cross-component documentation
 tests/                                Integration transformation tests
 ```
 
-`custom_components/media_controller/` and every path under `firmware/` are
-frozen. Device configurations in the field name a firmware file and
-`firmware/assets/` by raw URL, and HACS downloads the integration from its path.
-`media-controller-ui.yaml` is frozen for a subtler reason: devices reach it
-through a relative `!include` from a file they do name, so renaming it breaks
-devices that never mention it. Moving any of them breaks installations that
-already exist. See [docs/MERGE.md](docs/MERGE.md).
+`custom_components/media_controller/`, every path under `firmware/`, and
+`components/media_controller_grid/` are frozen. Device configurations in the
+field name a firmware file and `firmware/assets/` by raw URL, HACS downloads
+the integration from its path, and a paired device pulls the external component
+from `components/` as an ESPHome Git source. `media-controller-ui.yaml` is
+frozen for a subtler reason: devices reach it through a relative `!include`
+from a file they do name, so renaming it breaks devices that never mention it.
+Moving any of them breaks installations that already exist. See
+[docs/MERGE.md](docs/MERGE.md).
 
 ## Versioning
 
@@ -90,12 +93,13 @@ mechanisms are different:
 
 ```text
 integration-vX.Y.Z    custom_components/**
-firmware-vX.Y.Z       firmware/**
+firmware-vX.Y.Z       firmware/** and components/**
 panel-vX.Y.Z          clients/t560/**
 ```
 
-One `firmware-` tag covers both ESP32 firmwares and the interface package they
-share, because a change to that package ships to both at once. Each firmware
+One `firmware-` tag covers both ESP32 firmwares, the interface package they
+share and the external component the paired one loads, because a change to the
+shared package ships to both at once and the component is pinned to `main`. Each firmware
 also carries its own `project.version`, which is what ESPHome shows on the
 device: `media_controller.esp32s3` for the classic one and
 `media_controller.esp32s3_paired` for the paired one.
