@@ -105,6 +105,12 @@ enum CardDomain : uint8_t {
    * is the entity state itself and the unit an attribute of the same poll,
    * so like weather it needs no bounds beside the reading. */
   DOMAIN_SENSOR = 5,
+  /* Contract version 7. A blind, a shutter or an awning. This build draws
+   * the toggle the integration offers it and reports OPEN/CLOSED; the
+   * percentage and the stop button need a slider the firmware has no
+   * gesture left for, so the panel profile already strips `position` and
+   * `stop` before they reach the device. */
+  DOMAIN_COVER = 6,
 };
 
 /* One card, in the shape that goes to flash.
@@ -213,20 +219,22 @@ struct Entry {
  * the second walks the children by index, so the rule lives here once
  * instead of being written down twice:
  *
- *   child 0     the icon, on every card (hidden on a compact sensor card,
- *               where 54 px hold the name and the value and nothing else);
- *   child 1     the reading, on a labelled thermostat, weather or sensor
- *               card, and on a compact sensor card;
+ *   child 0     the icon, on every card (hidden on a compact card and on a
+ *               sensor card, where the value is what the card is for);
+ *   child 1     the value, on every labelled card but an unknown one: the
+ *               reading on a thermostat, weather, sensor or cover card, and
+ *               ON/OFF on a light or switch card;
  *   children 2.. the daily forecast rows, on a large weather card only;
- *   last child  the name, on any labelled card and on a compact sensor card
+ *   last child  the name, on any labelled card and on a compact card
  *               that has room for it beside the value.
  */
 bool card_is_labelled(const Card &card);
 bool card_shows_reading(const Card &card, const Entry *entry);
-/* Whether this card is a sensor too small for the labelled layout above:
- * 1x1, 2x1 and every other card below two cells in either direction. It
- * still says its value — under the name where the name fits beside it, and
- * alone where it does not — because the value outranks the name. */
+/* Whether this card is too small for the labelled layout above: 1x1, 2x1
+ * and every other card below two cells in either direction. A sensor or a
+ * weather block below that size still says its value: the name goes on top
+ * and the value under it, and where both do not fit the name is dropped
+ * and the value stays, because the value outranks the name. */
 bool card_shows_compact(const Card &card, const Entry *entry);
 /* How many forecast rows this card was built with: large weather cards get
  * one per cell past the second, up to FORECAST_DAYS, and everything else
@@ -242,16 +250,22 @@ uint8_t card_forecast_rows(const Card &card, const Entry *entry);
  *
  * A light and a switch say "on" and everything else is off. A thermostat
  * does not: its state is the mode it is in — heat, cool, auto, dry, fan_only
- * — and every one of them but "off" is a thermostat that is running. */
+ * — and every one of them but "off" is a thermostat that is running. A
+ * cover is open when it is not shut: Home Assistant reports `open`,
+ * `closed`, `opening` and `closing`, one that is moving towards open reads
+ * as on, and only `closed` reads as off. */
 bool entry_is_known(const Entry &entry);
 bool entry_is_on(const Entry &entry);
 /* One forecast row as a card writes it ("Sat 22°/14°", or the high alone
  * where no low was reported). Empty when the card holds no such day. */
 std::string forecast_text(const Entry &entry, uint8_t day);
-/* The line such a card draws under its name: the temperature the room is at
- * and, while the thermostat is running, the setpoint after it — the order a
- * thermostat is read in. A weather block says the condition and how warm it
- * is instead, with the humidity where one is reported.
+/* The line such a card draws under its name: ON/OFF on a light or a
+ * switch, because "on" is the whole of what the person came to see there;
+ * the temperature the room is at and, while the thermostat is running, the
+ * setpoint after it on a thermostat, which is the order a thermostat is
+ * read in; OPEN/CLOSED on a cover; the condition and how warm it is on a
+ * weather block, with the humidity where one is reported; the value with
+ * its unit on a sensor block.
  *
  * Empty means "there is nothing to say", which includes a thermostat that is
  * off and reports no room temperature, and the caller **writes** that empty

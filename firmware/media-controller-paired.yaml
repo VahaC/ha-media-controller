@@ -792,9 +792,12 @@ script:
                    "\",\"media_type\":\"playlist\"}";
 
   # -- A card is addressed by its entity, which the grid component resolved
-  # -- from the rid the card stores. The domain is read off the entity, so the
-  # -- same script drives a lamp and a socket. This is the whole point of the
-  # -- paired firmware: nothing here is decided at compile time. --
+  # -- from the rid the card stores. The call goes through `homeassistant`
+  # -- rather than the domain in front of the dot, the way the T560 panel
+  # -- does: it toggles a lamp, a socket, a thermostat and a blind alike,
+  # -- and deriving the domain would refuse exactly the thermostats whose
+  # -- toggle lives there. This is the whole point of the paired firmware:
+  # -- nothing here is decided at compile time. --
   - id: cmd_entity_toggle
     mode: parallel
     max_runs: 4
@@ -802,10 +805,9 @@ script:
       entity: string
     then:
       - lambda: |-
-          size_t dot = entity.find('.');
-          if (dot == std::string::npos) return;
+          if (entity.find('.') == std::string::npos) return;
           id(ha_action)->execute(
-              entity.substr(0, dot), std::string("toggle"),
+              std::string("homeassistant"), std::string("toggle"),
               "{\"entity_id\":\"" + entity + "\"}");
       # -- Room state is otherwise polled slowly. A card the person just
       # -- pressed must not wait for that, so ask again once Home Assistant
@@ -1644,8 +1646,19 @@ script:
             lv_obj_set_user_data(tile, (void *) (uintptr_t) i);
             lv_obj_remove_flag(tile, LV_OBJ_FLAG_SCROLLABLE);
             // -- lv_obj_create leaves an object unclickable, and a card that
-            //    is not clickable gets no long press either. --
-            lv_obj_add_flag(tile, LV_OBJ_FLAG_CLICKABLE);
+            //    is not clickable gets no long press either. A reading card
+            //    stays unclickable on purpose: weather, a sensor, or anything
+            //    Home Assistant offered no action for never shows a pressed
+            //    state for a tap that acts on nothing, exactly like the T560
+            //    panel. A card whose element has not arrived yet keeps the
+            //    default and is corrected by the rebuild the registry poll
+            //    triggers. --
+            bool actionable =
+                entry == nullptr || entry->togglable || entry->dimmable ||
+                entry->settable_temp;
+            if (actionable) {
+              lv_obj_add_flag(tile, LV_OBJ_FLAG_CLICKABLE);
+            }
             // -- So a drag across a card still reaches the page and changes
             //    it, exactly as it does over the four fixed buttons. --
             lv_obj_add_flag(tile, LV_OBJ_FLAG_GESTURE_BUBBLE);
@@ -1671,33 +1684,48 @@ script:
 
             // -- The artwork. A stored icon wins; without one the domain
             //    decides, which is what makes a card useful before anybody
-            //    has opened the editor. Never scaled at draw time: each of
+            //    has opened the editor. A switch borrows the fan and a
+            //    thermostat the air conditioner, the way the T560 panel
+            //    does; a blind has its own picture. A sensor names none: it
+            //    draws its value as type rather than artwork, again the way
+            //    the T560 panel does. Never scaled at draw time: each of
             //    these is a 40x40 asset of its own, because this build sets
             //    LV_COLOR_16_SWAP and LVGL cannot transform a swapped
             //    RGB565 source. --
+            bool sensor_card =
+                entry != nullptr &&
+                entry->domain == media_controller_grid::DOMAIN_SENSOR;
             image::Image *art = id(card_icon_light1);
             if (card.icon == 1) art = id(card_icon_light1);
             else if (card.icon == 2) art = id(card_icon_light2);
             else if (card.icon == 3) art = id(card_icon_fan);
             else if (card.icon == 4) art = id(card_icon_ac);
             else if (card.icon == 5) art = id(card_icon_weather);
+            else if (card.icon == 6) art = id(card_icon_blind);
             else if (entry != nullptr &&
                      entry->domain == media_controller_grid::DOMAIN_WEATHER) {
               art = id(card_icon_weather);
             }
             else if (entry != nullptr &&
-                     (entry->domain == media_controller_grid::DOMAIN_SWITCH ||
-                      entry->domain == media_controller_grid::DOMAIN_CLIMATE)) {
+                     entry->domain == media_controller_grid::DOMAIN_SWITCH) {
+              art = id(card_icon_fan);
+            }
+            else if (entry != nullptr &&
+                     entry->domain == media_controller_grid::DOMAIN_CLIMATE) {
               art = id(card_icon_ac);
+            }
+            else if (entry != nullptr &&
+                     entry->domain == media_controller_grid::DOMAIN_COVER) {
+              art = id(card_icon_blind);
             }
 
             // -- A one-cell card is 54 px of paint and has room for the icon
             //    or the name, not both. The icon is the half that still says
             //    what the card is at a glance. That rule is the same for
-            //    every card type but one: a sensor at one cell says its
-            //    value, with the name where it fits beside it — see
-            //    `compact` below. A thermostat at one cell is a picture and
-            //    a tap, and everything it has to say needs two. --
+            //    every card type but two: a sensor or a weather block at one
+            //    cell says its value, with the name where it fits beside it
+            //    — see `compact` below. Anything else at one cell is a
+            //    picture and a tap, and everything it has to say needs two. --
             bool labelled = media_controller_grid::card_is_labelled(card);
             bool reads = media_controller_grid::card_shows_reading(card, entry);
             // -- A sensor below the labelled size still says its value: the
@@ -1720,12 +1748,15 @@ script:
             lv_obj_t *icon = lv_image_create(tile);
             lv_image_set_src(icon, art->get_lv_image_dsc());
             lv_obj_remove_flag(icon, LV_OBJ_FLAG_CLICKABLE);
-            if (compact) {
-              // -- No icon on a compact sensor card: at 54 px there is room
-              //    for the name and the value and nothing else, and the
-              //    value is what the card is for. The object stays — child
-              //    0 is the icon on every card, and the refresh below walks
-              //    children by index. --
+            // -- No icon where the value is the picture: on a compact card
+            //    54 px hold the name and the value and nothing else, and on
+            //    a sensor card the value with its unit says more than a lamp
+            //    ever could — unless a person chose an icon for it in the
+            //    editor, which wins. The object stays — child 0 is the icon
+            //    on every card, and the refresh below walks children by
+            //    index. --
+            bool hide_icon = compact || (sensor_card && card.icon == 0);
+            if (hide_icon) {
               lv_obj_add_flag(icon, LV_OBJ_FLAG_HIDDEN);
             }
             int icon_y = !labelled ? 0
@@ -1747,11 +1778,12 @@ script:
               value_y = zone_top + (slack > 0 ? slack / 2 : 0);
             }
 
-            // -- Child 1 on a labelled thermostat, weather or sensor card,
-            //    and on a compact sensor card; see the child order in
-            //    media_controller_grid.h. It is created empty because the
-            //    registry arriving and the state arriving are two different
-            //    polls, and refresh_room_cards fills it. --
+            // -- Child 1 on every labelled card of a known domain; see the
+            //    child order in media_controller_grid.h. It is created empty
+            //    because the registry arriving and the state arriving are two
+            //    different polls, and refresh_room_cards fills it: the
+            //    reading on a thermostat, weather, sensor or cover card, and
+            //    ON/OFF on a light or switch card. --
             lv_obj_t *reading = nullptr;
             if (reads || compact) {
               reading = lv_label_create(tile);
@@ -1764,6 +1796,11 @@ script:
               lv_label_set_text(reading, "");
               if (compact) {
                 lv_obj_align(reading, LV_ALIGN_TOP_MID, 0, value_y);
+              } else if (sensor_card) {
+                // -- Nothing above it: the icon is hidden, so the value
+                //    moves to the middle of the card and the name keeps the
+                //    bottom line. --
+                lv_obj_align(reading, LV_ALIGN_CENTER, 0, -8);
               } else {
                 lv_obj_align(reading, LV_ALIGN_BOTTOM_MID, 0, -26);
               }
@@ -1815,7 +1852,7 @@ script:
                     (uint32_t) line_h;
                 if (lines != 2) {
                   lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
-                } else {
+                } else if (!sensor_card) {
                   if (reading != nullptr) {
                     lv_obj_align(reading, LV_ALIGN_BOTTOM_MID, 0,
                                  -26 - line_h);
@@ -1988,6 +2025,9 @@ script:
                              : (reading ? lv_color_hex(0x3d6a99)
                                         : lv_color_hex(0x505078))),
                 0);
+            // -- An active card reads at a glance: a wider accent border on
+            //    top of the colour, the way the four fixed buttons glow. --
+            lv_obj_set_style_border_width(tile, on ? 3 : 2, 0);
 
             lv_obj_t *icon = lv_obj_get_child(tile, 0);
             if (icon != NULL) {
@@ -1997,12 +2037,11 @@ script:
               lv_obj_set_style_img_opa(icon, known ? LV_OPA_COVER : 90, 0);
             }
 
-            // -- A thermostat says a temperature where everything else says
-            //    nothing: "on" is not what a person came to a thermostat
-            //    for, a weather block names the sky, and a sensor block its
-            //    value with its unit. Child 1, and only on a labelled
-            //    thermostat, weather or sensor card, or a compact sensor
-            //    card; see the child order in media_controller_grid.h.
+            // -- The value line under the name. Child 1 on every labelled
+            //    card of a known domain and on a compact sensor or weather
+            //    card; see the child order in media_controller_grid.h: the
+            //    reading on a thermostat, weather, sensor or cover card, and
+            //    ON/OFF on a light or switch card.
             // --
             // -- The guard is "has this element ever been answered", not
             //    "is the new reading empty". Skipping an empty reading would
@@ -2017,6 +2056,19 @@ script:
                 lv_label_set_text(
                     reading,
                     media_controller_grid::card_reading(*entry).c_str());
+                // -- ON on a lamp, a socket or a blind draws in the accent;
+                //    OFF stays in the dim reading grey. --
+                if (entry->domain == media_controller_grid::DOMAIN_LIGHT ||
+                    entry->domain == media_controller_grid::DOMAIN_SWITCH ||
+                    entry->domain == media_controller_grid::DOMAIN_COVER) {
+                  bool on_value =
+                      media_controller_grid::entry_is_on(*entry);
+                  lv_obj_set_style_text_color(
+                      reading,
+                      on_value ? lv_color_hex(0x00cfff)
+                               : lv_color_hex(0x8f8fb4),
+                      0);
+                }
               }
             }
 
@@ -2283,6 +2335,12 @@ image:
   - platform: file
     file: "${asset_base_url}/ac.png"
     id: card_icon_ac
+    resize: 40x40
+    type: RGB
+    transparency: alpha_channel
+  - platform: file
+    file: "${asset_base_url}/blind.png"
+    id: card_icon_blind
     resize: 40x40
     type: RGB
     transparency: alpha_channel

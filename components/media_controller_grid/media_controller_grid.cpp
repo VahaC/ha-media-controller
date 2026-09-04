@@ -17,7 +17,8 @@ static const char *const TAG = "room_grid";
  * the T560 panel; the two builds do not carry the same set, which is exactly
  * why `GET /api/entities` reports it rather than the editor writing it down a
  * second time. */
-const char *const ICON_NAMES[] = {"light-1", "light-2", "fan", "ac", "weather"};
+const char *const ICON_NAMES[] = {"light-1", "light-2", "fan",
+                                  "ac",      "weather", "blind"};
 const size_t ICON_COUNT = sizeof(ICON_NAMES) / sizeof(ICON_NAMES[0]);
 
 /* The default card. Two cells square is the smallest size that still holds an
@@ -73,6 +74,8 @@ static uint8_t domain_from_name(const char *domain) {
     return DOMAIN_SWITCH;
   if (strcmp(domain, "climate") == 0)
     return DOMAIN_CLIMATE;
+  if (strcmp(domain, "cover") == 0)
+    return DOMAIN_COVER;
   if (strcmp(domain, "weather") == 0)
     return DOMAIN_WEATHER;
   if (strcmp(domain, "sensor") == 0)
@@ -88,6 +91,8 @@ static const char *domain_to_name(uint8_t domain) {
       return "switch";
     case DOMAIN_CLIMATE:
       return "climate";
+    case DOMAIN_COVER:
+      return "cover";
     case DOMAIN_WEATHER:
       return "weather";
     case DOMAIN_SENSOR:
@@ -122,15 +127,19 @@ static float parse_number(const std::string &text) {
 
 bool card_is_labelled(const Card &card) { return card.w() >= 2 && card.h() >= 2; }
 
+/* Every labelled card of a known domain carries the value line: a reading
+ * on a thermostat, weather, sensor or cover card, and ON/OFF on a light or
+ * a switch card, where the state is the whole of the content. An element
+ * whose domain this build cannot draw gets no line rather than a wrong
+ * one. */
 bool card_shows_reading(const Card &card, const Entry *entry) {
-  return entry != nullptr &&
-         (entry->domain == DOMAIN_CLIMATE || entry->domain == DOMAIN_WEATHER ||
-          entry->domain == DOMAIN_SENSOR) &&
-         card_is_labelled(card);
+  return entry != nullptr && entry->domain != DOMAIN_OTHER && card_is_labelled(card);
 }
 
 bool card_shows_compact(const Card &card, const Entry *entry) {
-  return entry != nullptr && entry->domain == DOMAIN_SENSOR && !card_is_labelled(card);
+  return entry != nullptr &&
+         (entry->domain == DOMAIN_SENSOR || entry->domain == DOMAIN_WEATHER) &&
+         !card_is_labelled(card);
 }
 
 /* A large weather card lists the coming days under its current reading, as
@@ -169,6 +178,12 @@ bool entry_is_on(const Entry &entry) {
    * they are never on, so they never draw the active border a button does. */
   if (entry.domain == DOMAIN_WEATHER || entry.domain == DOMAIN_SENSOR)
     return false;
+  /* A blind is on when it is not shut: Home Assistant reports `open`,
+   * `closed`, `opening` and `closing`. One that is opening is on its way to
+   * being open and reads as on, one that is closing is still open until it
+   * is not, and only `closed` reads as off. */
+  if (entry.domain == DOMAIN_COVER)
+    return entry.state == "open" || entry.state == "opening" || entry.state == "closing";
   return entry.domain == DOMAIN_CLIMATE ? entry.state != "off" : entry.state == "on";
 }
 
@@ -213,6 +228,20 @@ static std::string humanize_weather_condition(const std::string &condition) {
 std::string card_reading(const Entry &entry) {
   if (!entry_is_known(entry))
     return std::string();
+
+  /* A lamp and a socket say ON and OFF. It is the whole of what the card
+   * has to say, and the reason the value line exists on cards that carry
+   * no other reading. */
+  if (entry.domain == DOMAIN_LIGHT || entry.domain == DOMAIN_SWITCH) {
+    return entry_is_on(entry) ? "ON" : "OFF";
+  }
+
+  /* A blind says whether it is shut. The percentage is not said here: the
+   * panel profile strips `position` before it reaches the device, so there
+   * is no half way this card could honestly report. */
+  if (entry.domain == DOMAIN_COVER) {
+    return entry_is_on(entry) ? "OPEN" : "CLOSED";
+  }
 
   /* A sensor block says its value with its unit: the name on the card says
    * what it is, this line says what it reads. A sensor that reported no
@@ -409,7 +438,13 @@ bool MediaControllerGrid::ingest_entities(const std::string &attributes) {
          * as an error, so that a future one can be added without breaking a
          * device already in the field. That rule is what lets a card type
          * ship on its own: this list grows by one name per contract version
-         * and a device in the field skips the names it has not learned. */
+         * and a device in the field skips the names it has not learned.
+         *
+         * `position` and `stop` are ignored on purpose rather than unknown:
+         * the panel profile strips them before they reach the device, and
+         * this firmware has no gesture left to spend on a slider — the long
+         * press already sweeps brightness on a lamp and the setpoint on a
+         * thermostat. A cover is therefore a toggle card here. */
         if (value == nullptr)
           continue;
         if (strcmp(value, "toggle") == 0)
@@ -775,7 +810,8 @@ std::vector<size_t> MediaControllerGrid::polled_order_() const {
      * bytes an entity, and writing each entity into three function calls
      * would be a hundred and thirty. Weather blocks are a third group for
      * the same reason: the condition plus two attributes. Sensor blocks are
-     * a fourth: the value plus its unit. */
+     * a fourth: the value plus its unit. Everything else — a lamp, a socket
+     * and a blind alike — renders its bare state in the first group. */
     if (entry.domain == DOMAIN_CLIMATE)
       thermostats.push_back(i);
     else if (entry.domain == DOMAIN_WEATHER)

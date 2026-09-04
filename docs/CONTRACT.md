@@ -83,8 +83,10 @@ as three controls — `toggle`, `position` and `stop` — and a blind, a shutter
 or an awning becomes something a client can act on rather than a tile that
 answers nothing. How far open a cover is adds no field to the payload: it
 arrives as an ordinary attribute of the entity a client already polls. The
-T560 panel draws the cover card; the paired ESP32 currently ignores the
-domain, as the client rule above permits.
+T560 panel draws the full cover card; the paired ESP32 draws the toggle half
+of it — OPEN/CLOSED with a tap — because its panel profile strips `position`
+and `stop` before they reach the device, and it has no slider gesture left
+to spend on them.
 
 The **weather block** is also part of version 7. A `weather` element
 still carries an empty `controls` list, because there is nothing to act on:
@@ -550,7 +552,7 @@ What a client draws is its own business, and the two panels differ:
 | Client | Tap | Beyond a tap |
 | --- | --- | --- |
 | T560 panel | `toggle` | The percentage on the sheet a light's brightness uses, and a STOP button beside it |
-| ESP32-S3 panel | — | No cover card yet; it ignores the element, as the rule below allows |
+| ESP32-S3 panel | `toggle` | Nothing; `position` and `stop` are stripped by its panel profile, so the card reads OPEN/CLOSED and a tap toggles |
 | ESP32-S3 controller | — | Not a panel; it reads `slots` and is sent no `entities` |
 
 A card whose element gives no `position` still draws and still toggles, and a
