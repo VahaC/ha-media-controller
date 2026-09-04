@@ -49,7 +49,7 @@ from .transformations import (
     EntityPayload,
     SlotConfig,
     SlotPayload,
-    room_state_values,
+    render_room_states,
     stored_slots,
 )
 
@@ -462,25 +462,18 @@ class ClientConfiguration:
     def room_states(self) -> dict[str, list[Any]]:
         """Render the current state of every registry element, keyed by rid.
 
-        Read live from the state machine on every call: the config sensor is
-        polled by panels, and what it serves must be the state as of the
-        request rather than as of the last configuration change. An element
-        whose entity is gone reads as unknown rather than keeping a stale
-        value. The classic ESP32 controller has no registry and gets no
-        block; it learns its four states over the native API instead.
+        Capabilities are resolved at serve time, not only at setup: a form
+        stores no controls at all, and a target missing at setup keeps none
+        until something re-resolves it — which, for a switch with no
+        capability attributes, is never. Serving freshly resolved entries
+        makes stored staleness irrelevant, permanently.
         """
         if not self.profile.has_registry:
             return {}
-        states: dict[str, list[Any]] = {}
-        for entry in self.entries:
-            target = self.hass.states.get(entry.target_entity_id)
-            if target is None:
-                states[entry.rid] = ["unknown"]
-            else:
-                states[entry.rid] = room_state_values(
-                    entry.domain, target.state, target.attributes
-                )
-        return states
+        return render_room_states(
+            self.hass,
+            resolve_entries(self.hass, self.profile, self.entries),
+        )
 
     def payload(self) -> ClientConfigPayload:
         """Build what this client reads from its config sensor.
@@ -488,9 +481,21 @@ class ClientConfiguration:
         Exactly one of the two room-control blocks is filled in. A client is
         never sent the one it does not read: a panel gets no `slots`, and the
         classic ESP32 firmware gets no `entities`.
+
+        The registry is resolved here, at serve time, rather than trusted
+        from storage: stored controls go stale — a form stores none, and a
+        target missing at setup keeps none — and a card whose element carries
+        no `toggle` silently ignores every tap. Resolving live makes that
+        class of staleness impossible; renames are followed the same way,
+        without waiting for a reload.
         """
         panel = self.panel.as_payload() if self.panel is not None else {}
         registry = self.profile.has_registry
+        resolved = (
+            resolve_entries(self.hass, self.profile, self.entries)
+            if registry
+            else []
+        )
         return ClientConfigPayload(
             settings=panel.get("settings"),
             commands=panel.get("commands"),
@@ -536,7 +541,7 @@ class ClientConfiguration:
                     max_temp=entry.max_temp,
                     target_temp_step=entry.target_temp_step,
                 )
-                for entry in self.entries
+                for entry in resolved
             )
             if registry
             else None,

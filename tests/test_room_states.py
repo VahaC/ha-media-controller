@@ -12,6 +12,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 import unittest
 
 MODULE_PATH = (
@@ -202,6 +203,65 @@ class RoomStatesBlockTests(unittest.TestCase):
             "revision"
         ]
         self.assertEqual(before, after)
+
+
+def _stub_hass(states: dict[str, tuple[str, dict]]) -> SimpleNamespace:
+    """Return a stub whose state machine answers from a plain mapping."""
+
+    def get(entity_id: str) -> SimpleNamespace | None:
+        if entity_id not in states:
+            return None
+        state, attributes = states[entity_id]
+        return SimpleNamespace(state=state, attributes=attributes)
+
+    return SimpleNamespace(states=SimpleNamespace(get=get))
+
+
+def _stub_entry(rid: str, domain: str, entity: str) -> SimpleNamespace:
+    """Return the three fields render_room_states reads off an element."""
+    return SimpleNamespace(rid=rid, domain=domain, target_entity_id=entity)
+
+
+class RenderRoomStatesTests(unittest.TestCase):
+    """Verify the rid-keyed room-state mapping from live states."""
+
+    def test_renders_every_element_keyed_by_rid(self) -> None:
+        hass = _stub_hass({
+            "light.desk_lamp": ("on", {}),
+            "climate.hall": ("heat", {
+                "current_temperature": 21.5,
+                "temperature": 22.0,
+            }),
+        })
+        entries = [
+            _stub_entry("a3f1c92d", "light", "light.desk_lamp"),
+            _stub_entry("7c41b8e0", "climate", "climate.hall"),
+        ]
+        self.assertEqual(
+            transformations.render_room_states(hass, entries),
+            {
+                "a3f1c92d": ["on"],
+                "7c41b8e0": ["heat", 21.5, 22.0],
+            },
+        )
+
+    def test_a_missing_entity_reads_as_unknown(self) -> None:
+        hass = _stub_hass({})
+        entries = [_stub_entry("a3f1c92d", "switch", "switch.gone")]
+        self.assertEqual(
+            transformations.render_room_states(hass, entries),
+            {"a3f1c92d": ["unknown"]},
+        )
+
+    def test_unicode_states_survive_intact(self) -> None:
+        hass = _stub_hass({
+            "sensor.rain": ("Дощ", {"unit_of_measurement": "мм"}),
+        })
+        entries = [_stub_entry("b71f0c2e", "sensor", "sensor.rain")]
+        self.assertEqual(
+            transformations.render_room_states(hass, entries),
+            {"b71f0c2e": ["Дощ", "мм"]},
+        )
 
 
 if __name__ == "__main__":

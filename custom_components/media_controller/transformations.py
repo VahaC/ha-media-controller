@@ -312,6 +312,30 @@ def room_state_values(
     return [state]
 
 
+def render_room_states(hass: Any, entries: Iterable[Any]) -> dict[str, list[Any]]:
+    """Render the current state of every registry element, keyed by rid.
+
+    `hass` is only read through `hass.states.get`, and an entry only through
+    its `rid`, `domain` and `target_entity_id`, so tests serve a stub. An
+    element whose entity is gone reads as unknown rather than keeping a stale
+    value. Callers pass already-resolved entries: capabilities are read from
+    the live target at serve time, because stored controls go stale — a form
+    stores none at all, and a target missing at setup keeps none until
+    something re-resolves it, which for a switch without capability
+    attributes is never.
+    """
+    states: dict[str, list[Any]] = {}
+    for entry in entries:
+        target = hass.states.get(entry.target_entity_id)
+        if target is None:
+            states[entry.rid] = ["unknown"]
+        else:
+            states[entry.rid] = room_state_values(
+                entry.domain, target.state, target.attributes
+            )
+    return states
+
+
 @dataclass(frozen=True, slots=True)
 class EntityPayload:
     """One registry element as a panel reads it.
