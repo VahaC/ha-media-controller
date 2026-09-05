@@ -110,6 +110,18 @@ section h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 1.1px; 
 .row { display: flex; gap: 8px; align-items: center; margin-bottom: 9px; flex-wrap: wrap; }
 .row label { flex: 0 0 78px; color: var(--muted); font-size: 13px; }
 .row select, .row input { flex: 1 1 120px; min-width: 0; }
+input[type=text] {
+  font: inherit; color: var(--text); background: #16273c;
+  border: 1px solid var(--edge); border-radius: 9px; padding: 8px 13px;
+  min-height: 40px;
+}
+input[type=text]:hover { border-color: #375a80; }
+input[type=text]:focus {
+  outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(77,208,225,.25);
+}
+input[type=text]:disabled { opacity: .45; }
+input[type=text]::placeholder { color: var(--muted); }
 input[type=color] { padding: 2px; height: 40px; background: #16273c; border: 1px solid var(--edge); border-radius: 9px; }
 /* In the header rather than beside the palette: this is the only feedback the
    page gives for Save, Restore and the skin, and on a phone the sidebar is
@@ -134,35 +146,72 @@ input[type=color] { padding: 2px; height: 40px; background: #16273c; border: 1px
   background: #0d1826;
 }
 .skin-preview.current { border-color: var(--accent); color: var(--accent); }
-/* The card artwork, offered the same way the skins are and for the same
-   reason: a name says nothing about a picture. The pictures come from the
-   catalog the Media Controller integration publishes, through this device —
-   the editor never reaches Home Assistant and holds no token. A tile whose
-   image does not arrive keeps its name and drops the image, exactly as a
-   skin with no picture does. */
-.icons {
-  display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px;
+/* The card artwork picker. It copies the Home Assistant icon picker: one
+   field on the Icon row that opens a searchable list, so the catalog reads
+   as a filtered list rather than a wall of tiles. The pictures come from
+   the catalog the Media Controller integration publishes, through this
+   device — the editor never reaches Home Assistant and holds no token. A
+   row whose image does not arrive keeps its name and drops the image,
+   exactly as a skin with no picture does. */
+.row .icon-picker { flex: 1 1 120px; min-width: 0; position: relative; }
+#icon-button {
+  width: 100%; display: flex; align-items: center; gap: 10px;
+  text-align: left;
 }
-.icon-tile {
-  flex: 0 0 auto; display: flex; flex-direction: column; align-items: center;
-  gap: 4px; padding: 6px 4px; width: 62px; min-height: 0; font-size: 11px;
-  color: var(--muted); background: #16273c; border: 1px solid var(--edge);
-  border-radius: 9px; overflow: hidden;
+#icon-button .icon-preview {
+  display: flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; flex: 0 0 auto;
 }
-.icon-tile img {
-  display: block; width: 32px; height: 32px; image-rendering: auto;
-}
-.icon-tile .label {
-  max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+#icon-button .icon-preview img { width: 28px; height: 28px; }
+#icon-button .icon-preview .auto { font-size: 20px; color: var(--muted); }
+#icon-button.current .icon-preview .auto { color: var(--accent); }
+#icon-button .icon-name {
+  flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap;
 }
-.icon-tile.current { border-color: var(--accent); color: var(--accent); }
-/* The Automatic tile has no picture to show, so it shows the word instead
-   and keeps the same footprint as the ones that do. */
-.icon-tile .auto {
-  display: flex; align-items: center; justify-content: center;
-  width: 32px; height: 32px; font-size: 17px; color: var(--muted);
+#icon-button .chevron {
+  flex: 0 0 auto; width: 0; height: 0;
+  border-left: 5px solid transparent; border-right: 5px solid transparent;
+  border-top: 6px solid var(--muted);
 }
+.icon-menu {
+  position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 20;
+  background: #0d1826; border: 1px solid var(--edge); border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0,0,0,.5); overflow: hidden;
+}
+.icon-search { padding: 8px; border-bottom: 1px solid var(--edge-soft); position: relative; }
+.icon-search::before {
+  content: "\2315"; position: absolute; left: 20px; top: 50%;
+  transform: translateY(-50%); color: var(--muted); font-size: 15px;
+  pointer-events: none;
+}
+.icon-search input { width: 100%; padding-left: 34px; }
+.icon-list { max-height: 264px; overflow-y: auto; padding: 4px; }
+.icon-list::-webkit-scrollbar { width: 8px; }
+.icon-list::-webkit-scrollbar-thumb { background: var(--edge); border-radius: 4px; }
+.icon-option {
+  width: 100%; display: flex; align-items: center; gap: 12px;
+  padding: 8px 12px; min-height: 0; background: transparent;
+  border: 1px solid transparent; border-radius: 8px;
+  font-size: 14px; font-weight: 400; text-align: left;
+}
+.icon-option:hover { background: #16273c; border-color: var(--edge-soft); }
+.icon-option:focus-visible {
+  outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(77,208,225,.25);
+}
+.icon-option.current { background: #16273c; border-color: var(--edge); }
+.icon-option.current .option-label { color: var(--accent); font-weight: 700; }
+.icon-option img { width: 26px; height: 26px; flex: 0 0 auto; }
+.icon-option .auto {
+  width: 26px; flex: 0 0 auto; text-align: center;
+  font-size: 18px; color: var(--muted);
+}
+.icon-option.current .auto { color: var(--accent); }
+.icon-option .option-label {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.icon-empty { padding: 12px; color: var(--muted); font-size: 13px; }
 .card .art {
   position: absolute; top: 6px; right: 6px; width: 20px; height: 20px;
   opacity: .85;
@@ -213,10 +262,23 @@ input[type=color] { padding: 2px; height: 40px; background: #16273c; border: 1px
                     >Auto</button>
           </div>
           <div class="row">
-            <label for="icon">Icon</label>
-            <select id="icon"></select>
+            <label for="icon-button">Icon</label>
+            <select id="icon" hidden></select>
+            <div class="icon-picker" id="icon-picker">
+              <button type="button" id="icon-button" aria-haspopup="listbox" aria-expanded="false">
+                <span class="icon-preview" id="icon-current"></span>
+                <span class="icon-name" id="icon-name">Automatic</span>
+                <span class="chevron" aria-hidden="true"></span>
+              </button>
+              <div class="icon-menu" id="icon-menu" hidden>
+                <div class="icon-search">
+                  <input type="text" id="icon-search" autocomplete="off"
+                         placeholder="Search" aria-label="Search icons">
+                </div>
+                <div class="icon-list" id="icon-list" role="listbox" aria-label="Icons"></div>
+              </div>
+            </div>
           </div>
-          <div class="icons" id="icon-previews"></div>
           <div class="row" id="color-row">
             <label for="color">Colour</label>
             <input type="color" id="color" value="#4dd0e1">
@@ -279,6 +341,13 @@ var supports = { colors: true };
 var selected = -1;
 var armed = null;
 var dirty = false;
+/* Display-name and icon edits staged in this page but not sent yet, keyed by
+   registry identifier: {name?: string, icon?: string}. They belong to the
+   registry element, which Home Assistant owns, so unlike moving a card they
+   cannot be carried inside the layout document — but they are still only sent
+   when Save is pressed, together with the layout, so that one button is the
+   whole "Selected card" section. */
+var pendingCards = {};
 /* The skins this client draws, in the order it offers them, and whether Home
    Assistant named an entity to write one into. Both come from /api/skins, so
    which skins exist is not written down here a second time. */
@@ -312,6 +381,47 @@ function iconFor(card, entity) {
   if (entity && entity.icon) { return entity.icon; }
   if (card && card.icon) { return card.icon; }
   return "";
+}
+
+/* What the page shows and what Save sends: the staged value when one exists,
+   and the device's own answer otherwise. Switching cards never drops a staged
+   edit — it stays keyed by registry identifier until Save sends it or a
+   reload replaces the page. */
+function pendingFor(rid) {
+  if (!rid) { return null; }
+  return Object.prototype.hasOwnProperty.call(pendingCards, rid)
+    ? pendingCards[rid] : null;
+}
+
+function effectiveName(rid, fallback) {
+  var staged = pendingFor(rid);
+  if (staged && staged.hasOwnProperty("name")) { return staged.name; }
+  return fallback;
+}
+
+function effectiveIcon(card, entity) {
+  var staged = card ? pendingFor(card.rid) : null;
+  if (staged && staged.hasOwnProperty("icon")) { return staged.icon; }
+  return iconFor(card, entity);
+}
+
+function hasPendingCards() {
+  for (var key in pendingCards) {
+    if (Object.prototype.hasOwnProperty.call(pendingCards, key)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/* The tile preview for a staged name, without rebuilding the editor: a full
+   render would reset the input the person is still typing in and move the
+   caret. */
+function updateTileName(index, name) {
+  var node = cardsEl.children[index];
+  if (!node) { return; }
+  var label = node.querySelector(".name");
+  if (label) { label.textContent = name; }
 }
 
 /* What one catalog row is called. An older device answers with plain
@@ -453,7 +563,7 @@ function cardNode(card, index) {
     node.appendChild(swatch);
   }
 
-  var art = iconFor(card, entity);
+  var art = effectiveIcon(card, entity);
   if (art) {
     var picture = iconImage(art);
     picture.className = "art";
@@ -465,7 +575,7 @@ function cardNode(card, index) {
   kind.textContent = entity ? entity.domain : "unknown";
   var name = document.createElement("div");
   name.className = "name";
-  name.textContent = entity ? entity.name : card.rid;
+  name.textContent = entity ? effectiveName(card.rid, entity.name) : card.rid;
   node.appendChild(kind);
   node.appendChild(name);
 
@@ -597,24 +707,26 @@ function renderEditor() {
   for (var i = 0; i < entities.length; i++) {
     var option = document.createElement("option");
     option.value = entities[i].rid;
-    option.textContent = entities[i].name + " — " + entities[i].domain;
+    option.textContent = effectiveName(entities[i].rid, entities[i].name) +
+                         " — " + entities[i].domain;
     entitySelect.appendChild(option);
   }
   entitySelect.value = card.rid;
 
-  /* The name on the tile. It shows what the card says now, which is the
-     label the person typed or, when they typed none, the name Home Assistant
-     gives the entity — and clearing the field is how you go back to the
-     second. There is no third value to show: the payload carries the name in
-     force and not both of them, because sixty-four elements times two names
-     is a payload this device reads out of a fixed buffer. */
+  /* The name on the tile. It shows the staged edit when one exists, else
+     what the card says now: the label the person typed or, when they typed
+     none, the name Home Assistant gives the entity — and clearing the field
+     is how you go back to the second. Nothing is sent until Save. There is
+     no third value to show: the payload carries the name in force and not
+     both of them, because sixty-four elements times two names is a payload
+     this device reads out of a fixed buffer. */
   var nameInput = document.getElementById("card-name");
-  nameInput.value = known ? known.name : "";
+  nameInput.value = known ? effectiveName(card.rid, known.name) : "";
   nameInput.maxLength = nameLimit;
   nameInput.disabled = !known;
   document.getElementById("clear-name").disabled = !known;
 
-  var chosen = iconFor(card, known);
+  var chosen = effectiveIcon(card, known);
   var iconSelect = document.getElementById("icon");
   iconSelect.textContent = "";
   var auto = document.createElement("option");
@@ -643,7 +755,7 @@ function renderEditor() {
   }
   iconSelect.value = chosen;
   iconSelect.disabled = !known;
-  renderIconTiles(chosen, !known);
+  renderIconPicker(!known);
 
   document.getElementById("color").value = card.color || "#4dd0e1";
   renderCardGeometry();
@@ -688,7 +800,7 @@ function renderPalette() {
       var chip = document.createElement("button");
       chip.className = "chip" + (placed[entity.rid] ? " placed" : "") +
                        (armed === entity.rid ? " armed" : "");
-      chip.textContent = entity.name;
+      chip.textContent = effectiveName(entity.rid, entity.name);
       chip.title = entity.entity;
       chip.addEventListener("click", function () {
         armed = armed === entity.rid ? null : entity.rid;
@@ -708,53 +820,140 @@ document.getElementById("entity").addEventListener("change", function () {
   renderCards();
 });
 
-/* The tiles beside the list, and the same rule the skin tiles follow: a tap
-   writes the select's value and fires its change event, so choosing an icon
-   stays in one handler however it was chosen. */
-function renderIconTiles(current, disabled) {
-  var box = document.getElementById("icon-previews");
-  box.textContent = "";
-
-  var rows = [{ id: "", label: "Automatic" }];
-  for (var i = 0; i < icons.length; i++) {
-    var id = iconId(icons[i]);
-    if (id) { rows.push({ id: id, label: iconLabel(icons[i]) }); }
-  }
-
-  rows.forEach(function (row) {
-    var tile = document.createElement("button");
-    tile.className = "icon-tile" + (row.id === current ? " current" : "");
-    tile.dataset.icon = row.id;
-    tile.title = row.label;
-    tile.disabled = !!disabled;
-
-    if (row.id) {
-      /* Only the picture this card is actually drawing is worth a message.
-         A catalog row nobody chose that did not arrive is a gap in a list,
-         and saying so once per row would bury the status line. */
-      tile.appendChild(
-        iconImage(row.id, row.id === current ? reportIconMiss : null));
-    } else {
-      var mark = document.createElement("span");
-      mark.className = "auto";
-      mark.textContent = "\u2013";
-      tile.appendChild(mark);
+/* The icon picker on the Icon row. It copies the Home Assistant icon
+   picker: one field showing the choice, opening a searchable list. The
+   hidden select stays the value's owner: choosing a row writes the select's
+   value and fires its change event, so choosing an icon stays in one handler
+   however it was chosen. Rows are built from the select's own options, so
+   the list shows exactly what the card can be given — including a stale
+   choice the catalog no longer publishes. */
+function renderIconPicker(disabled) {
+  var select = document.getElementById("icon");
+  var button = document.getElementById("icon-button");
+  var preview = document.getElementById("icon-current");
+  var name = document.getElementById("icon-name");
+  var chosen = select.value || "";
+  var chosenText = "Automatic";
+  for (var i = 0; i < select.options.length; i++) {
+    if (select.options[i].value === chosen) {
+      chosenText = select.options[i].text;
+      break;
     }
-
-    var label = document.createElement("span");
-    label.className = "label";
-    label.textContent = row.label;
-    tile.appendChild(label);
-
-    tile.addEventListener("click", function () {
-      var select = document.getElementById("icon");
-      if (select.disabled || select.value === row.id) { return; }
-      select.value = row.id;
-      select.dispatchEvent(new Event("change"));
-    });
-    box.appendChild(tile);
-  });
+  }
+  name.textContent = chosenText;
+  name.title = chosenText;
+  preview.textContent = "";
+  if (chosen) {
+    preview.appendChild(iconImage(chosen, reportIconMiss));
+  } else {
+    var mark = document.createElement("span");
+    mark.className = "auto";
+    mark.textContent = "\u2013";
+    preview.appendChild(mark);
+  }
+  button.classList.toggle("current", !chosen);
+  button.disabled = !!disabled;
+  button.setAttribute("aria-label", "Icon: " + chosenText);
+  closeIconMenu();
+  buildIconList("");
 }
+
+function buildIconList(filter) {
+  var select = document.getElementById("icon");
+  var list = document.getElementById("icon-list");
+  var chosen = select.value || "";
+  var query = String(filter == null ? "" : filter).toLowerCase();
+  list.textContent = "";
+  var shown = 0;
+  for (var i = 0; i < select.options.length; i++) {
+    (function (value, label) {
+      if (query && label.toLowerCase().indexOf(query) < 0 &&
+          value.toLowerCase().indexOf(query) < 0) { return; }
+      shown++;
+      var row = document.createElement("button");
+      row.type = "button";
+      row.className = "icon-option" + (value === chosen ? " current" : "");
+      row.setAttribute("role", "option");
+      row.setAttribute("aria-selected", value === chosen ? "true" : "false");
+      row.title = label;
+      if (value) {
+        /* Only the picture this card is actually drawing is worth a message.
+           A catalog row nobody chose that did not arrive is a gap in a list,
+           and saying so once per row would bury the status line. */
+        row.appendChild(
+          iconImage(value, value === chosen ? reportIconMiss : null));
+      } else {
+        var dash = document.createElement("span");
+        dash.className = "auto";
+        dash.textContent = "\u2013";
+        row.appendChild(dash);
+      }
+      var text = document.createElement("span");
+      text.className = "option-label";
+      text.textContent = label;
+      row.appendChild(text);
+      row.addEventListener("click", function () {
+        var sel = document.getElementById("icon");
+        closeIconMenu();
+        if (sel.disabled || sel.value === value) { return; }
+        sel.value = value;
+        sel.dispatchEvent(new Event("change"));
+      });
+      list.appendChild(row);
+    })(select.options[i].value, select.options[i].text);
+  }
+  if (!shown) {
+    var empty = document.createElement("div");
+    empty.className = "icon-empty";
+    empty.textContent = "No icons match.";
+    list.appendChild(empty);
+  }
+}
+
+function openIconMenu() {
+  var button = document.getElementById("icon-button");
+  var menu = document.getElementById("icon-menu");
+  var search = document.getElementById("icon-search");
+  menu.hidden = false;
+  button.setAttribute("aria-expanded", "true");
+  search.value = "";
+  buildIconList("");
+  search.focus();
+  var current = document.getElementById("icon-list").querySelector(".current");
+  if (current) { current.scrollIntoView({ block: "nearest" }); }
+}
+
+function closeIconMenu() {
+  var button = document.getElementById("icon-button");
+  var menu = document.getElementById("icon-menu");
+  if (menu.hidden) { return; }
+  menu.hidden = true;
+  button.setAttribute("aria-expanded", "false");
+}
+
+document.getElementById("icon-button").addEventListener("click", function (event) {
+  event.stopPropagation();
+  if (this.disabled) { return; }
+  if (document.getElementById("icon-menu").hidden) { openIconMenu(); }
+  else { closeIconMenu(); }
+});
+
+document.getElementById("icon-search").addEventListener("input", function () {
+  buildIconList(this.value);
+});
+
+document.getElementById("icon-search").addEventListener("keydown", function (event) {
+  if (event.key === "Escape") {
+    event.stopPropagation();
+    closeIconMenu();
+    document.getElementById("icon-button").focus();
+  }
+});
+
+document.addEventListener("click", function (event) {
+  var picker = document.getElementById("icon-picker");
+  if (picker && !picker.contains(event.target)) { closeIconMenu(); }
+});
 
 /* A picture this device could not produce. It is not an error in the layout
    and never stops anything: the card falls back to the artwork built into the
@@ -769,9 +968,9 @@ function reportIconMiss(id) {
 /* Everything that changes how one card is labelled goes through here.
    The name and the icon both belong to the registry element, which is Home
    Assistant's, so this device is asked to pass the change on and the new
-   value comes back the ordinary way, in the next poll. Nothing about the
-   grid is written by this: moving a card is a layout change and saved with
-   Save, and naming one is not. */
+   value comes back the ordinary way, in the next poll. It is only called
+   from Save: staging a name or an icon marks the page dirty, and Save sends
+   every staged card first and the layout after. */
 function writeCard(rid, changes, described) {
   var body = { rid: rid };
   if (changes.hasOwnProperty("name")) { body.name = changes.name; }
@@ -828,10 +1027,10 @@ function awaitCard(attempts) {
          accepted the change, but the device's own copy of the registry does
          not move until its next config poll — up to a second later — so what
          is in this body is still the previous name. Taking it would put the
-         old value straight back into the field somebody just changed. The
-         page keeps what it asked for, which is what was stored; a reload
-         reads the device's own payload the ordinary way, and a refusal is
-         put right by loadEntities in the catch below. */
+         old value straight back into the field somebody just changed. Save
+         keeps what it asked for, which is what was stored; a reload reads
+         the device's own payload the ordinary way, and a refusal keeps the
+         staged edit so it can be retried. */
       return { settled: true, message: card.message || "" };
     });
 }
@@ -841,42 +1040,34 @@ document.getElementById("icon").addEventListener("change", function () {
   var card = grid.cards[selected];
   var rid = card.rid;
   var chosen = this.value;
-  /* A layout document written by an older editor names the picture itself,
-     and that name would go on shadowing the choice made here. Clearing it is
-     a change to the layout and therefore something to Save, which is why the
-     message below says so when it happened and stays quiet when it did
-     not. */
-  var hadOwn = !!card.icon;
-  if (hadOwn) { delete card.icon; markDirty(true); }
-
   var known = entityFor(rid);
-  if (known) { known.icon = chosen; }
+  var stored = known && known.icon ? known.icon : "";
+  /* A layout document written by an older editor names the picture itself,
+     and that name would go on shadowing the choice made here. Dropping it is
+     a change to the layout and therefore part of what Save writes. */
+  var hadOwn = !!card.icon;
+  if (hadOwn) { delete card.icon; }
+  if (chosen === stored) {
+    var stagedIcon = pendingFor(rid);
+    if (stagedIcon && stagedIcon.hasOwnProperty("icon")) {
+      delete stagedIcon.icon;
+      if (!stagedIcon.hasOwnProperty("name")) { delete pendingCards[rid]; }
+    }
+  } else {
+    if (!pendingCards[rid]) { pendingCards[rid] = {}; }
+    pendingCards[rid].icon = chosen;
+  }
+  markDirty(true);
   renderCards();
-
-  writeCard(rid, { icon: chosen }, chosen ? "use the " + chosen + " icon"
-                                          : "choose the icon automatically")
-    .then(function (outcome) {
-      renderCards();
-      if (!outcome.settled) {
-        say("Home Assistant has not confirmed the icon yet.", "warn");
-      } else if (hadOwn) {
-        say("Icon saved in Home Assistant. This card also named one of its " +
-            "own; press Save to drop it.", "warn");
-      } else {
-        say("Icon saved in Home Assistant.", "ok");
-      }
-    })
-    .catch(function (error) {
-      say(String(error.message || error), "error");
-      /* Put back what the device actually has, so the control never shows a
-         choice that was refused. */
-      loadEntities().then(renderCards);
-    });
+  say(chosen ? "Icon staged. Press Save to apply it."
+             : "Automatic icon staged. Press Save to apply it.");
 });
 
 /* Both ways of setting a name end here, so the rule about what an empty one
-   means is written once. */
-function applyName(value) {
+   means is written once. Staging only: nothing is sent until Save. An empty
+   name means "use the Home Assistant entity name". Typing the stored name
+   back drops the staged edit again. */
+function stageName(value, announce) {
   if (selected < 0) { return; }
   var rid = grid.cards[selected].rid;
   var known = entityFor(rid);
@@ -887,41 +1078,66 @@ function applyName(value) {
     say("A name may be at most " + nameLimit + " characters.", "error");
     return;
   }
-  var was = known.name;
-  if (name === was) { return; }
+  if (name === effectiveName(rid, known.name)) { return; }
 
-  /* The tile shows the new name at once. It is put back from the device's
-     own answer either way, so an optimistic preview cannot survive a
-     refusal. */
-  known.name = name;
-  renderCards();
-
-  writeCard(rid, { name: name }, name ? "call this card " + name
-                                      : "use the Home Assistant entity name")
-    .then(function (outcome) {
-      renderCards();
-      var applied = entityFor(rid);
-      document.getElementById("card-name").value = applied ? applied.name : "";
-      if (!outcome.settled) {
-        say("Home Assistant has not confirmed the name yet.", "warn");
-      } else if (name) {
-        say("Name saved in Home Assistant.", "ok");
-      } else {
-        /* Cleared, so the tile is back to whatever Home Assistant calls the
-           entity — and it follows that name from now on, including through a
-           rename. */
-        say("The Home Assistant entity name is back.", "ok");
-      }
-    })
-    .catch(function (error) {
-      known.name = was;
-      say(String(error.message || error), "error");
-      loadEntities().then(renderCards);
-    });
+  if (name === known.name) {
+    var staged = pendingFor(rid);
+    if (staged && staged.hasOwnProperty("name")) {
+      delete staged.name;
+      if (!staged.hasOwnProperty("icon")) { delete pendingCards[rid]; }
+    }
+    /* The page stays dirty: without a second flag there is no way to tell a
+       reverted name from a layout change made beside it, and an extra Save
+       that writes nothing is harmless. */
+    markDirty(true);
+  } else {
+    if (!pendingCards[rid]) { pendingCards[rid] = {}; }
+    pendingCards[rid].name = name;
+    markDirty(true);
+  }
+  updateTileName(selected, name);
+  if (announce !== false) {
+    say(name ? "Name staged. Press Save to apply it."
+             : "The Home Assistant entity name will be back after Save.");
+  }
 }
 
+document.getElementById("card-name").addEventListener("input", function () {
+  if (selected < 0) { return; }
+  var rid = grid.cards[selected].rid;
+  var known = entityFor(rid);
+  if (!known) { return; }
+  var raw = String(this.value == null ? "" : this.value);
+  /* Length is checked on the trimmed value, the same rule Save enforces, but
+     typing itself never complains: the message would fire on every keystroke
+     past the limit. Over-long input simply stops staging until it fits. */
+  var name = raw.trim();
+  if (name.length > nameLimit) { return; }
+  if (name === effectiveName(rid, known.name)) { return; }
+  if (name === known.name) {
+    var staged = pendingFor(rid);
+    if (staged && staged.hasOwnProperty("name")) {
+      delete staged.name;
+      if (!staged.hasOwnProperty("icon")) { delete pendingCards[rid]; }
+    }
+  } else {
+    if (!pendingCards[rid]) { pendingCards[rid] = {}; }
+    pendingCards[rid].name = name;
+  }
+  markDirty(true);
+  updateTileName(selected, this.value.trim().length ? name : this.value);
+});
+
 document.getElementById("card-name").addEventListener("change", function () {
-  applyName(this.value);
+  stageName(this.value);
+  /* Re-render on commit so the field shows the trimmed value Save will send
+     rather than the raw spacing typed. The tile already shows the staged
+     name from the input handler. */
+  var card = selected >= 0 ? grid.cards[selected] : null;
+  if (card) {
+    var known = entityFor(card.rid);
+    this.value = known ? effectiveName(card.rid, known.name) : "";
+  }
 });
 
 document.getElementById("card-name").addEventListener("keydown", function (e) {
@@ -930,7 +1146,7 @@ document.getElementById("card-name").addEventListener("keydown", function (e) {
 
 document.getElementById("clear-name").addEventListener("click", function () {
   document.getElementById("card-name").value = "";
-  applyName("");
+  stageName("");
 });
 
 document.getElementById("color").addEventListener("change", function () {
@@ -955,19 +1171,56 @@ document.getElementById("delete").addEventListener("click", function () {
   renderCards();
 });
 
+/* Save sends the staged card edits first and the layout after. Card writes
+   go one after another rather than at once: the device reports the outcome
+   of the last write on /api/entities, so parallel writes would overwrite
+   each other's answer. */
+function flushPendingCards() {
+  var rids = Object.keys(pendingCards);
+  var chain = Promise.resolve();
+  rids.forEach(function (rid) {
+    var staged = pendingCards[rid];
+    var changes = {};
+    if (staged.hasOwnProperty("name")) { changes.name = staged.name; }
+    if (staged.hasOwnProperty("icon")) { changes.icon = staged.icon; }
+    var described = staged.hasOwnProperty("name") && staged.hasOwnProperty("icon")
+      ? "save this card's name and icon"
+      : staged.hasOwnProperty("name")
+        ? (staged.name ? "call this card " + staged.name
+                       : "use the Home Assistant entity name")
+        : (staged.icon ? "use the " + staged.icon + " icon"
+                       : "choose the icon automatically");
+    chain = chain.then(function () {
+      say("Asking Home Assistant to " + described + "\u2026");
+      return writeCard(rid, changes, described);
+    }).then(function () {
+      var known = entityFor(rid);
+      if (known) {
+        if (staged.hasOwnProperty("name")) { known.name = staged.name; }
+        if (staged.hasOwnProperty("icon")) { known.icon = staged.icon; }
+      }
+    });
+  });
+  return chain;
+}
+
 document.getElementById("save").addEventListener("click", function () {
   say("Saving…");
-  fetch("/api/layout", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(grid)
-  }).then(function (response) {
-    return response.json().then(function (body) {
-      if (!response.ok) { throw new Error(body.error || "Save failed"); }
-      return body;
+  flushPendingCards().then(function () {
+    pendingCards = {};
+    return fetch("/api/layout", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(grid)
+    }).then(function (response) {
+      return response.json().then(function (body) {
+        if (!response.ok) { throw new Error(body.error || "Save failed"); }
+        return body;
+      });
     });
   }).then(function (body) {
     markDirty(false);
+    renderCards();
     /* "Sent" and not "stored". The device posts the copy and does not wait
        for the answer — an HTTP request blocks its main loop — so this is
        what it can honestly claim. Restore is where you find out whether the
@@ -979,6 +1232,9 @@ document.getElementById("save").addEventListener("click", function () {
         body.backup === true ? "ok" : "error");
   }).catch(function (error) {
     say(String(error.message || error), "error");
+    /* The staged edits are kept, so the page still shows what Save was asked
+       to write and pressing it again retries. */
+    renderCards();
   });
 });
 

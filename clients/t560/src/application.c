@@ -1013,9 +1013,22 @@ static void update_config(PanelApplication *application, JsonObject *state,
     }
 
     if (candidate.revision != application->config->layout.revision) {
-        panel_layout_clear(&candidate);
-        request_restart(application, "Configuration changed");
-        return;
+        /* A rename is not a re-layout. The revision covers the whole
+         * registry, so a display name or an icon arrives looking exactly
+         * like a rearranged room; when that is all it is, the new names are
+         * adopted and the page is repainted while everything keeps running.
+         * Anything structural still restarts, the same way a config.ini
+         * change does. */
+        if (panel_layout_is_appearance_only(&application->config->layout,
+                                             &candidate)) {
+            panel_layout_apply_appearance(&application->config->layout,
+                                          &candidate);
+            panel_ui_refresh_appearance(application->ui);
+        } else {
+            panel_layout_clear(&candidate);
+            request_restart(application, "Configuration changed");
+            return;
+        }
     }
 
     /* Adopted on every payload rather than only on the first one.

@@ -883,6 +883,184 @@ static void test_unusable_contract_version_is_zero(void)
     }
 }
 
+/* A rename is not a re-layout: the revision covers the whole registry, so a
+ * display name or an icon arrives looking exactly like a rearranged room.
+ * Only the two appearance fields may differ; the panel applies those while
+ * it keeps running instead of restarting for them. */
+static const gchar *APPEARANCE_BASE =
+    "\"player\":\"media_player.a\",\"queue\":\"sensor.q\","
+    "\"playlists\":\"sensor.p\",\"revision\":1,"
+    "\"entities\":["
+    "{\"rid\":\"a3f1c92d\",\"entity\":\"light.desk_lamp\","
+    "\"name\":\"Desk lamp\",\"domain\":\"light\","
+    "\"controls\":[\"toggle\",\"brightness\",\"color_temp\"],"
+    "\"min_kelvin\":2202,\"max_kelvin\":4000},"
+    "{\"rid\":\"b7e4180a\",\"entity\":\"switch.fan\","
+    "\"name\":\"Fan\",\"domain\":\"switch\",\"controls\":[\"toggle\"]}]";
+
+static void test_appearance_only_rename_and_icon(void)
+{
+    PanelLayout current = {0};
+    PanelLayout candidate = {0};
+    gchar *failure = NULL;
+    gchar *renamed = g_strdup_printf(
+        "\"player\":\"media_player.a\",\"queue\":\"sensor.q\","
+        "\"playlists\":\"sensor.p\",\"revision\":2,"
+        "\"entities\":["
+        "{\"rid\":\"a3f1c92d\",\"entity\":\"light.desk_lamp\","
+        "\"name\":\"\\u041d\\u0430\\u0441\\u0442\\u0456\\u043b\\u044c\\u043d"
+        "\\u0430 \\u043b\\u0430\\u043c\\u043f\\u0430\",\"domain\":\"light\","
+        "\"icon\":\"desk-lamp\","
+        "\"controls\":[\"toggle\",\"brightness\",\"color_temp\"],"
+        "\"min_kelvin\":2202,\"max_kelvin\":4000},"
+        "{\"rid\":\"b7e4180a\",\"entity\":\"switch.fan\","
+        "\"name\":\"Fan\",\"domain\":\"switch\",\"controls\":[\"toggle\"]}]");
+
+    g_assert_true(parse(APPEARANCE_BASE, &current, &failure));
+    g_assert_null(failure);
+    g_assert_true(parse(renamed, &candidate, &failure));
+    g_assert_null(failure);
+    g_assert_true(
+        panel_layout_is_appearance_only(&current, &candidate));
+
+    panel_layout_apply_appearance(&current, &candidate);
+    g_assert_cmpstr(entity_at(&current, 0)->name, ==, "Настільна лампа");
+    g_assert_cmpstr(entity_at(&current, 0)->icon, ==, "desk-lamp");
+    g_assert_cmpint((gint)current.revision, ==, 2);
+    /* What was not renamed keeps its own strings. */
+    g_assert_cmpstr(entity_at(&current, 1)->name, ==, "Fan");
+    g_assert_null(entity_at(&current, 1)->icon);
+
+    g_free(renamed);
+    panel_layout_clear(&current);
+    panel_layout_clear(&candidate);
+}
+
+/* Dropping the picture reads as Automatic and is appearance alone too. */
+static void test_appearance_only_icon_removed(void)
+{
+    PanelLayout current = {0};
+    PanelLayout candidate = {0};
+    gchar *failure = NULL;
+    gchar *with_icon = g_strdup_printf(
+        "\"player\":\"media_player.a\",\"queue\":\"sensor.q\","
+        "\"playlists\":\"sensor.p\",\"revision\":3,"
+        "\"entities\":["
+        "{\"rid\":\"a3f1c92d\",\"entity\":\"light.desk_lamp\","
+        "\"name\":\"Desk lamp\",\"domain\":\"light\",\"icon\":\"desk-lamp\","
+        "\"controls\":[\"toggle\",\"brightness\",\"color_temp\"],"
+        "\"min_kelvin\":2202,\"max_kelvin\":4000},"
+        "{\"rid\":\"b7e4180a\",\"entity\":\"switch.fan\","
+        "\"name\":\"Fan\",\"domain\":\"switch\",\"controls\":[\"toggle\"]}]");
+    gchar *without_icon = g_strdup_printf(
+        "\"player\":\"media_player.a\",\"queue\":\"sensor.q\","
+        "\"playlists\":\"sensor.p\",\"revision\":4,"
+        "\"entities\":["
+        "{\"rid\":\"a3f1c92d\",\"entity\":\"light.desk_lamp\","
+        "\"name\":\"Desk lamp\",\"domain\":\"light\","
+        "\"controls\":[\"toggle\",\"brightness\",\"color_temp\"],"
+        "\"min_kelvin\":2202,\"max_kelvin\":4000},"
+        "{\"rid\":\"b7e4180a\",\"entity\":\"switch.fan\","
+        "\"name\":\"Fan\",\"domain\":\"switch\",\"controls\":[\"toggle\"]}]");
+
+    g_assert_true(parse(with_icon, &current, &failure));
+    g_assert_true(parse(without_icon, &candidate, &failure));
+    g_assert_true(
+        panel_layout_is_appearance_only(&current, &candidate));
+
+    panel_layout_apply_appearance(&current, &candidate);
+    g_assert_null(entity_at(&current, 0)->icon);
+    g_assert_cmpint((gint)current.revision, ==, 4);
+
+    g_free(with_icon);
+    g_free(without_icon);
+    panel_layout_clear(&current);
+    panel_layout_clear(&candidate);
+}
+
+/* Anything structural still needs a restart: a new or missing element, a
+ * repointed entity, another domain, other controls, or another player. */
+static void test_appearance_only_rejects_structure(void)
+{
+    /* Each row differs from APPEARANCE_BASE in exactly one structural
+     * fact, and in nothing else. */
+    const gchar *variants[] = {
+        /* Another element. */
+        "\"player\":\"media_player.a\",\"queue\":\"sensor.q\","
+        "\"playlists\":\"sensor.p\",\"revision\":2,"
+        "\"entities\":["
+        "{\"rid\":\"a3f1c92d\",\"entity\":\"light.desk_lamp\","
+        "\"name\":\"Desk lamp\",\"domain\":\"light\","
+        "\"controls\":[\"toggle\",\"brightness\",\"color_temp\"],"
+        "\"min_kelvin\":2202,\"max_kelvin\":4000},"
+        "{\"rid\":\"b7e4180a\",\"entity\":\"switch.fan\","
+        "\"name\":\"Fan\",\"domain\":\"switch\",\"controls\":[\"toggle\"]},"
+        "{\"rid\":\"c8f5291b\",\"entity\":\"light.porch\","
+        "\"name\":\"Porch\",\"domain\":\"light\",\"controls\":[\"toggle\"]}]",
+        /* A missing element. */
+        "\"player\":\"media_player.a\",\"queue\":\"sensor.q\","
+        "\"playlists\":\"sensor.p\",\"revision\":2,"
+        "\"entities\":["
+        "{\"rid\":\"a3f1c92d\",\"entity\":\"light.desk_lamp\","
+        "\"name\":\"Desk lamp\",\"domain\":\"light\","
+        "\"controls\":[\"toggle\",\"brightness\",\"color_temp\"],"
+        "\"min_kelvin\":2202,\"max_kelvin\":4000}]",
+        /* The same card repointed at another entity. */
+        "\"player\":\"media_player.a\",\"queue\":\"sensor.q\","
+        "\"playlists\":\"sensor.p\",\"revision\":2,"
+        "\"entities\":["
+        "{\"rid\":\"a3f1c92d\",\"entity\":\"light.floor_lamp\","
+        "\"name\":\"Desk lamp\",\"domain\":\"light\","
+        "\"controls\":[\"toggle\",\"brightness\",\"color_temp\"],"
+        "\"min_kelvin\":2202,\"max_kelvin\":4000},"
+        "{\"rid\":\"b7e4180a\",\"entity\":\"switch.fan\","
+        "\"name\":\"Fan\",\"domain\":\"switch\",\"controls\":[\"toggle\"]}]",
+        /* Another domain. */
+        "\"player\":\"media_player.a\",\"queue\":\"sensor.q\","
+        "\"playlists\":\"sensor.p\",\"revision\":2,"
+        "\"entities\":["
+        "{\"rid\":\"a3f1c92d\",\"entity\":\"light.desk_lamp\","
+        "\"name\":\"Desk lamp\",\"domain\":\"sensor\","
+        "\"controls\":[\"toggle\",\"brightness\",\"color_temp\"],"
+        "\"min_kelvin\":2202,\"max_kelvin\":4000},"
+        "{\"rid\":\"b7e4180a\",\"entity\":\"switch.fan\","
+        "\"name\":\"Fan\",\"domain\":\"switch\",\"controls\":[\"toggle\"]}]",
+        /* Other controls. */
+        "\"player\":\"media_player.a\",\"queue\":\"sensor.q\","
+        "\"playlists\":\"sensor.p\",\"revision\":2,"
+        "\"entities\":["
+        "{\"rid\":\"a3f1c92d\",\"entity\":\"light.desk_lamp\","
+        "\"name\":\"Desk lamp\",\"domain\":\"light\","
+        "\"controls\":[\"toggle\"]},"
+        "{\"rid\":\"b7e4180a\",\"entity\":\"switch.fan\","
+        "\"name\":\"Fan\",\"domain\":\"switch\",\"controls\":[\"toggle\"]}]",
+        /* Another player. */
+        "\"player\":\"media_player.b\",\"queue\":\"sensor.q\","
+        "\"playlists\":\"sensor.p\",\"revision\":2,"
+        "\"entities\":["
+        "{\"rid\":\"a3f1c92d\",\"entity\":\"light.desk_lamp\","
+        "\"name\":\"Desk lamp\",\"domain\":\"light\","
+        "\"controls\":[\"toggle\",\"brightness\",\"color_temp\"],"
+        "\"min_kelvin\":2202,\"max_kelvin\":4000},"
+        "{\"rid\":\"b7e4180a\",\"entity\":\"switch.fan\","
+        "\"name\":\"Fan\",\"domain\":\"switch\",\"controls\":[\"toggle\"]}]",
+    };
+
+    for (guint i = 0; i < G_N_ELEMENTS(variants); i++) {
+        PanelLayout current = {0};
+        PanelLayout candidate = {0};
+        gchar *failure = NULL;
+
+        g_assert_true(parse(APPEARANCE_BASE, &current, &failure));
+        g_assert_true(parse(variants[i], &candidate, &failure));
+        g_assert_false(
+            panel_layout_is_appearance_only(&current, &candidate));
+
+        panel_layout_clear(&current);
+        panel_layout_clear(&candidate);
+    }
+}
+
 void panel_config_tests_register(void)
 {
     g_test_add_func("/config/full-payload", test_full_payload);
@@ -945,5 +1123,11 @@ void panel_config_tests_register(void)
     g_test_add_func("/config/contract-version-missing",
                     test_missing_contract_version_is_zero);
     g_test_add_func("/config/contract-version-unusable",
-                    test_unusable_contract_version_is_zero);
+                     test_unusable_contract_version_is_zero);
+    g_test_add_func("/config/appearance-rename",
+                    test_appearance_only_rename_and_icon);
+    g_test_add_func("/config/appearance-icon-removed",
+                    test_appearance_only_icon_removed);
+    g_test_add_func("/config/appearance-rejects-structure",
+                    test_appearance_only_rejects_structure);
 }

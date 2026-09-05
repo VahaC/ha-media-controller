@@ -314,7 +314,10 @@ placeholder screen.
 
 A layout change in Home Assistant restarts the panel the same way a
 `config.ini` change does: the watchdog brings it back within about two
-seconds, reading the fresh cache. The tablet does not reboot. A **settings**
+seconds, reading the fresh cache. The tablet does not reboot. Renaming a
+card or choosing another icon is not a layout change in this sense: the
+panel adopts the new names and pictures and repaints while it keeps
+running. A **settings**
 change does not restart anything: the panel adopts a new poll interval on the
 spot, and the Power button handler notices the new screen timeout in the cache
 within half a second.

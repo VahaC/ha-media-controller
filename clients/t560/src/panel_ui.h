@@ -77,6 +77,11 @@ const PanelEntity *panel_ui_card_entity(PanelUi *ui, guint index);
  * is one drawing area, so this rebuilds a card list and redraws rather than
  * rebuilding a widget tree. */
 void panel_ui_set_grid(PanelUi *ui, PanelGrid *grid);
+/* Re-resolves what each card on screen calls itself and which picture it
+ * draws, after the registry's display names or icons changed. Names are read
+ * off the registry at draw time and icons are re-resolved here, so this is a
+ * repaint: cards, states and polls are kept, and nothing restarts. */
+void panel_ui_refresh_appearance(PanelUi *ui);
 /* The arrangement on screen, borrowed. */
 const PanelGrid *panel_ui_grid(PanelUi *ui);
 /* Where the layout editor answers, shown on a page with no cards on it. */

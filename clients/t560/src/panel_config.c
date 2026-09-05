@@ -367,3 +367,86 @@ void panel_config_store_cache(const gchar *data, gsize length)
     }
     g_free(path);
 }
+
+/* Everything about one registry element that is not its display name or its
+ * picture. A rename changes neither what a card acts on nor what it may
+ * draw, so the room page keeps its cards, its states and its polls; anything
+ * else moves controls around and still needs a restart. */
+static gboolean entity_structure_matches(const PanelEntity *current,
+                                         const PanelEntity *candidate)
+{
+    if (g_strcmp0(current->rid, candidate->rid) != 0 ||
+        g_strcmp0(current->entity, candidate->entity) != 0 ||
+        g_strcmp0(current->domain, candidate->domain) != 0)
+        return FALSE;
+    if (current->togglable != candidate->togglable ||
+        current->brightness != candidate->brightness ||
+        current->color_temperature != candidate->color_temperature ||
+        current->target_temperature != candidate->target_temperature ||
+        current->position != candidate->position ||
+        current->stoppable != candidate->stoppable)
+        return FALSE;
+    if (current->min_kelvin != candidate->min_kelvin ||
+        current->max_kelvin != candidate->max_kelvin ||
+        current->min_temp != candidate->min_temp ||
+        current->max_temp != candidate->max_temp ||
+        current->temp_step != candidate->temp_step)
+        return FALSE;
+    return TRUE;
+}
+
+gboolean panel_layout_is_appearance_only(const PanelLayout *current,
+                                         const PanelLayout *candidate)
+{
+    g_return_val_if_fail(current != NULL, FALSE);
+    g_return_val_if_fail(candidate != NULL, FALSE);
+
+    /* The player the panel follows is layout: following another one is a
+     * different panel, not a renamed card. */
+    if (g_strcmp0(current->player_entity, candidate->player_entity) != 0 ||
+        g_strcmp0(current->queue_entity, candidate->queue_entity) != 0 ||
+        g_strcmp0(current->playlists_entity, candidate->playlists_entity) !=
+            0)
+        return FALSE;
+
+    guint count = current->entities != NULL ? current->entities->len : 0;
+    guint other = candidate->entities != NULL ? candidate->entities->len : 0;
+    if (count != other)
+        return FALSE;
+    for (guint i = 0; i < count; i++) {
+        const PanelEntity *was = g_ptr_array_index(current->entities, i);
+        const PanelEntity *now = g_ptr_array_index(candidate->entities, i);
+        if (!entity_structure_matches(was, now))
+            return FALSE;
+    }
+    return TRUE;
+}
+
+void panel_layout_apply_appearance(PanelLayout *layout,
+                                   const PanelLayout *appearance)
+{
+    g_return_if_fail(layout != NULL);
+    g_return_if_fail(appearance != NULL);
+
+    guint count = layout->entities != NULL ? layout->entities->len : 0;
+    guint other = appearance->entities != NULL ? appearance->entities->len
+                                              : 0;
+    /* The caller asked panel_layout_is_appearance_only first. A mismatch
+     * here means it did not, and adopting half a registry would leave cards
+     * pointing at elements that are no longer there. */
+    g_return_if_fail(count == other);
+
+    for (guint i = 0; i < count; i++) {
+        PanelEntity *was = g_ptr_array_index(layout->entities, i);
+        const PanelEntity *now = g_ptr_array_index(appearance->entities, i);
+
+        g_return_if_fail(g_strcmp0(was->rid, now->rid) == 0);
+        g_free(was->name);
+        was->name = g_strdup(now->name);
+        g_free(was->icon);
+        was->icon = now->icon != NULL ? g_strdup(now->icon) : NULL;
+    }
+    /* Adopted so that the next poll compares against what is on screen
+     * rather than against what the panel started with. */
+    layout->revision = appearance->revision;
+}

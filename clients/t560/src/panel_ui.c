@@ -3331,6 +3331,68 @@ static void room_area_allocated(GtkWidget *widget, GdkRectangle *allocation,
     room_cards_allocate(user_data);
 }
 
+/* Which picture the card draws, in the order the contract resolves
+ * it: the one the person chose, which Home Assistant keeps against
+ * the registry element and both panels therefore agree on; then the
+ * name this card carries in the layout document itself, which is
+ * what an older editor wrote and is honoured until anybody chooses
+ * anything; then the domain's own suggestion.
+ *
+ * A name this build carries no artwork for simply draws none:
+ * icon_set() finds nothing, exactly as it already does for a sensor
+ * block. The catalog the integration publishes is larger than what
+ * is compiled in here, and a card naming one of the extra pictures
+ * must degrade rather than fail. */
+static const gchar *card_icon_choice(const PanelEntity *entity,
+                                     const PanelCard *placed)
+{
+    if (entity != NULL && entity->icon != NULL)
+        return entity->icon;
+    if (placed != NULL && placed->icon != NULL)
+        return placed->icon;
+    return icon_for_domain(entity != NULL ? entity->domain : NULL);
+}
+
+/* A rename that arrived while the panel runs. Names are read off the
+ * borrowed registry element at draw time, so they need nothing here; the
+ * icon is the copy this card resolved when it was built, so it is resolved
+ * again. Cards, states and polls are kept: this is a repaint, not a
+ * rebuild. */
+void panel_ui_refresh_appearance(PanelUi *ui)
+{
+    g_return_if_fail(ui != NULL);
+
+    for (guint i = 0; i < ui->room_cards->len; i++) {
+        PanelRoomCard *card = g_ptr_array_index(ui->room_cards, i);
+        const PanelEntity *entity = panel_layout_find_entity(
+            &ui->config->layout, card->rid);
+        const PanelCard *placed = NULL;
+
+        if (ui->room_grid != NULL) {
+            for (guint j = 0; j < ui->room_grid->cards->len; j++) {
+                const PanelCard *candidate =
+                    g_ptr_array_index(ui->room_grid->cards, j);
+                if (g_strcmp0(candidate->rid, card->rid) == 0) {
+                    placed = candidate;
+                    break;
+                }
+            }
+        }
+
+        const gchar *choice = card_icon_choice(entity, placed);
+        if (g_strcmp0(card->icon, choice) != 0) {
+            g_free(card->icon);
+            card->icon = g_strdup(choice);
+        }
+    }
+
+    /* Names need no invalidation of their own: they are read off the borrowed
+     * registry element on every draw, so the next frame already says the new
+     * one. */
+    if (ui->room_area != NULL)
+        gtk_widget_queue_draw(ui->room_area);
+}
+
 /* Builds the card list from the grid and the registry. Both can change while
  * the panel runs — the registry when Home Assistant is edited, the grid when
  * somebody saves in the editor — and this is the one place the two are put
@@ -3370,25 +3432,7 @@ static void room_cards_rebuild(PanelUi *ui)
         card->sensor_unit = NULL;
         card->forecast_count = 0;
         card->forecast_at = 0;
-        /* Which picture the card draws, in the order the contract resolves
-         * it: the one the person chose, which Home Assistant keeps against
-         * the registry element and both panels therefore agree on; then the
-         * name this card carries in the layout document itself, which is
-         * what an older editor wrote and is honoured until anybody chooses
-         * anything; then the domain's own suggestion.
-         *
-         * A name this build carries no artwork for simply draws none:
-         * icon_set() finds nothing, exactly as it already does for a sensor
-         * block. The catalog the integration publishes is larger than what
-         * is compiled in here, and a card naming one of the extra pictures
-         * must degrade rather than fail. */
-        const gchar *chosen = entity != NULL && entity->icon != NULL
-                                  ? entity->icon
-                                  : placed->icon;
-        card->icon = g_strdup(
-            chosen != NULL
-                ? chosen
-                : icon_for_domain(entity != NULL ? entity->domain : NULL));
+        card->icon = g_strdup(card_icon_choice(entity, placed));
         if (placed->color != NULL) {
             card->accent = (guint)g_ascii_strtoull(placed->color + 1, NULL,
                                                    16);
