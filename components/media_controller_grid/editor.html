@@ -226,6 +226,48 @@ input[type=color] { padding: 2px; height: 40px; background: #16273c; border: 1px
   header { padding: 10px 12px; }
   #board { max-width: none; }
 }
+/* Device card preview. Geometry follows the native renderer; values are
+   placeholders because the editor API contains configuration, not live state. */
+.card { padding: 0; display: block; border-radius: var(--radius, 9px); }
+.card .face {
+  position: absolute; inset: 0 auto auto 0; transform-origin: top left;
+  display: flex; flex-direction: column; align-items: center;
+  padding: var(--pad); width: var(--face-w); height: var(--face-h);
+  font: 16px/1.2 Arial, sans-serif; text-align: center; pointer-events: none;
+}
+.card .name { flex: 0 0 auto; width: 100%; font-size: var(--name-size);
+  white-space: normal; display: -webkit-box; -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
+.card .kind { display: none; }
+.card .art-zone { flex: 1 1 auto; min-height: 0; width: 100%;
+  display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.card .art { position: static; width: var(--icon-size); height: var(--icon-size);
+  max-width: 100%; max-height: 100%; object-fit: contain; opacity: .85; }
+.card .fallback-art { width: var(--icon-size); height: var(--icon-size);
+  max-height: 100%; color: #9ab2cf; }
+.card .reading { flex: 0 0 auto; color: #8fa9c7;
+  font-size: var(--state-size); margin-bottom: 4px; }
+.card .adjust { position: absolute; top: 6px; right: 6px; border: 1px solid #3b5678;
+  border-radius: 14px; padding: 12px 10px; font-size: 12px; color: #8fa9c7; }
+.card.compact .reading { display: none; }
+.card.compact .name { -webkit-line-clamp: 1; }
+.card.reading-card { background: linear-gradient(#2e5d8f, #122540); border-color: #6fb3e8; }
+.card.reading-card .name { order: -2; }
+.card.reading-card .art-zone { display: none; }
+.card.reading-card .reading { flex: 1; display: flex; align-items: center;
+  justify-content: center; margin: 0; font-size: var(--hero-size); color: white; }
+.card .forecast { display: none; width: 100%; color: #a9c3e0; font-size: 14px;
+  border-top: 1px solid #6fb3e855; padding-top: 8px; line-height: 1.6; }
+.card.weather-card.large .forecast { display: block; }
+.card .swatch { z-index: 1; }
+#board[data-skin="cassette"] .card:not(.reading-card):not(.unknown) {
+  background: linear-gradient(#3a3f46, #1f2228); border-color: #555c66;
+}
+.card.icon-only .name, .card.icon-only .reading { display: none; }
+.card.no-art .art-zone > * { visibility: hidden; }
+
+.card:not(.reading-card):not(.unknown) { background: linear-gradient(#303050, #11111f); border-color: #505078; }
+.card.reading-card:not(.weather-card):not(.compact) .name { order: 0; }
 </style>
 </head>
 <body>
@@ -238,6 +280,7 @@ input[type=color] { padding: 2px; height: 40px; background: #16273c; border: 1px
 </header>
 
 <main>
+  <p class="hint" style="flex: 1 0 100%; margin: 0">Device layout preview. Values shown as -- are placeholders, not live readings. Drag cards to arrange them; preview controls do not operate devices.</p>
   <div id="board">
     <div id="cells"></div>
     <div id="cards"></div>
@@ -547,6 +590,7 @@ function layoutCards() {
     node.style.top = (card.y * size.h) + "px";
     node.style.width = (card.w * size.w - 3) + "px";
     node.style.height = (card.h * size.h - 3) + "px";
+    layoutPreview(node, card, size);
   }
 }
 
@@ -560,12 +604,64 @@ function renderCards() {
   renderEditor();
 }
 
+/* Keep these size rules aligned with the native card renderer named in AGENTS.md.
+   Use device-space dimensions so browser resizing scales type and icons too. */
+function layoutPreview(node, card, size) {
+  var esp = true;
+  var cell = esp ? 60 : 78;
+  var width = card.w * cell - 6, height = card.h * cell - 6;
+  var scale = (card.w * size.w - 3) / width;
+  var face = node.querySelector(".face");
+  node.style.setProperty("--face-w", width + "px");
+  node.style.setProperty("--face-h", height + "px");
+  node.style.setProperty("--radius", ((card.w >= 2 ? 18 : 12) * scale) + "px");
+  node.style.setProperty("--pad", (esp ? 5 : Math.max(5, Math.min(18, width * .09))) + "px");
+  node.style.setProperty("--name-size", (esp ? 16 : Math.max(11, Math.min(23, height / 6.4))) + "px");
+  node.style.setProperty("--state-size", (esp ? 16 : Math.max(9, Math.min(13, height / 11))) + "px");
+  node.style.setProperty("--hero-size", (esp ? (width >= 174 ? 36 : 30) : Math.max(20, Math.min(64, width / 4, height / 3))) + "px");
+  node.style.setProperty("--icon-size", (esp ? 40 : (height >= 150 && width >= 100 ? 62 : 34)) + "px");
+  face.style.transform = "scale(" + scale + "," + ((card.h * size.h - 3) / height) + ")";
+  var reading = node.classList.contains("reading-card");
+  node.classList.toggle("compact", height < 108);
+  node.classList.toggle("icon-only", esp && (card.w < 2 || card.h < 2) && !reading);
+  node.classList.toggle("large", card.w >= 3 && card.h >= 3);
+  var adjust = node.querySelector(".adjust");
+  if (adjust) { adjust.textContent = width >= 132 && height >= 120 ? "ADJUST" : "☷"; }
+  node.classList.toggle("no-art", !esp && (height < 85 || (adjust && card.w < 2)));
+}
+
+function previewArtwork(domain) {
+  /* Small vector fallbacks for Automatic; selected catalog artwork still wins. */
+  var paths = {
+    light: '<path d="M18 32C5 15 20 5 28 8s17 12 7 24l-3 5H21zM22 42h10M24 47h6"/>',
+    switch: '<path d="M27 7v20M16 12a19 19 0 1 0 22 0"/>',
+    fan: '<circle cx="27" cy="27" r="4"/><path d="M25 22C4 4 34 0 30 21M32 27c26-6 12 24-3 6M24 31c-5 26-26 3-4-5"/>',
+    climate: '<path d="M27 5v44M8 16l38 22M8 38l38-22M21 10l6 6 6-6M21 44l6-6 6 6"/>',
+    cover: '<path d="M9 45V9h36v36M13 17h28M13 24h28M13 31h28M13 38h28"/>',
+    scene: '<path d="m29 4-16 25h13l-2 20 17-27H28z"/>',
+    script: '<path d="m20 11 22 16-22 16z"/>'
+  };
+  return '<svg class="fallback-art" viewBox="0 0 54 54" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    (paths[domain] || '<rect x="10" y="10" width="34" height="34" rx="8"/>') + '</svg>';
+}
+
 function cardNode(card, index) {
   var entity = entityFor(card.rid);
   var node = document.createElement("div");
   node.className = "card" + (index === selected ? " selected" : "") +
                    (entity ? "" : " unknown");
   node.dataset.index = String(index);
+  node.title = "Layout preview; live state is not available. Drag to move.";
+  var domain = entity ? entity.domain : "unknown";
+  var readingCard = domain === "sensor" || domain === "weather";
+  node.classList.toggle("reading-card", readingCard);
+  node.classList.toggle("weather-card", domain === "weather");
+  var face = document.createElement("div");
+  face.className = "face";
+  node.appendChild(face);
+  var artZone = document.createElement("div");
+  artZone.className = "art-zone";
+  face.appendChild(artZone);
 
   if (card.color) {
     var swatch = document.createElement("span");
@@ -578,7 +674,9 @@ function cardNode(card, index) {
   if (art) {
     var picture = iconImage(art);
     picture.className = "art";
-    node.appendChild(picture);
+    artZone.appendChild(picture);
+  } else if (!readingCard) {
+    artZone.innerHTML = previewArtwork(domain);
   }
 
   var kind = document.createElement("div");
@@ -587,8 +685,24 @@ function cardNode(card, index) {
   var name = document.createElement("div");
   name.className = "name";
   name.textContent = entity ? effectiveName(card.rid, entity.name) : card.rid;
-  node.appendChild(kind);
-  node.appendChild(name);
+  face.appendChild(kind);
+  var reading = document.createElement("div");
+  reading.className = "reading";
+  reading.textContent = "--";
+  face.appendChild(reading);
+  face.appendChild(name);
+  if (domain === "weather") {
+    var forecast = document.createElement("div");
+    forecast.className = "forecast";
+    forecast.textContent = "--  /  --     ·     --  /  --";
+    face.appendChild(forecast);
+  }
+  if (false && entity && (entity.brightness || entity.color_temp ||
+      entity.target_temperature || entity.position || entity.stop)) {
+    var adjust = document.createElement("span");
+    adjust.className = "adjust";
+    face.appendChild(adjust);
+  }
 
   var grip = document.createElement("div");
   grip.className = "grip";
@@ -1338,6 +1452,7 @@ function renderSkinPreviews(current) {
 }
 
 function markCurrentSkin(name) {
+  boardEl.dataset.skin = String(name || "").toLowerCase();
   var tiles = document.getElementById("skin-previews").children;
   for (var i = 0; i < tiles.length; i++) {
     var isCurrent = tiles[i].dataset.skin === name;

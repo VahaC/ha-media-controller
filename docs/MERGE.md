@@ -10,6 +10,14 @@ The three components share one thing: the entity and service contract in
 repositories, two pull requests, and no way to see whether the clients had
 caught up. Now a contract change and every consumer of it land in one commit.
 
+## Web preview maintenance
+
+Device card layout changes must update the corresponding web editor in the
+same change. Match geometry, label and icon placement, compact-card behavior,
+control affordances, and skin palettes to the native renderer. The mappings
+and verification requirements are recorded in the repository's `AGENTS.md`.
+Preview values are placeholders unless a state API explicitly supplies them.
+
 ## Frozen paths
 
 These paths are baked into installations that already exist. **Do not move
