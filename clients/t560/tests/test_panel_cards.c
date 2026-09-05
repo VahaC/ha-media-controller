@@ -231,14 +231,18 @@ static void test_wanted_list_skips_what_is_held(void)
     g_assert_null(panel_cards_next_wanted(cards));
     g_assert_true(panel_cards_set_catalog(cards, CATALOG, -1));
     g_assert_cmpstr(panel_cards_next_wanted(cards), ==, "light-1");
+    g_assert_true(panel_cards_needs_image(cards, "blind"));
+    g_assert_false(panel_cards_needs_image(cards, "not-published"));
 
     panel_cards_store_image(cards, "light-1", png);
+    g_assert_false(panel_cards_needs_image(cards, "light-1"));
     g_assert_cmpstr(panel_cards_next_wanted(cards), ==, "desk-lamp");
 
     /* A picture that did not arrive is left alone for a while rather than
      * asked for again on every tick: Home Assistant being down must not
      * become a request per poll. */
     panel_cards_mark_missing(cards, "desk-lamp");
+    g_assert_false(panel_cards_needs_image(cards, "desk-lamp"));
     g_assert_cmpstr(panel_cards_next_wanted(cards), ==, "blind");
 
     panel_cards_store_image(cards, "blind", png);
@@ -249,6 +253,39 @@ static void test_wanted_list_skips_what_is_held(void)
 }
 
 /* ------------------------------------------------------------ the outcome */
+
+static void test_full_catalog_download_finishes(void)
+{
+    PanelCards *cards = panel_cards_new();
+    GBytes *png = g_bytes_new_static("\x89PNG", 4);
+    GString *catalog = g_string_new("{\"revision\":1,\"icons\":[");
+    for (guint i = 0; i < 513; i++) {
+        g_string_append_printf(catalog, "%s{\"id\":\"icon-%u\"}",
+                               i ? "," : "", i);
+    }
+    g_string_append(catalog, "]}");
+    g_assert_true(panel_cards_set_catalog(cards, catalog->str, -1));
+    g_assert_cmpuint(panel_cards_catalog_size(cards), ==, 512);
+    for (guint i = 0; i < 512; i++) {
+        gchar *id = g_strdup_printf("icon-%u", i);
+        g_assert_cmpstr(panel_cards_next_wanted(cards), ==, id);
+        panel_cards_store_image(cards, id, png);
+        g_free(id);
+    }
+    g_assert_null(panel_cards_next_wanted(cards));
+    for (guint i = 0; i < 512; i++) {
+        gchar *id = g_strdup_printf("icon-%u", i);
+        g_assert_nonnull(panel_cards_image(cards, id));
+        g_free(id);
+    }
+    panel_cards_store_image(cards, "icon-0", png);
+    g_assert_null(panel_cards_next_wanted(cards));
+    g_assert_true(panel_cards_set_catalog(cards, CATALOG, -1));
+    g_assert_null(panel_cards_image(cards, "icon-0"));
+    g_string_free(catalog, TRUE);
+    g_bytes_unref(png);
+    panel_cards_free(cards);
+}
 
 static void test_write_outcome_is_reported(void)
 {
@@ -284,6 +321,7 @@ void panel_cards_tests_register(void)
     g_test_add_func("/cards/catalog-reordered", test_reordering_moves_nothing);
     g_test_add_func("/cards/catalog-unusable", test_unusable_catalog_is_refused);
     g_test_add_func("/cards/pictures", test_pictures_are_shared_and_guarded);
+    g_test_add_func("/cards/full-catalog", test_full_catalog_download_finishes);
     g_test_add_func("/cards/pictures-wanted",
                     test_wanted_list_skips_what_is_held);
     g_test_add_func("/cards/write-outcome", test_write_outcome_is_reported);

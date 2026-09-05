@@ -14,6 +14,7 @@ testing is what the catalog promises:
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 import sys
 import unittest
@@ -136,6 +137,11 @@ class VariantTests(unittest.TestCase):
 
 class CatalogTests(unittest.TestCase):
     """What the catalog document says, and what it must not."""
+
+    def test_catalog_fits_maintained_panel_limits(self) -> None:
+        payload = icon_catalog.catalog_payload()
+        self.assertLessEqual(len(payload["icons"]), 512)
+        self.assertLessEqual(len(json.dumps(payload).encode("utf-8")), 49152)
 
     def test_the_document_carries_no_image_data(self) -> None:
         """It is fetched on a schedule, so it has to stay small."""

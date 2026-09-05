@@ -156,20 +156,16 @@ quietly stripped. Naming a card never renames the Home Assistant entity.
 
 The icons come from a catalog the Media Controller integration publishes, not
 from this build: adding one there costs no rebuild of the panel and no reflash
-of the ESP32 across the house. The panel fetches the catalog every six hours,
-downloads one picture at a time in the background, and serves them to the
-editor itself, so the browser never sees the panel's Home Assistant token. An
-icon the panel could not download keeps its name in the list and loses only
-its picture.
+of the ESP32 across the house. The panel fetches the catalog every six hours.
+Both editors load PNG previews directly from Home Assistant's public bundled
+artwork route, without a token. Update the integration to 1.6.2-dev or later
+and restart Home Assistant before updating the clients. The browser must reach
+the configured Home Assistant URL; HTTPS pages cannot load HTTP previews.
 
-One limitation is worth naming: the pictures the panel downloads are what the
-**editor** shows, and the room page still draws from the artwork compiled into
-this build. The eight identifiers the catalog starts with are exactly the eight
-this build carries, so today the two agree; a picture added to the catalog
-later appears in the editor and on the paired ESP32, and a card on this tablet
-that names it draws no artwork rather than the wrong artwork — the same way a
-sensor block already draws none. Drawing downloaded pictures on the room page
-is a change to `panel_ui.c` and has not been made. **Automatic** is always the first choice and
+The tablet downloads only artwork used by its layout cards, one picture at a
+time. PNG decoding and resizing run in a worker, and cards share the resulting
+images. An unavailable image keeps the existing built-in fallback where one
+exists. **Automatic** is always the first choice and
 means *let the domain decide*, which is what every card does until somebody
 says otherwise.
 

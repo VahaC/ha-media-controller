@@ -361,12 +361,6 @@ static const size_t ICON_ID_MAX = 32;
  * that is genuinely missing must not be asked for forever. */
 static const uint32_t ICON_RETRY_MS = 60000;
 
-/* How long after the editor last asked what this device knows the catalog
- * keeps being fetched ahead of what the cards need. The editor shows every
- * icon in the catalog and the cards use a handful, so the rest are worth
- * having only while somebody is looking at them. */
-static const uint32_t ICON_PREFETCH_MS = 120000;
-
 /* One row of the catalog Home Assistant publishes. The label is what the
  * editor calls the icon and nothing compares it; the identifier is what a
  * registry element stores and what a request names. */
@@ -429,6 +423,10 @@ class MediaControllerGrid final : public AsyncWebHandler, public Component {
   float get_setup_priority() const override { return setup_priority::AFTER_WIFI; }
 
   void set_port(uint16_t port) { this->port_ = port; }
+  void set_icon_preview_base(const std::string &url) {
+    LockGuard guard{this->lock_};
+    this->icon_preview_base_ = url;
+  }
   /* Where a browser on the same network reaches this editor, and "" while
    * the device has no address yet. The firmware reports it to Home
    * Assistant, which offers it as the link on this device's panel page. It
@@ -503,8 +501,8 @@ class MediaControllerGrid final : public AsyncWebHandler, public Component {
    * separate requests, made only for the icons that are actually wanted. */
   bool ingest_icon_catalog(const std::string &document);
   /* The identifier of the next picture worth asking for, or empty when there
-   * is nothing to fetch. Cards come first and the rest of the catalog only
-   * while the editor is open; a download that failed is left alone for
+   * is nothing to fetch. Only icons used by layout cards are fetched;
+   * a download that failed is left alone for
    * ICON_RETRY_MS. One at a time on purpose: each is six kilobytes through a
    * request that blocks the main loop. */
   std::string next_wanted_icon();
@@ -516,9 +514,7 @@ class MediaControllerGrid final : public AsyncWebHandler, public Component {
    * Returns whether a card on the current layout draws this picture and was
    * drawing the fallback until now, which is the caller's signal to rebuild
    * the page. A picture nothing draws changes nothing on screen and must
-   * cost no rebuild: the editor prefetches the whole catalog, and rebuilding
-   * the room page once per prefetched row would be a page rebuilt eight
-   * times for a page that did not change. */
+   * cost no rebuild, including when the layout changed during a download. */
   bool icon_downloaded(const std::string &id, const std::string &payload);
 #ifdef USE_LVGL
   /* The picture one card should draw, or nullptr when this build has nothing
@@ -657,14 +653,11 @@ class MediaControllerGrid final : public AsyncWebHandler, public Component {
   std::vector<CatalogIcon> catalog_;
   uint32_t catalog_revision_{0};
   std::vector<std::unique_ptr<CachedIcon>> icons_;
-  /* When the editor last asked what this device knows. Icons the cards do
-   * not use are fetched only for ICON_PREFETCH_MS after it, because they
-   * exist to be looked at in a list nobody has open the rest of the time. */
-  uint32_t editor_seen_ms_{0};
   /* The identifier handed to the fetcher and not yet answered. One at a
    * time: each is six kilobytes through a request that blocks the main
    * loop. */
   std::string icon_in_flight_;
+  std::string icon_preview_base_;
 
   /* Returns the cache row for an identifier, creating it when asked. Both
    * forms expect the lock to be held. */

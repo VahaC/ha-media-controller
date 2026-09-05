@@ -728,7 +728,7 @@ bool MediaControllerGrid::ingest_icon_catalog(const std::string &document) {
       /* A catalog larger than the cache is still a usable catalog — the
        * editor lists it and the cards use a handful of it — but one large
        * enough to be a memory problem in itself is not. */
-      if (parsed.size() >= 128)
+      if (parsed.size() >= 512)
         break;
     }
     return true;
@@ -901,16 +901,7 @@ std::string MediaControllerGrid::next_wanted_icon() {
     }
   }
 
-  /* The rest of the catalog only while somebody has the editor open, because
-   * a list of every picture is the only place the rest of it is looked at. */
-  if (this->editor_seen_ms_ == 0 || now - this->editor_seen_ms_ > ICON_PREFETCH_MS)
-    return {};
-  for (const auto &icon : this->catalog_) {
-    if (worth_asking(icon.id)) {
-      this->icon_in_flight_ = icon.id;
-      return icon.id;
-    }
-  }
+  // Editor previews go directly to Home Assistant, never into the LVGL cache.
   return {};
 }
 
@@ -1739,10 +1730,6 @@ void MediaControllerGrid::handle_icon_(AsyncWebServerRequest *request, const cha
   std::vector<uint8_t> bmp;
   {
     LockGuard guard{this->lock_};
-    /* Asking for a picture is what says somebody has the editor open, which
-     * is what makes `next_wanted_icon` fetch the rest of the catalog rather
-     * than only what the cards use. */
-    this->editor_seen_ms_ = millis();
     const CachedIcon *cached = this->find_icon_(id);
     if (cached != nullptr && cached->pixels != nullptr) {
       /* A BITMAPV4HEADER, because that is the only BMP shape browsers agree
@@ -1782,9 +1769,8 @@ void MediaControllerGrid::handle_icon_(AsyncWebServerRequest *request, const cha
   }
 
   if (bmp.empty()) {
-    /* Not downloaded, or downloaded and refused. Asking for it is what puts
-     * it on the list, so the picture usually arrives before the editor's next
-     * attempt; until then the editor drops the image and keeps the name. */
+    /* Compatibility route for cached artwork only. Browser requests must
+     * never start a device download; previews now come from Home Assistant. */
     send_error_(request, 404, "This device has not downloaded that icon yet.");
     return;
   }
@@ -1967,16 +1953,13 @@ void MediaControllerGrid::handle_entities_(AsyncWebServerRequest *request) {
      * device that has never paired. The editor then offers Automatic alone,
      * which is the honest answer: there is nothing else this device could be
      * told to draw. */
+    root["icon_preview_base"] = this->icon_preview_base_;
     JsonArray icons = root["icons"].to<JsonArray>();
     for (const auto &icon : this->catalog_) {
       JsonObject row = icons.add<JsonObject>();
       row["id"] = icon.id;
       row["label"] = icon.label;
     }
-    /* Asking what this device knows is what says somebody has the editor
-     * open, which is what makes the catalog worth fetching ahead of the
-     * handful of pictures the cards actually use. */
-    this->editor_seen_ms_ = millis();
 
     /* What the editor may not exceed, so the limit is enforced in one place
      * and read in the other rather than written down twice. */

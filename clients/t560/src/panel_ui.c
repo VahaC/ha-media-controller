@@ -575,6 +575,78 @@ static void refresh_room_icons(PanelUi *ui)
         gtk_widget_queue_draw(ui->room_area);
 }
 
+typedef struct {
+    gchar *id;
+    GBytes *png;
+    GHashTable *cache;
+    GtkWidget *area;
+} CardIconDecode;
+
+static void card_icon_decode_free(gpointer data)
+{
+    CardIconDecode *decode = data;
+    g_free(decode->id);
+    g_bytes_unref(decode->png);
+    g_hash_table_unref(decode->cache);
+    g_clear_object(&decode->area);
+    g_free(decode);
+}
+
+static void card_icon_decode_task(GTask *task, gpointer source,
+                                  gpointer task_data, GCancellable *cancellable)
+{
+    (void)source;
+    CardIconDecode *decode = task_data;
+    GInputStream *stream = g_memory_input_stream_new_from_bytes(decode->png);
+    GError *error = NULL;
+    GdkPixbuf *large = gdk_pixbuf_new_from_stream_at_scale(stream,
+        PANEL_ROOM_ICON_LARGE, PANEL_ROOM_ICON_LARGE, TRUE, cancellable, &error);
+    g_object_unref(stream);
+    if (large == NULL) {
+        g_task_return_error(task, error);
+        return;
+    }
+    PanelIconSet *icons = g_new0(PanelIconSet, 1);
+    icons->large = large;
+    icons->small = gdk_pixbuf_scale_simple(large, PANEL_ROOM_ICON_SMALL,
+        PANEL_ROOM_ICON_SMALL, GDK_INTERP_BILINEAR);
+    g_task_return_pointer(task, icons, icon_set_free);
+}
+
+static void card_icon_decoded(GObject *source, GAsyncResult *result,
+                              gpointer user_data)
+{
+    (void)source;
+    (void)user_data;
+    GTask *task = G_TASK(result);
+    CardIconDecode *decode = g_task_get_task_data(task);
+    GError *error = NULL;
+    PanelIconSet *icons = g_task_propagate_pointer(task, &error);
+    if (icons != NULL) {
+        g_hash_table_replace(decode->cache, g_strdup(decode->id), icons);
+        if (decode->area != NULL)
+            gtk_widget_queue_draw(decode->area);
+    } else {
+        g_warning("Could not decode card icon %s: %s", decode->id, error->message);
+        g_clear_error(&error);
+    }
+}
+
+void panel_ui_store_card_icon(PanelUi *ui, const gchar *id, GBytes *png)
+{
+    CardIconDecode *decode = g_new0(CardIconDecode, 1);
+    decode->id = g_strdup(id);
+    decode->png = g_bytes_ref(png);
+    /* The task owns these references, so UI teardown cannot invalidate it. */
+    decode->cache = g_hash_table_ref(ui->room_icon_cache);
+    decode->area = ui->room_area != NULL ? g_object_ref(ui->room_area) : NULL;
+    GTask *task = g_task_new(NULL, NULL, card_icon_decoded, NULL);
+    g_task_set_priority(task, G_PRIORITY_DEFAULT_IDLE);
+    g_task_set_task_data(task, decode, card_icon_decode_free);
+    g_task_run_in_thread(task, card_icon_decode_task);
+    g_object_unref(task);
+}
+
 static GtkWidget *new_icon_button(const gchar *icon_name, const gchar *text,
                                   const gchar *css_class, gint width,
                                   gint height, gint icon_size,
@@ -3343,7 +3415,7 @@ static void room_area_allocated(GtkWidget *widget, GdkRectangle *allocation,
  * block. The catalog the integration publishes is larger than what
  * is compiled in here, and a card naming one of the extra pictures
  * must degrade rather than fail. */
-static const gchar *card_icon_choice(const PanelEntity *entity,
+const gchar *panel_ui_card_icon_choice(const PanelEntity *entity,
                                      const PanelCard *placed)
 {
     if (entity != NULL && entity->icon != NULL)
@@ -3379,7 +3451,7 @@ void panel_ui_refresh_appearance(PanelUi *ui)
             }
         }
 
-        const gchar *choice = card_icon_choice(entity, placed);
+        const gchar *choice = panel_ui_card_icon_choice(entity, placed);
         if (g_strcmp0(card->icon, choice) != 0) {
             g_free(card->icon);
             card->icon = g_strdup(choice);
@@ -3432,7 +3504,7 @@ static void room_cards_rebuild(PanelUi *ui)
         card->sensor_unit = NULL;
         card->forecast_count = 0;
         card->forecast_at = 0;
-        card->icon = g_strdup(card_icon_choice(entity, placed));
+        card->icon = g_strdup(panel_ui_card_icon_choice(entity, placed));
         if (placed->color != NULL) {
             card->accent = (guint)g_ascii_strtoull(placed->color + 1, NULL,
                                                    16);

@@ -84,6 +84,8 @@ typedef struct {
      * from it. It is asked for rather than held here because the fetching
      * needs the HTTP client, which this file has no business knowing about. */
     PanelCards *(*cards)(gpointer user_data);
+    /* Public artwork origin only; the caller owns the returned string. */
+    gchar *(*icon_preview_base)(gpointer user_data);
     /* Ask Home Assistant to store the display name and the icon of one
      * registry element. Nothing is written locally: Home Assistant owns the
      * registry and the new value arrives back the ordinary way, in the next

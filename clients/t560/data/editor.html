@@ -308,6 +308,7 @@ var entities = [];
    An older device answers with an array of plain strings, so both shapes are
    accepted and a string becomes its own label. */
 var icons = [];
+var iconPreviewBase = "";
 /* How long a display name may be. The device says, so the limit lives in one
    place; this is only the value used before it has answered. */
 var nameLimit = 64;
@@ -423,6 +424,16 @@ function iconImage(id, onMissing) {
   var image = document.createElement("img");
   image.alt = "";
   image.decoding = "async";
+  if (iconPreviewBase) {
+    image.loading = "lazy";
+    image.referrerPolicy = "no-referrer";
+    image.addEventListener("error", function () {
+      image.remove();
+      say("Could not load the " + id + " preview from Home Assistant.");
+    });
+    image.src = iconPreviewBase + encodeURIComponent(id);
+    return image;
+  }
   /* Asking for a picture is also what puts it on the device's list, so the
      first render of a catalog it has not fetched yet is a miss per row and
      the retries are what fill them in. They are spread out rather than
@@ -1357,6 +1368,7 @@ function loadEntities() {
     .then(function (body) {
       entities = body.entities || [];
       icons = body.icons || [];
+      iconPreviewBase = body.icon_preview_base || "";
       /* What the device will accept, so the field and the device cannot
          disagree about it. An older device says nothing and the built-in
          value stands. */

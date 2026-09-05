@@ -10,13 +10,9 @@
  * a picture that is genuinely missing must not be asked for forever. */
 #define PANEL_CARD_ICON_RETRY_US (60 * G_USEC_PER_SEC)
 
-/* How many pictures are held at once. A catalog PNG is a couple of kilobytes,
- * so this is generous rather than tight; it exists so that a catalog which
- * grows cannot become a panel that grows with it. */
-#define PANEL_CARD_ICON_CACHE 64
-
-/* A catalog larger than this is not a catalog, it is a payload problem. */
-#define PANEL_CARD_CATALOG_MAX 128
+/* Bound both the catalog and its image cache. Every accepted row must fit:
+ * evicting images while walking the catalog restarts downloads forever. */
+#define PANEL_CARD_CATALOG_MAX 512
 
 typedef struct {
     gchar *id;
@@ -260,7 +256,7 @@ gboolean panel_cards_set_catalog(PanelCards *cards, const gchar *document,
     g_hash_table_iter_init(&iter, cards->images);
     while (g_hash_table_iter_next(&iter, &key, &held)) {
         CachedImage *cached = held;
-        if (cached->image == NULL)
+        if (cached->image == NULL || !panel_cards_publishes(cards, key))
             g_hash_table_iter_remove(&iter);
     }
     return TRUE;
@@ -318,12 +314,8 @@ void panel_cards_store_image(PanelCards *cards, const gchar *id,
     if (!panel_cards_publishes(cards, id))
         return;
 
-    /* The bound is what keeps a catalog that grows from becoming a panel that
-     * grows with it. Dropping the whole cache rather than one row is
-     * deliberate: it happens once for a catalog larger than the ceiling, and
-     * a page of cards refetches only the handful it actually draws. */
-    if (g_hash_table_size(cards->images) >= PANEL_CARD_ICON_CACHE)
-        g_hash_table_remove_all(cards->images);
+    /* Membership bounds the cache to PANEL_CARD_CATALOG_MAX. Catalog changes
+     * remove obsolete entries, so downloading a later row keeps earlier ones. */
 
     CachedImage *cached = g_new0(CachedImage, 1);
     cached->image = g_bytes_ref(image);
@@ -344,6 +336,15 @@ void panel_cards_mark_missing(PanelCards *cards, const gchar *id)
         g_hash_table_replace(cards->images, g_strdup(id), cached);
     }
     cached->failed_at = g_get_monotonic_time();
+}
+
+gboolean panel_cards_needs_image(PanelCards *cards, const gchar *id)
+{
+    if (!panel_cards_publishes(cards, id))
+        return FALSE;
+    CachedImage *cached = g_hash_table_lookup(cards->images, id);
+    return cached == NULL || (cached->image == NULL &&
+        g_get_monotonic_time() - cached->failed_at >= PANEL_CARD_ICON_RETRY_US);
 }
 
 const gchar *panel_cards_next_wanted(PanelCards *cards)

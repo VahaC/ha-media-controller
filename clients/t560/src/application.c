@@ -67,7 +67,7 @@ typedef struct {
      * either way; only the editing does not. */
     PanelWeb *web;
     /* The card artwork: the catalog Home Assistant publishes and the
-     * pictures downloaded from it, held for the editor to serve. Neither is
+     * pictures downloaded for layout cards. Neither is
      * ever fetched more often than it changes — the catalog moves when the
      * integration is upgraded, and a picture never does. */
     PanelCards *cards;
@@ -1568,6 +1568,8 @@ static void icon_finished(guint status_code, GBytes *body,
         return;
     }
     panel_cards_store_image(application->cards, request->icon, body);
+    if (application->ui != NULL)
+        panel_ui_store_card_icon(application->ui, request->icon, body);
 }
 
 /* One picture at a time, and only what the catalog says exists. Each is a
@@ -1591,7 +1593,19 @@ static void maybe_fetch_card_art(PanelApplication *application, gint64 now)
     if (application->icon_pending)
         return;
 
-    const gchar *wanted = panel_cards_next_wanted(application->cards);
+    const gchar *wanted = NULL;
+    const PanelGrid *grid = application->ui != NULL
+        ? panel_ui_grid(application->ui) : NULL;
+    for (guint i = 0; grid != NULL && i < grid->cards->len; i++) {
+        const PanelCard *card = g_ptr_array_index(grid->cards, i);
+        const PanelEntity *entity = panel_layout_find_entity(
+            &application->config->layout, card->rid);
+        const gchar *id = panel_ui_card_icon_choice(entity, card);
+        if (panel_cards_needs_image(application->cards, id)) {
+            wanted = id;
+            break;
+        }
+    }
     if (wanted == NULL)
         return;
 
@@ -1875,6 +1889,15 @@ static gboolean editor_write_card(const gchar *rid, const gchar *name,
     return sent;
 }
 
+static gchar *editor_icon_preview_base(gpointer user_data)
+{
+    PanelApplication *application = user_data;
+    if (application->client == NULL)
+        return g_strdup("");
+    return home_assistant_client_resolve_url(application->client,
+        "/api/media_controller/icon-preview/");
+}
+
 static void start_editor(PanelApplication *application)
 {
     static const PanelWebCallbacks CALLBACKS = {
@@ -1885,6 +1908,7 @@ static void start_editor(PanelApplication *application)
         .restore = editor_restore,
         .select_skin = editor_select_skin,
         .cards = editor_cards,
+        .icon_preview_base = editor_icon_preview_base,
         .write_card = editor_write_card
     };
     gchar *failure = NULL;

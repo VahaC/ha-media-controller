@@ -100,6 +100,7 @@ void panel_cards_mark_missing(PanelCards *cards, const gchar *id);
  * fetch. One at a time, in catalog order, skipping what is already held and
  * what failed recently. */
 const gchar *panel_cards_next_wanted(PanelCards *cards);
+gboolean panel_cards_needs_image(PanelCards *cards, const gchar *id);
 
 /* How the last card edit ended, for the editor to watch. The write reaches
  * Home Assistant asynchronously, so it cannot be answered inside the request

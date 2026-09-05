@@ -88,6 +88,7 @@ esphome:
       # -- decided it wants. Neither builds a URL in the component. --
       - lambda: |-
           id(room_page_index) = (int) id(page_room_grid)->index;
+          id(room_grid)->set_icon_preview_base("${ha_url}/api/media_controller/icon-preview/");
           id(room_grid)->set_redraw_listener([]() {
             id(rebuild_room_grid)->execute();
           });
@@ -1224,10 +1225,10 @@ script:
                 request_headers:
                   Authorization: !lambda return id(auth_header).c_str();
                 capture_response: true
-                # -- A hundred rows of an identifier and a label. Names, not
+                # -- Up to 512 rows of an identifier and a label. Names, not
                 # -- pictures: the pictures are separate requests, made only
                 # -- for the handful a card actually draws. --
-                max_response_buffer_size: 8192
+                max_response_buffer_size: 49152
                 on_response:
                   then:
                     - lambda: |-
@@ -2604,8 +2605,7 @@ interval:
           }
 
           // -- One picture at a time, and only when the component says it
-          //    wants one: the cards' own artwork always, and the rest of the
-          //    catalog only while somebody has the editor open. Each is six
+          //    wants one: only artwork used by layout cards. Each is six
           //    kilobytes through a request that blocks the main loop, so
           //    they are spread over the tick rather than fetched in a burst
           //    that would be felt as a stall under a finger. --

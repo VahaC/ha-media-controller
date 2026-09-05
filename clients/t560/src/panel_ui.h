@@ -7,6 +7,10 @@
 #include <gtk/gtk.h>
 
 typedef struct _PanelUi PanelUi;
+const gchar *panel_ui_card_icon_choice(const PanelEntity *entity,
+                                       const PanelCard *placed);
+/* Decode and resize in a worker; publish the result at idle priority. */
+void panel_ui_store_card_icon(PanelUi *ui, const gchar *id, GBytes *png);
 
 typedef enum {
     PANEL_UI_PLAYER_SERVICE,

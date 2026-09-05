@@ -235,6 +235,11 @@ static void handle_entities(PanelWeb *web, SoupServerMessage *message)
      * which is the honest answer: there is nothing else this panel could be
      * told to draw. */
     PanelCards *cards = web->callbacks.cards(web->user_data);
+    gchar *preview_base = web->callbacks.icon_preview_base != NULL
+        ? web->callbacks.icon_preview_base(web->user_data) : NULL;
+    json_builder_set_member_name(builder, "icon_preview_base");
+    json_builder_add_string_value(builder, preview_base != NULL ? preview_base : "");
+    g_free(preview_base);
     json_builder_set_member_name(builder, "icons");
     json_builder_begin_array(builder);
     guint icons = panel_cards_catalog_size(cards);

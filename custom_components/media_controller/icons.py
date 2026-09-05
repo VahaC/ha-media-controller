@@ -1,11 +1,12 @@
 """The endpoints a client reads card artwork from.
 
-Two routes, and both of them are deliberately dull:
+Catalog, device artwork, and public browser previews:
 
 ```text
 GET /api/media_controller/icons                     the catalog, no images
 GET /api/media_controller/icon/<icon_id>/<size>     one pre-rendered variant
 GET /api/media_controller/icon/<icon_id>/png        the source artwork
+GET /api/media_controller/icon-preview/<icon_id>    public PNG preview
 ```
 
 The catalog is a separate request and **not a block on the config sensor**, for
@@ -18,9 +19,8 @@ What guards these routes:
 
 * **authentication is the ordinary one.** `HomeAssistantView` requires a token
   by default, and a panel already holds the one Home Assistant minted for it
-  when it paired. Nothing here is public, and no token is ever handed to a
-  browser: the editor page a panel serves asks its own device for pictures,
-  and the device answers out of what it has already downloaded;
+  when it paired. The separate PNG preview route is public and serves only
+  bundled artwork, so the ESP32 editor needs no token or device image cache;
 * **an identifier is a key, never a path.** `icon_catalog.find_icon` answers
   with a catalog record or with nothing, and the filename is built from the
   record. A request for `..%2f..%2fsecrets.yaml` does not match the identifier
@@ -154,7 +154,20 @@ class IconAssetView(HomeAssistantView):
         )
 
 
+class IconPreviewView(IconAssetView):
+    """Serve only bundled public artwork to cross-origin image elements."""
+
+    url = "/api/media_controller/icon-preview/{icon_id}"
+    name = "api:media_controller:icon-preview"
+    requires_auth = False
+
+    async def get(self, request: web.Request, icon_id: str) -> web.Response:
+        """Reuse catalog validation and asynchronous file reads for PNG only."""
+        return await super().get(request, icon_id, PNG_VARIANT)
+
+
 def async_setup_icon_endpoints(hass: HomeAssistant) -> None:
-    """Register the catalog and the asset route."""
+    """Register authenticated assets and the public PNG preview route."""
     hass.http.register_view(IconCatalogView())
     hass.http.register_view(IconAssetView(hass))
+    hass.http.register_view(IconPreviewView(hass))

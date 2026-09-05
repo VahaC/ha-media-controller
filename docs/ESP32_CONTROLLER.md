@@ -19,6 +19,16 @@ image assets from this repository during validation and compilation.
 > against one Home Assistant at the same time. Nothing here changed; a device
 > already in the field needs no attention.
 
+The paired firmware's web editor loads icon previews directly from Home
+Assistant. Update the Media Controller integration to 1.6.2-dev or later and
+restart Home Assistant before flashing this firmware change. The browser must
+reach the configured `ha_url`; an HTTPS editor cannot load HTTP previews.
+Only bundled PNG artwork is public, and no token is passed to the browser.
+The ESP32 downloads only icons used by layout cards and retains its bounded
+16-image cache. After updating, open Icon, scroll to later entries, select one
+and save; confirm the artwork appears on the physical panel. Check touch,
+wake-on-touch, album art and free memory while the editor remains open.
+
 Since the two firmwares differ only in how they reach Home Assistant, everything
 they draw lives in a third file,
 [firmware/media-controller-ui.yaml](../firmware/media-controller-ui.yaml), which
@@ -389,4 +399,3 @@ packages:
 
 Users should pin a release tag rather than a branch, so that work in progress on
 `main` never reaches them mid-change.
-

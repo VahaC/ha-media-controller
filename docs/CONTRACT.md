@@ -942,8 +942,16 @@ client downloads the picture it needs.
   find out what the device does with it;
 - both routes are **authenticated the ordinary way**, with the token the panel
   was handed when it paired. The token never reaches a browser: the editor
-  page a panel hosts asks *its own device* for pictures, and the device
-  answers out of what it has already downloaded.
+  pages use the separate public PNG preview route described below.
+
+Both the T560 and paired ESP32 editors load PNG previews directly from
+`GET /api/media_controller/icon-preview/<icon_id>` on its configured Home
+Assistant origin. This additional route requires no authentication and serves
+only catalog-listed PNG files shipped with the integration; it exposes no
+installation data. The catalog and existing variant routes remain authenticated.
+The browser must be able to reach that origin (including HTTPS compatibility).
+Each device downloads artwork only for cards in its layout, never for editor
+previews. Editor state includes `icon_preview_base`, the public URL prefix.
 
 The catalog:
 
@@ -965,7 +973,7 @@ compares it, so it may be changed freely; `id` may not.
 The two variants:
 
 - **`png`** is the source artwork, for a client that can decode one. The T560
-  panel fetches these and serves them to its editor page;
+  panel fetches these for its layout cards;
 - **a pixel size** is the picture pre-rendered to exactly that size, in
   exactly the bytes LVGL blits: an eight-byte header — the ASCII `MCI1` and
   the size twice, as two little-endian 16-bit values — followed by ARGB8888
