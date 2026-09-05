@@ -107,7 +107,7 @@ esphome:
           id(room_grid)->set_icon_fetcher([](std::string icon) {
             id(fetch_room_icon)->execute(icon);
           });
-          id(room_grid)->set_skin(id(screen_style).current_option());
+      - script.execute: sync_editor_skin
       - script.execute: rebuild_room_grid
       - script.execute: show_start_page
 
@@ -657,6 +657,13 @@ globals:
         return std::string();
       }
 
+# Keep the editor synchronized with both restored and remotely selected styles.
+select:
+  - id: !extend screen_style
+    on_value:
+      then:
+        - script.execute: sync_editor_skin
+
 script:
   # ════════════════════════════════════════════════════════════
   # COMMANDS
@@ -877,6 +884,15 @@ script:
       # -- config poll to show what the person just asked for. --
       - delay: 400ms
       - script.execute: ui_load_room_config
+
+  # Translate the local display labels to the identifiers offered by /api/skins.
+  - id: sync_editor_skin
+    then:
+      - lambda: |-
+          const auto &option = id(screen_style).current_option();
+          if (option == "Classic") id(room_grid)->set_skin("classic");
+          else if (option == "Minimal Ring") id(room_grid)->set_skin("minimal_ring");
+          else if (option == "Cover Card") id(room_grid)->set_skin("cover_card");
 
   # -- The one entity in the payload this device writes. Home Assistant owns
   # -- the value: this asks for a skin and changes nothing locally, and the
@@ -1511,11 +1527,6 @@ script:
                             attrs, "skin_select");
                         id(room_grid)->set_skin_writable(
                             !id(skin_select_entity).empty());
-                        // -- What the on-device picker has to show: the skin
-                        //    on screen, not the one Home Assistant last
-                        //    mentioned. --
-                        id(room_grid)->set_skin(
-                            id(screen_style).current_option());
 
                         // -- The revision covers the layout and nothing else,
                         //    so an unchanged one costs no widget work. --
