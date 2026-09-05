@@ -79,10 +79,13 @@ esphome:
     priority: -200
     then:
       - lambda: id(auth_header) = "Bearer " + id(ha_token);
-      # -- The four things the grid component needs from this half of the
+      # -- The six things the grid component needs from this half of the
       # -- firmware. They are installed rather than compiled in so that the
       # -- component holds no URL, no token and no entity ID: the same seam
-      # -- media-controller-ui.yaml describes, for the same reason. --
+      # -- media-controller-ui.yaml describes, for the same reason. The two
+      # -- newest are card artwork: one asks Home Assistant to store the name
+      # -- and icon of a card, and one fetches a picture the component has
+      # -- decided it wants. Neither builds a URL in the component. --
       - lambda: |-
           id(room_page_index) = (int) id(page_room_grid)->index;
           id(room_grid)->set_redraw_listener([]() {
@@ -96,6 +99,12 @@ esphome:
           });
           id(room_grid)->set_skin_writer([](std::string skin) {
             id(cmd_skin_select)->execute(skin);
+          });
+          id(room_grid)->set_card_writer([](std::string body) {
+            id(cmd_write_card)->execute(body);
+          });
+          id(room_grid)->set_icon_fetcher([](std::string icon) {
+            id(fetch_room_icon)->execute(icon);
           });
           id(room_grid)->set_skin(id(screen_style).current_option());
       - script.execute: rebuild_room_grid
@@ -288,6 +297,23 @@ globals:
   # All of it survives a reboot, so a device that starts while Home Assistant
   # is down still knows what to ask for once it comes back, and a restart
   # never sends anybody back to the pairing screen.
+
+  # -- The icon catalog is asked for rarely: it changes when the
+  # -- integration is upgraded and never otherwise, and a device that polls
+  # -- it like the config sensor would spend a request a second on a list of
+  # -- eight names. Zero means "never fetched", which is what makes the first
+  # -- poll after a boot ask for it. --
+  - id: last_catalog_poll_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+
+  # -- The picture currently being downloaded, so that the answer can be
+  # -- filed under the identifier that was asked for. One at a time: each is
+  # -- six kilobytes through a request that blocks the main loop. --
+  - id: fetching_icon
+    type: std::string
+    restore_value: false
 
   # -- The access token, minted by the integration and handed over once. A
   # -- Home Assistant long-lived token is an HS256 JWT of about 180
@@ -1167,6 +1193,175 @@ script:
                               ESP_LOGW("room", "Forecast HTTP %d",
                                        response->status_code);
 
+  # ════════════════════════════════════════════════════════════
+  # CARD ARTWORK
+  # ════════════════════════════════════════════════════════════
+  # The pictures a room card draws are downloaded rather than compiled in.
+  # Six are still linked into this firmware and they are the fallback: what a
+  # card shows before Home Assistant has answered, while it is unreachable,
+  # when a download fails, and for an identifier this build has never heard
+  # of. A room page that cannot reach Home Assistant is a page with plain
+  # artwork on it, never an empty one.
+  #
+  # Nothing here builds a name out of anything a caller said. The component
+  # decides which identifier is worth asking for and hands it over already
+  # checked; this half only turns it into a request.
+
+  # -- Which pictures exist, with no image data in any of it. It is asked for
+  # -- rarely on purpose: the catalog changes when the integration is
+  # -- upgraded and never otherwise, so putting it on the config poll would
+  # -- spend a request a second on a list of eight names. That is the same
+  # -- reason the layout backup is an endpoint of its own. --
+  - id: poll_icon_catalog
+    mode: restart
+    then:
+      - if:
+          condition:
+            lambda: return !id(ha_token).empty();
+          then:
+            - http_request.get:
+                url: "${ha_url}/api/media_controller/icons"
+                request_headers:
+                  Authorization: !lambda return id(auth_header).c_str();
+                capture_response: true
+                # -- A hundred rows of an identifier and a label. Names, not
+                # -- pictures: the pictures are separate requests, made only
+                # -- for the handful a card actually draws. --
+                max_response_buffer_size: 8192
+                on_response:
+                  then:
+                    - lambda: |-
+                        if (response->status_code != 200) {
+                          ESP_LOGW("icons", "Catalog HTTP %d",
+                                   response->status_code);
+                          return;
+                        }
+                        id(room_grid)->ingest_icon_catalog(body);
+
+  # -- One picture, at the exact size a card draws it. A pre-rendered variant
+  # -- and not a PNG: this build sets LV_COLOR_16_SWAP and leaves
+  # -- LV_DRAW_SW_SUPPORT_SWAPPED off, so LVGL cannot transform a source at
+  # -- all, and this device has no decoder to spare either. What arrives is
+  # -- the bytes LVGL blits, behind eight bytes of header that say so. --
+  - id: fetch_room_icon
+    mode: restart
+    parameters:
+      icon: std::string
+    then:
+      - lambda: id(fetching_icon) = icon;
+      - if:
+          condition:
+            lambda: |-
+              return !id(ha_token).empty() && !id(fetching_icon).empty();
+          then:
+            - http_request.get:
+                # -- The identifier is the component's, already checked
+                # -- against the shape the integration publishes and against
+                # -- the catalog it published. Nothing a caller typed reaches
+                # -- this line. --
+                url: !lambda |-
+                  return "${ha_url}/api/media_controller/icon/" +
+                         id(fetching_icon) + "/40";
+                request_headers:
+                  Authorization: !lambda return id(auth_header).c_str();
+                capture_response: true
+                # -- 40 x 40 x 4 bytes and an eight-byte header, and one byte
+                # -- of headroom so that an answer which is too long is seen
+                # -- to be too long rather than silently truncated to exactly
+                # -- the right length. --
+                max_response_buffer_size: 6409
+                on_response:
+                  then:
+                    - lambda: |-
+                        if (response->status_code != 200) {
+                          ESP_LOGW("icons", "Icon %s HTTP %d",
+                                   id(fetching_icon).c_str(),
+                                   response->status_code);
+                          // -- Recorded as a failure so that it is left
+                          //    alone for a while instead of asked for on
+                          //    every tick. The card keeps its fallback. --
+                          id(room_grid)->icon_downloaded(id(fetching_icon),
+                                                         "");
+                          id(fetching_icon) = "";
+                          return;
+                        }
+                        bool drawn = id(room_grid)->icon_downloaded(
+                            id(fetching_icon), body);
+                        id(fetching_icon) = "";
+                        if (drawn) {
+                          // -- A card is drawing this one, and it was
+                          //    drawing the fallback until now. The page is
+                          //    rebuilt so the widget is handed the new
+                          //    descriptor; an icon nothing draws changes
+                          //    nothing on screen and costs no rebuild. --
+                          id(rebuild_room_grid)->execute();
+                        }
+                on_error:
+                  then:
+                    - lambda: |-
+                        id(room_grid)->icon_downloaded(id(fetching_icon), "");
+                        id(fetching_icon) = "";
+          else:
+            # -- Nothing was asked for, so nothing will answer. Both halves
+            # -- have to be told, or the one in flight is never cleared and
+            # -- no picture is ever fetched again. --
+            - lambda: |-
+                id(room_grid)->icon_downloaded(id(fetching_icon), "");
+                id(fetching_icon) = "";
+
+  # -- The display name and icon of one card. It is the only thing the
+  # -- on-device editor can write into Home Assistant's own data, and the
+  # -- body is built by the component, which is the half that knows what may
+  # -- be said. This half only puts it on the wire. --
+  - id: cmd_write_card
+    mode: restart
+    parameters:
+      document: std::string
+    then:
+      - if:
+          condition:
+            lambda: |-
+              return !id(ha_token).empty();
+          then:
+            - http_request.post:
+                # -- The same identifier this device pairs, reports and
+                # -- backs its layout up under: the MAC, which is what the
+                # -- integration knows it as. --
+                url: !lambda |-
+                  return "${ha_url}/api/media_controller/panel_card/" +
+                         get_mac_address();
+                request_headers:
+                  Authorization: !lambda return id(auth_header).c_str();
+                  Content-Type: "application/json"
+                body: !lambda return document;
+                capture_response: true
+                max_response_buffer_size: 512
+                on_response:
+                  then:
+                    - lambda: |-
+                        if (response->status_code == 200) {
+                          id(room_grid)->card_write_finished(true, "");
+                          // -- The new name arrives back the ordinary way,
+                          //    in the next config poll, because Home
+                          //    Assistant owns the registry and this device
+                          //    only asked. Nothing is written locally. --
+                          return;
+                        }
+                        char buf[72];
+                        snprintf(buf, sizeof(buf),
+                                 "Home Assistant refused the change (HTTP "
+                                 "%d).", response->status_code);
+                        id(room_grid)->card_write_finished(false, buf);
+                on_error:
+                  then:
+                    - lambda: |-
+                        id(room_grid)->card_write_finished(
+                            false, "Home Assistant could not be reached.");
+          else:
+            - lambda: |-
+                id(room_grid)->card_write_finished(
+                    false, "This device is not paired with Home Assistant.");
+
   # -- The config sensor names every other entity, so it is requested every
   # -- cycle rather than as rarely as a layout alone would need: it is also
   # -- the channel Home Assistant turns the screen off through, and a button
@@ -1658,21 +1853,42 @@ script:
                                             LV_STATE_PRESSED);
             }
 
-            // -- The artwork. A stored icon wins; without one the domain
-            //    decides, which is what makes a card useful before anybody
-            //    has opened the editor. A switch borrows the fan and a
-            //    thermostat the air conditioner, the way the T560 panel
-            //    does; a blind has its own picture. A sensor or a weather
-            //    block names none where it counts: the icon object below
-            //    stays hidden unless a person chose one in the editor, and
-            //    the card draws its value as type rather than artwork, again
-            //    the way the T560 panel does. Never scaled at draw time: each of
-            //    these is a 40x40 asset of its own, because this build sets
+            // -- The artwork, in three steps and in this order.
+            //
+            //    1. the picture the person chose, downloaded from the
+            //       catalog the integration publishes. It is decoded once
+            //       per identifier and shared by every card that names it,
+            //       so a page of sixty-four cards naming three pictures
+            //       holds three of them;
+            //    2. the same six pictures this firmware has always carried
+            //       in flash, for a card whose choice has not arrived yet,
+            //       for a device that cannot reach Home Assistant, and for
+            //       a layout document that still names one of them itself;
+            //    3. the domain's own suggestion, which is what makes a card
+            //       useful before anybody has opened the editor. A switch
+            //       borrows the fan and a thermostat the air conditioner,
+            //       the way the T560 panel does; a blind has its own.
+            //
+            //    A sensor or a weather block names none where it counts: the
+            //    icon object below stays hidden unless a person chose one in
+            //    the editor, and the card draws its value as type rather
+            //    than artwork, again the way the T560 panel does.
+            //
+            //    Never scaled at draw time, downloaded or not: every source
+            //    here is already 40x40, because this build sets
             //    LV_COLOR_16_SWAP and LVGL cannot transform a swapped
-            //    RGB565 source. --
+            //    RGB565 source. That is also why the download is a
+            //    pre-rendered variant rather than a PNG. --
             bool sensor_card =
                 entry != nullptr &&
                 entry->domain == media_controller_grid::DOMAIN_SENSOR;
+            // -- Whether this card has a picture of its own at all, chosen
+            //    in the editor or named by the layout document. It is what
+            //    decides whether a reading shows artwork. --
+            bool chosen_icon =
+                !id(room_grid)->card_icon_id(card, entry).empty();
+            const lv_image_dsc_t *downloaded =
+                id(room_grid)->icon_for(card, entry);
             image::Image *art = id(card_icon_light1);
             if (card.icon == 1) art = id(card_icon_light1);
             else if (card.icon == 2) art = id(card_icon_light2);
@@ -1731,7 +1947,14 @@ script:
             int tile_w = card.w() * 60 - 6;
 
             lv_obj_t *icon = lv_image_create(tile);
-            lv_image_set_src(icon, art->get_lv_image_dsc());
+            // -- The downloaded picture where there is one, and the flash
+            //    fallback where there is not. The descriptor belongs to the
+            //    component's cache and stays alive for as long as a card
+            //    draws it: an identifier a card uses is pinned there and
+            //    never evicted from under this widget. --
+            lv_image_set_src(icon, downloaded != nullptr
+                                       ? (const void *) downloaded
+                                       : (const void *) art->get_lv_image_dsc());
             lv_obj_remove_flag(icon, LV_OBJ_FLAG_CLICKABLE);
             // -- No icon where the value is the picture: on a compact card
             //    54 px hold the name and the value and nothing else, and on
@@ -1743,7 +1966,7 @@ script:
             //    walks children by index. --
             bool hide_icon =
                 compact ||
-                ((sensor_card || is_weather) && card.icon == 0);
+                ((sensor_card || is_weather) && !chosen_icon);
             if (hide_icon) {
               lv_obj_add_flag(icon, LV_OBJ_FLAG_HIDDEN);
             }
@@ -2368,6 +2591,29 @@ interval:
                now - id(last_forecast_poll_ms) >= 1800000)) {
             id(last_forecast_poll_ms) = now;
             id(poll_room_forecast)->execute();
+          }
+
+          // -- Which pictures exist: once after pairing and then every
+          //    six hours. It changes when the integration is upgraded and
+          //    never otherwise, so anything oftener would be a request
+          //    spent on an answer that is always the same. --
+          if (id(last_catalog_poll_ms) == 0 ||
+              now - id(last_catalog_poll_ms) >= 21600000) {
+            id(last_catalog_poll_ms) = now;
+            id(poll_icon_catalog)->execute();
+          }
+
+          // -- One picture at a time, and only when the component says it
+          //    wants one: the cards' own artwork always, and the rest of the
+          //    catalog only while somebody has the editor open. Each is six
+          //    kilobytes through a request that blocks the main loop, so
+          //    they are spread over the tick rather than fetched in a burst
+          //    that would be felt as a stall under a finger. --
+          if (id(fetching_icon).empty()) {
+            std::string wanted = id(room_grid)->next_wanted_icon();
+            if (!wanted.empty()) {
+              id(fetch_room_icon)->execute(wanted);
+            }
           }
 
           // -- Fetch as soon as the config sensor has named the playlists

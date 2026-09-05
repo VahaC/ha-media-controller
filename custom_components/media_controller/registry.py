@@ -21,6 +21,13 @@ Three ideas carry the whole module:
   the group is derived from it, so adding a group later cannot invalidate
   anything already stored.
 
+An element also carries the two things a person may say about how it is drawn:
+the `name` on its tile and the `icon` above it. Both are stored here, keyed by
+`rid`, rather than in the layout document each device keeps, because both are
+facts about the element and not about where somebody dragged it: a house with
+two panels names a lamp once, and a device that is wiped gets the name and the
+icon back with the registry rather than out of a file it no longer has.
+
 This module deliberately has no Home Assistant imports, so all of that can be
 tested without a Home Assistant runtime. Resolving a target's capabilities and
 its current entity ID needs `hass` and lives in `slots.py`.
@@ -32,6 +39,7 @@ from collections.abc import Callable, Container, Iterable, Mapping
 from dataclasses import dataclass, replace
 import secrets
 from typing import Any
+import unicodedata
 
 # A rid is eight lowercase hex characters, which is what the contract
 # publishes and what a client stores its grid layout against.
@@ -51,6 +59,7 @@ REGISTRY_KEY_MAX_KELVIN = "max_kelvin"
 REGISTRY_KEY_MIN_TEMP = "min_temp"
 REGISTRY_KEY_MAX_TEMP = "max_temp"
 REGISTRY_KEY_TEMP_STEP = "target_temp_step"
+REGISTRY_KEY_ICON = "icon"
 # Not part of the contract: the Home Assistant entity registry row ID of the
 # target. It never reaches a client, and it is what makes an element follow
 # its entity through a rename.
@@ -86,6 +95,21 @@ GROUPS: tuple[RegistryGroup, ...] = (
 # own — its source — chosen on the same page and drawn by the player card.
 RETIRED_GROUP_DOMAINS: tuple[str, ...] = ("media_player",)
 
+# How long a display name may be, in characters rather than bytes. It is a
+# memory bound and not a taste one: the paired ESP32 holds the whole registry
+# in RAM and reads it out of a fixed response buffer, so an unbounded name is
+# an unbounded payload. Characters, because the name is UTF-8 and a limit in
+# bytes would let a Latin name be twice as long as a Cyrillic one for no
+# reason a person could see.
+MAX_NAME_LENGTH = 64
+
+# Why a name can be refused. They are returned rather than raised so that the
+# endpoint keeps control of its own answers, exactly as the ownership check
+# does in `status.py`.
+NAME_OK = ""
+NAME_TOO_LONG = "name_too_long"
+NAME_UNPRINTABLE = "name_unprintable"
+
 GROUP_DOMAINS: tuple[str, ...] = tuple(group.domain for group in GROUPS)
 _GROUP_ORDER: dict[str, int] = {
     group.domain: index for index, group in enumerate(GROUPS)
@@ -118,6 +142,17 @@ class RegistryEntry:
     min_temp: float | None = None
     max_temp: float | None = None
     target_temp_step: float | None = None
+    # A catalog identifier, or "" for automatic. It is a name and never a
+    # position: `icon_catalog.ICONS` may be reordered, added to or shortened
+    # without changing what any stored element points at.
+    #
+    # It is stored here as an opaque string on purpose. Whether the catalog
+    # still publishes it is `icon_catalog`'s question, asked once on the way
+    # in — `panel_card.py` refuses an identifier that is not published — and
+    # again on the way out, where `slots.py` turns one the catalog has since
+    # dropped back into automatic. Neither belongs in a module that has to
+    # stay loadable with no imports at all.
+    icon: str = ""
 
     def as_stored(self) -> dict[str, Any]:
         """Return the config-entry representation of this element."""
@@ -140,6 +175,10 @@ class RegistryEntry:
             stored[REGISTRY_KEY_MAX_TEMP] = self.max_temp
         if self.target_temp_step is not None:
             stored[REGISTRY_KEY_TEMP_STEP] = self.target_temp_step
+        # Written only when one was chosen, so an entry saved before icons
+        # existed and one whose icon is automatic are the same record on disk.
+        if self.icon:
+            stored[REGISTRY_KEY_ICON] = self.icon
         return stored
 
     @classmethod
@@ -164,6 +203,7 @@ class RegistryEntry:
             min_temp=stored.get(REGISTRY_KEY_MIN_TEMP),
             max_temp=stored.get(REGISTRY_KEY_MAX_TEMP),
             target_temp_step=stored.get(REGISTRY_KEY_TEMP_STEP),
+            icon=str(stored.get(REGISTRY_KEY_ICON) or "").strip(),
         )
 
 
@@ -287,6 +327,93 @@ def replace_group(
     ]
     others = [entry for entry in existing if entry.domain != domain]
     return sort_entries(others + rebuilt), newly_retired
+
+
+def find_entry(
+    entries: Iterable[RegistryEntry],
+    rid: str,
+) -> RegistryEntry | None:
+    """Return the element with this rid, or None when there is none."""
+    for entry in entries:
+        if entry.rid == rid:
+            return entry
+    return None
+
+
+def normalize_name(value: Any) -> tuple[str, str]:
+    """Return a display name ready to store, and why it was refused.
+
+    The rules, and why each one is here:
+
+    * leading and trailing whitespace is **trimmed**, so a name that is only
+      spaces is the same as no name at all. Somebody who clears the field by
+      selecting all and pressing space means "clear it";
+    * an empty result means **use the Home Assistant entity's own name**. That
+      is the one value with a meaning of its own, and it is what makes the
+      field clearable without a second control;
+    * every script is accepted. Cyrillic, Greek, CJK and emoji are ordinary
+      names, and the payload has been UTF-8 since the registry existed;
+    * control characters are **refused**, not stripped. A newline in a tile
+      label is somebody pasting the wrong thing, and quietly keeping half of
+      what they pasted is worse than telling them;
+    * the length is bounded because the paired ESP32 keeps the whole registry
+      in RAM and reads it out of a fixed response buffer. See
+      `MAX_NAME_LENGTH`.
+
+    Length is measured after Unicode normalization to NFC, so that a name
+    typed with combining accents and the same name typed with precomposed
+    ones are the same length as well as the same name.
+    """
+    if value is None:
+        return "", NAME_OK
+    if not isinstance(value, str):
+        return "", NAME_UNPRINTABLE
+    name = unicodedata.normalize("NFC", value).strip()
+    if not name:
+        return "", NAME_OK
+    if any(unicodedata.category(character) == "Cc" for character in name):
+        return "", NAME_UNPRINTABLE
+    if len(name) > MAX_NAME_LENGTH:
+        return "", NAME_TOO_LONG
+    return name, NAME_OK
+
+
+def apply_card_appearance(
+    entries: Iterable[RegistryEntry],
+    rid: str,
+    *,
+    name: str | None = None,
+    icon: str | None = None,
+) -> tuple[list[RegistryEntry], bool]:
+    """Set the name and icon of one element, and say whether anything moved.
+
+    Both arguments are optional and `None` means "leave this one alone", so
+    the endpoint can carry either half of the form without the other half
+    having to send a value it did not ask about.
+
+    An unknown `rid` changes nothing: the caller establishes that it is known
+    with `find_entry` first and answers 404 itself, which is what keeps the
+    editor route from becoming a way to add entities to a panel.
+    """
+    original = list(entries)
+    updated: list[RegistryEntry] = []
+    found = False
+    changed = False
+    for entry in original:
+        if entry.rid != rid:
+            updated.append(entry)
+            continue
+        found = True
+        replacement = entry
+        if name is not None:
+            replacement = replace(replacement, name=name)
+        if icon is not None:
+            replacement = replace(replacement, icon=icon.strip())
+        changed = replacement != entry
+        updated.append(replacement)
+    if not found:
+        return original, False
+    return updated, changed
 
 
 def apply_names(

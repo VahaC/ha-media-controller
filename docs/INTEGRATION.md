@@ -128,7 +128,8 @@ every group on one page — Weather, Sensors, Lights, Switches, Climate
 devices, Covers — each a selector holding everything in it: adding an entity
 to one adds a tile, clearing one removes it, and there is no numbered slot to
 run out of. One *Submit* saves the lot. A tile is named as Home Assistant
-names the entity.
+names the entity, until somebody names it otherwise in the panel's own layout
+editor — see **Card names and icons** below.
 
 There is no group for media players: a panel plays from the source chosen at
 the top of the same page, and that is the player it draws.
@@ -160,6 +161,56 @@ to all of this. They are still four numbered slots, they live on the source
 entry itself, behind *Configure* → *Room controls (classic-firmware ESP32
 only)*, and they are backed by proxy entities, because that firmware resolves
 both the entity ID and the service domain at compile time.
+
+### Card names and icons
+
+Two things about a card are not chosen here and not chosen on the device
+either: they are stored in Home Assistant, against the registry element, and
+edited in the small layout editor each panel serves on itself. That is what
+makes a house with a tablet and an ESP32 panel agree about what a lamp is
+called and what it looks like without either of them telling the other, and
+what makes a panel that is wiped or replaced get both back with its registry.
+
+**A display name** is what the tile says. Leave it empty — the *Auto* button
+beside the field clears it — and the tile is named as Home Assistant names the
+entity, which is what every tile did before names could be set and what a tile
+goes on doing through a rename. Type something and that is what the tile says
+instead. It may be up to 64 characters of any script, and it **never renames
+the Home Assistant entity**: `light.desk_lamp` keeps its own name, its own
+entity ID and its own registry row.
+
+**An icon** comes from a catalog this integration publishes, at
+`/api/media_controller/icons`, with the pictures themselves at
+`/api/media_controller/icon/<id>/<variant>`. Both are authenticated with the
+panel's own token and neither is ever handed to a browser: the editor page a
+panel serves asks *its own device* for pictures, and the device answers out of
+what it has already downloaded.
+
+The catalog is the reason for the arrangement. A card used to store a number —
+an index into an array of six pictures compiled into the ESP32 firmware — so
+the set could grow only by reflashing every device in the house, and
+reordering the array would have silently moved everybody's icons. A card now
+stores a stable identifier, and adding a picture is:
+
+1. drop a 128 x 128 PNG with an alpha channel into
+   `custom_components/media_controller/icons/`;
+2. add a row to `ICONS` in
+   `custom_components/media_controller/icon_catalog.py`;
+3. run `python tools/make-icon-assets.py`, which renders the variant the ESP32
+   draws — 40 x 40, in the exact bytes LVGL blits, because that firmware
+   cannot scale an image at draw time;
+4. bump `version` in `manifest.json`, as any change under
+   `custom_components/**` requires.
+
+No client is rebuilt and no device is reflashed. Panels notice within six
+hours, or at once after a restart, because the catalog carries a `revision`
+they compare. **Automatic** is always offered and means *let the domain
+decide*, which is what every card does until somebody says otherwise.
+
+A picture a client cannot get — an unreachable Home Assistant, a failed
+download, an identifier this build has never heard of — is never fatal. The
+card falls back to artwork the client carries itself, and the room page draws,
+navigates and responds exactly as it did.
 
 ### Panel settings, battery, and display
 

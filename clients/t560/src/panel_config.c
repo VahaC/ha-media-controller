@@ -109,6 +109,13 @@ static PanelEntity *read_entity(JsonObject *object)
     entity->entity = g_strdup(entity_id);
     entity->name = g_strdup(json_object_string(object, "name", entity_id));
     entity->domain = read_domain(object, entity_id);
+    /* Absent means the person chose no picture and the domain decides, which
+     * is every element until somebody opens the editor. An integration older
+     * than the catalog sends nothing here and every card keeps the artwork it
+     * always had. */
+    const gchar *icon = json_object_string(object, "icon", NULL);
+    if (icon != NULL && *icon != '\0')
+        entity->icon = g_strdup(icon);
     read_controls(json_optional_array(object, "controls"), entity);
     entity->min_kelvin = json_object_number(object, "min_kelvin", &value)
                              ? clamp_kelvin(value, 2000)

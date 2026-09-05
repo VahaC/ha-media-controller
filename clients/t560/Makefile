@@ -26,6 +26,7 @@ SOURCES = src/main.c \
 	  src/app_config.c \
 	  src/home_assistant_client.c \
 	  src/json_helpers.c \
+	  src/panel_cards.c \
 	  src/panel_config.c \
 	  src/panel_display.c \
 	  src/panel_grid.c \
@@ -37,15 +38,17 @@ SOURCES = src/main.c \
 OBJECTS = $(SOURCES:.c=.o)
 DEPFILES = $(OBJECTS:.o=.d)
 TEST_OBJECTS = tests/test_json_helpers.o \
+	       tests/test_panel_cards.o \
 	       tests/test_panel_config.o \
 	       tests/test_panel_grid.o \
 	       src/json_helpers.o \
+	       src/panel_cards.o \
 	       src/panel_config.o \
 	       src/panel_grid.o \
 	       src/panel_pairing.o \
 	       src/app_config.o
-TEST_DEPFILES = tests/test_json_helpers.d tests/test_panel_config.d \
-		tests/test_panel_grid.d
+TEST_DEPFILES = tests/test_json_helpers.d tests/test_panel_cards.d \
+		tests/test_panel_config.d tests/test_panel_grid.d
 
 CPPFLAGS += -Isrc -Itests $(shell $(PKG_CONFIG) --cflags $(PACKAGES))
 CFLAGS ?= -Os

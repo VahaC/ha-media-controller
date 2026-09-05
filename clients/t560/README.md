@@ -137,8 +137,41 @@ the **Visit** link on the panel's device page.
 The page is one screen: the grid on the left, and the registry grouped by
 domain on the right. Pick an entity and tap a free cell to place it, drag a
 card to move it, drag the corner to resize it, and use the panel above the
-palette to change which entity a card acts on, its icon, its colour, or to
-remove it. It is built for a phone as much as for a desktop.
+palette to change which entity a card acts on, what it is called, its icon,
+its colour, or to remove it. It is built for a phone as much as for a desktop.
+
+**Name** and **Icon** are not part of the arrangement and are not saved with
+it. Both belong to the registry element, which is Home Assistant's, so the
+panel asks and Home Assistant stores — which is what makes a house with a
+tablet and an ESP32 panel agree about what a lamp is called and what it looks
+like without either of them telling the other. Both take effect on the next
+poll rather than on **Save**.
+
+An empty name means *use the Home Assistant entity's own name*, and the **Auto**
+button beside the field is how you go back to it; a card named that way follows
+its entity through a rename, as every card did before names could be set. A
+name may be up to 64 characters of any script — Cyrillic, Greek, CJK and emoji
+are all ordinary names — and control characters are refused rather than
+quietly stripped. Naming a card never renames the Home Assistant entity.
+
+The icons come from a catalog the Media Controller integration publishes, not
+from this build: adding one there costs no rebuild of the panel and no reflash
+of the ESP32 across the house. The panel fetches the catalog every six hours,
+downloads one picture at a time in the background, and serves them to the
+editor itself, so the browser never sees the panel's Home Assistant token. An
+icon the panel could not download keeps its name in the list and loses only
+its picture.
+
+One limitation is worth naming: the pictures the panel downloads are what the
+**editor** shows, and the room page still draws from the artwork compiled into
+this build. The eight identifiers the catalog starts with are exactly the eight
+this build carries, so today the two agree; a picture added to the catalog
+later appears in the editor and on the paired ESP32, and a card on this tablet
+that names it draws no artwork rather than the wrong artwork — the same way a
+sensor block already draws none. Drawing downloaded pictures on the room page
+is a change to `panel_ui.c` and has not been made. **Automatic** is always the first choice and
+means *let the domain decide*, which is what every card does until somebody
+says otherwise.
 
 The **Player skin** section lists the skins this build draws and shows a
 picture of each one beside the list, because a name says nothing about a
@@ -154,34 +187,42 @@ whether it actually did; the picture is a drawing, not evidence.
 
 A tablet on a house network, serving one page that arranges its own room
 controls, is not worth a login on a device with no keyboard. What makes that
-defensible is what the server cannot do, and the eight routes are the whole of
+defensible is what the server cannot do, and the ten routes are the whole of
 it:
 
 ```text
 GET    /               the editor page
 GET    /skins/<n>.png  what one skin looks like
+GET    /icons/<id>     one card picture, out of what the panel downloaded
 GET    /api/entities   the registry, out of the payload the panel already holds
 GET    /api/layout     the arrangement on screen
 PUT    /api/layout     save an arrangement
 DELETE /api/layout     put back the copy Home Assistant holds
 GET    /api/skins      the skins this build draws
 PUT    /api/skin       ask Home Assistant for one of them
+POST   /api/card       ask Home Assistant for a card's name and icon
 ```
 
 There is no general proxy to Home Assistant. Nothing here reads a state, calls
 an arbitrary service, or reaches an entity the panel does not already draw;
-the one route that takes a name from the caller — the skin preview — is
-checked against the skins this build draws before it becomes a resource path,
-so it cannot be used to read anything else out of the binary;
-`/api/entities` is answered from the config payload the panel has cached and
-never becomes a request to Home Assistant; `PUT /api/skin` calls
-`select.select_option` on this panel's own skin select, with a name checked
-against the skins this build draws, and nothing else. The panel's Home
-Assistant token is not readable through any route.
+the two routes that take a name from the caller — the skin preview and the
+card picture — are checked against what this build actually holds before they
+address anything, so neither can be used to read something else out of the
+binary or off the disk; `/api/entities` is answered from the config payload
+the panel has cached and never becomes a request to Home Assistant;
+`PUT /api/skin` calls `select.select_option` on this panel's own skin select,
+with a name checked against the skins this build draws, and nothing else;
+`POST /api/card` sets the display name and icon of one registry element **the
+panel is already drawing**, with the name trimmed, checked for control
+characters and bounded at 64 characters here and again by the integration, and
+the icon checked against the published catalog. The panel's Home Assistant
+token is not readable through any route.
 
 The worst an unauthenticated caller on the network can do is rearrange the
-room page of one tablet — and `DELETE /api/layout`, the **Restore** button in
-the editor, undoes exactly that from the copy Home Assistant holds.
+room page of one tablet and rename its cards — and `DELETE /api/layout`, the
+**Restore** button in the editor, undoes the first from the copy Home
+Assistant holds, while the second is a text field in Home Assistant's own
+registry that can be typed over again.
 
 **Do not forward this port through a router.** It is meant for a house
 network. Set `web_port=0` under `[panel]` in `config.ini` to switch the editor
@@ -200,8 +241,15 @@ not. The format is small on purpose:
 ```json
 {"v":1,"cols":10,"rows":14,
  "cards":[{"x":0,"y":0,"w":2,"h":2,"rid":"a3f1c92d",
-           "icon":"lightbulb","color":"#4dd0e1"}]}
+           "color":"#4dd0e1"}]}
 ```
+
+A card written by an older editor also carries an `icon`, and it is still read:
+that card keeps the picture somebody chose for it until the first time anybody
+chooses another one, at which point the choice goes to Home Assistant, where
+the registry keeps it, and the field is dropped on the next save. Nothing
+writes it again — an icon that lived in this file could not reach a second
+panel, and did not survive a reinstall.
 
 A card is keyed on `rid`, the identity of the registry element, never on an
 entity ID: a Home Assistant entity ID is renamed by the user at will, and a
@@ -313,7 +361,11 @@ The application is split into focused C modules with explicit interfaces:
   validating a card against the grid, and building the default 2 x 2
   arrangement a panel starts from. It knows nothing about GTK and is where the
   layout tests point;
-- `panel_web` serves the layout editor over libsoup, in exactly eight routes
+- `panel_cards` holds the rules a card's display name has to pass and the
+  icon catalog the integration publishes, with the pictures downloaded from
+  it. It has no GTK and no Home Assistant of its own, so both are covered by
+  `make test`;
+- `panel_web` serves the layout editor over libsoup, in exactly ten routes
   and with no proxy to Home Assistant;
 - `home_assistant_client` encapsulates authenticated asynchronous HTTP I/O;
 - `panel_ui` builds and updates GTK widgets without knowing API details. The

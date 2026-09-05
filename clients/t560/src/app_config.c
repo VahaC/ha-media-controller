@@ -101,6 +101,7 @@ void panel_entity_free(PanelEntity *entity)
     g_free(entity->entity);
     g_free(entity->name);
     g_free(entity->domain);
+    g_free(entity->icon);
     g_free(entity);
 }
 

@@ -20,6 +20,13 @@
 #define PANEL_WEB_SKIN_SUFFIX ".png"
 #define PANEL_WEB_SKIN_RESOURCE "/com/vahac/t560/skins/%s.png"
 
+/* What a card icon is addressed as. The identifier after it is compared with
+ * the catalog the integration publishes and never used to address anything;
+ * nothing here becomes a resource path or a filename. No extension: the
+ * paired ESP32 firmware serves the same editor page out of a different image
+ * format, so the page asks for the icon rather than for a file. */
+#define PANEL_WEB_ICON_PREFIX "/icons/"
+
 /* A layout of a hundred cards is a few kilobytes. This is the ceiling on what
  * the editor may PUT, and it is the same order as the one Home Assistant
  * applies to the copy it stores: a body over it is refused before it is
@@ -195,6 +202,12 @@ static void handle_entities(PanelWeb *web, SoupServerMessage *message)
         json_builder_add_string_value(builder, entity->entity);
         json_builder_set_member_name(builder, "name");
         json_builder_add_string_value(builder, entity->name);
+        /* What the person chose for this element, so that the editor shows
+         * the choice rather than guessing at it from the picture on
+         * screen. Empty means they chose none and the domain decides. */
+        json_builder_set_member_name(builder, "icon");
+        json_builder_add_string_value(
+            builder, entity->icon != NULL ? entity->icon : "");
         json_builder_set_member_name(builder, "domain");
         json_builder_add_string_value(builder, entity->domain);
         json_builder_set_member_name(builder, "brightness");
@@ -211,16 +224,57 @@ static void handle_entities(PanelWeb *web, SoupServerMessage *message)
     }
     json_builder_end_array(builder);
 
-    /* The artwork this build carries, so the editor offers exactly what the
-     * panel can draw rather than a list written down twice. */
+    /* The artwork the Media Controller integration publishes, so the editor
+     * offers exactly what a card can be given rather than a list written
+     * down twice. It is the integration's catalog and not this build's
+     * resources: adding a picture there must not mean rebuilding the panel,
+     * and the paired ESP32 across the house has to be offered the same list.
+     *
+     * Empty before the catalog has been fetched, and empty for good on a
+     * panel that has never paired. The editor then offers Automatic alone,
+     * which is the honest answer: there is nothing else this panel could be
+     * told to draw. */
+    PanelCards *cards = web->callbacks.cards(web->user_data);
     json_builder_set_member_name(builder, "icons");
     json_builder_begin_array(builder);
-    static const gchar *ICONS[] = {"light-1", "light-2", "desk-lamp",
-                                   "desk-led-strip", "fan", "ac", "blind",
-                                   "weather"};
-    for (guint i = 0; i < G_N_ELEMENTS(ICONS); i++)
-        json_builder_add_string_value(builder, ICONS[i]);
+    guint icons = panel_cards_catalog_size(cards);
+    for (guint i = 0; i < icons; i++) {
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "id");
+        json_builder_add_string_value(builder,
+                                      panel_cards_catalog_id(cards, i));
+        json_builder_set_member_name(builder, "label");
+        json_builder_add_string_value(builder,
+                                      panel_cards_catalog_label(cards, i));
+        json_builder_end_object(builder);
+    }
     json_builder_end_array(builder);
+
+    /* What the editor may not exceed, so the limit is enforced in one place
+     * and read in the other rather than written down twice. */
+    json_builder_set_member_name(builder, "limits");
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "name");
+    json_builder_add_int_value(builder, PANEL_CARD_NAME_MAX_CHARS);
+    json_builder_end_object(builder);
+
+    /* How the last card edit ended. It lives here, on the route that answers
+     * "what is this panel's situation", because the write reaches Home
+     * Assistant asynchronously and cannot be answered inside the request
+     * that asked for it — the same shape the restore already has. */
+    PanelCardWriteState write = panel_cards_write_state(cards);
+    json_builder_set_member_name(builder, "card");
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "state");
+    json_builder_add_string_value(
+        builder, write == PANEL_CARD_WRITE_PENDING  ? "pending"
+                 : write == PANEL_CARD_WRITE_OK     ? "ok"
+                 : write == PANEL_CARD_WRITE_FAILED ? "failed"
+                                                    : "idle");
+    json_builder_set_member_name(builder, "message");
+    json_builder_add_string_value(builder,
+                                  panel_cards_write_message(cards));
+    json_builder_end_object(builder);
 
     json_builder_set_member_name(builder, "grid");
     json_builder_begin_object(builder);
@@ -452,6 +506,177 @@ static void handle_put_skin(PanelWeb *web, SoupServerMessage *message)
     g_object_unref(parser);
 }
 
+/* One catalog picture, for the editor page.
+ *
+ * It is served out of what the panel has already downloaded for its own
+ * cards, so there is no proxy here and no second fetch, and the panel's Home
+ * Assistant token never comes anywhere near the browser. The identifier in
+ * the path is compared with the catalog and never used to build a resource
+ * path, a filename or a URL. A picture that has not arrived yet is a 404, and
+ * the editor drops the image and keeps the name — exactly what it already
+ * does for a skin this build carries no picture of. */
+static void handle_icon(PanelWeb *web, SoupServerMessage *message,
+                        const gchar *path)
+{
+    const gchar *id = path + strlen(PANEL_WEB_ICON_PREFIX);
+    PanelCards *cards = web->callbacks.cards(web->user_data);
+
+    if (!panel_card_icon_id_is_sane(id) ||
+        !panel_cards_publishes(cards, id)) {
+        soup_server_message_set_status(message, SOUP_STATUS_NOT_FOUND, NULL);
+        return;
+    }
+
+    GBytes *image = panel_cards_image(cards, id);
+    if (image == NULL) {
+        soup_server_message_set_status(message, SOUP_STATUS_NOT_FOUND, NULL);
+        return;
+    }
+
+    gsize size = 0;
+    const gchar *data = g_bytes_get_data(image, &size);
+
+    soup_server_message_set_status(message, SOUP_STATUS_OK, NULL);
+    soup_server_message_set_response(message, "image/png", SOUP_MEMORY_COPY,
+                                     data, size);
+    /* The pictures change only when the integration is upgraded, and the
+     * editor asks for one per catalog row on every render. */
+    soup_message_headers_replace(
+        soup_server_message_get_response_headers(message), "Cache-Control",
+        "max-age=3600");
+}
+
+/* The display name and icon of one card.
+ *
+ * This is the only route that ends in a write to Home Assistant's own data,
+ * and it is deliberately the narrowest one here. It can change the name and
+ * the picture of an element **this panel already draws**, and there is no
+ * path through it that names an entity, calls a service, adds an element, or
+ * reaches anything the registry does not already carry. Everything it accepts
+ * is checked here and again by the integration, which is the side that
+ * actually owns the registry.
+ *
+ * A key that is absent means "leave this alone" and a key that is present
+ * means "set it to this, including to nothing". The difference matters: a
+ * card whose name field simply shows the Home Assistant entity's own name
+ * must not have that name stored as a custom one because somebody changed its
+ * icon, or it would stop following the entity through a rename. */
+static void handle_post_card(PanelWeb *web, SoupServerMessage *message)
+{
+    gchar *failure = NULL;
+    gchar *body = read_body(message, &failure);
+
+    if (body == NULL) {
+        respond_error(message, SOUP_STATUS_BAD_REQUEST, failure);
+        g_free(failure);
+        return;
+    }
+
+    JsonParser *parser = json_parser_new();
+    GError *error = NULL;
+    JsonObject *object = NULL;
+
+    if (json_parser_load_from_data(parser, body, -1, &error) &&
+        json_parser_get_root(parser) != NULL &&
+        JSON_NODE_HOLDS_OBJECT(json_parser_get_root(parser))) {
+        object = json_node_get_object(json_parser_get_root(parser));
+    }
+    g_clear_error(&error);
+    g_free(body);
+
+    if (object == NULL) {
+        respond_error(message, SOUP_STATUS_BAD_REQUEST,
+                      "The request is not a JSON object.");
+        g_object_unref(parser);
+        return;
+    }
+
+    const gchar *rid = json_object_string(object, "rid", NULL);
+    gboolean has_name = json_object_has_member(object, "name");
+    gboolean has_icon = json_object_has_member(object, "icon");
+
+    if (rid == NULL || *rid == '\0') {
+        respond_error(message, SOUP_STATUS_BAD_REQUEST,
+                      "That is not a registry identifier.");
+        g_object_unref(parser);
+        return;
+    }
+    if (!has_name && !has_icon) {
+        respond_error(message, SOUP_STATUS_BAD_REQUEST,
+                      "There is nothing to change.");
+        g_object_unref(parser);
+        return;
+    }
+
+    /* The element has to be one this panel is already drawing. That single
+     * check is what stops this route being a way to write into a registry
+     * the caller knows nothing about. */
+    const PanelLayout *layout = web->callbacks.layout(web->user_data);
+    if (panel_layout_find_entity(layout, rid) == NULL) {
+        respond_error(message, SOUP_STATUS_NOT_FOUND,
+                      "This panel draws no such card.");
+        g_object_unref(parser);
+        return;
+    }
+
+    gchar *name = NULL;
+    if (has_name) {
+        PanelCardNameResult result = panel_card_name_normalize(
+            json_object_string(object, "name", ""), &name);
+        if (result != PANEL_CARD_NAME_OK) {
+            respond_error(message, SOUP_STATUS_BAD_REQUEST,
+                          panel_card_name_error(result));
+            g_object_unref(parser);
+            return;
+        }
+    }
+
+    const gchar *icon = NULL;
+    if (has_icon) {
+        icon = json_object_string(object, "icon", "");
+        if (icon == NULL)
+            icon = "";
+        /* Empty is "choose automatically" and is always allowed. Anything
+         * else has to be something the integration says it publishes. */
+        if (*icon != '\0' &&
+            !panel_cards_publishes(web->callbacks.cards(web->user_data),
+                                   icon)) {
+            respond_error(message, SOUP_STATUS_BAD_REQUEST,
+                          "Home Assistant does not publish that icon.");
+            g_free(name);
+            g_object_unref(parser);
+            return;
+        }
+    }
+
+    if (!web->callbacks.write_card(rid, name, icon, &failure,
+                                   web->user_data)) {
+        respond_error(message, SOUP_STATUS_BAD_GATEWAY, failure);
+        g_free(failure);
+        g_free(name);
+        g_object_unref(parser);
+        return;
+    }
+    g_free(name);
+    g_object_unref(parser);
+
+    JsonBuilder *builder = json_builder_new();
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "status");
+    json_builder_add_string_value(builder, "ok");
+    /* Whether the change is on its way to Home Assistant is reported, never
+     * enforced: a panel that has not paired yet still has an editor, and the
+     * person using it should be told which of the two happened. */
+    json_builder_set_member_name(builder, "synced");
+    json_builder_add_boolean_value(builder, TRUE);
+    json_builder_end_object(builder);
+
+    gchar *json = json_builder_to_string(builder);
+    respond_json(message, SOUP_STATUS_OK, json);
+    g_free(json);
+    g_object_unref(builder);
+}
+
 /* ----------------------------------------------------------------- routing */
 
 static void handle_request(SoupServer *server, SoupServerMessage *message,
@@ -463,12 +688,13 @@ static void handle_request(SoupServer *server, SoupServerMessage *message,
     (void)server;
     (void)query;
 
-    /* Eight routes, and the table below is all of them. There is deliberately
+    /* Ten routes, and the table below is all of them. There is deliberately
      * no catch-all and no path that takes an entity, a service or a URL from
      * the caller: this server has no password, so what it cannot express is
-     * the security model. The one route that takes a name from the caller —
-     * the skin preview — checks it against the skins this build draws before
-     * it becomes a resource path. */
+     * the security model. The two routes that take a name from the caller —
+     * the skin preview and the card picture — check it against what this
+     * build actually has before it addresses anything, and neither builds a
+     * path out of it. */
     if (g_strcmp0(path, "/") == 0) {
         if (!method_is(message, "GET")) {
             soup_server_message_set_status(
@@ -482,6 +708,15 @@ static void handle_request(SoupServer *server, SoupServerMessage *message,
     if (g_str_has_prefix(path, PANEL_WEB_SKIN_PREFIX)) {
         if (method_is(message, "GET"))
             handle_skin_preview(web, message, path);
+        else
+            soup_server_message_set_status(
+                message, SOUP_STATUS_METHOD_NOT_ALLOWED, NULL);
+        return;
+    }
+
+    if (g_str_has_prefix(path, PANEL_WEB_ICON_PREFIX)) {
+        if (method_is(message, "GET"))
+            handle_icon(web, message, path);
         else
             soup_server_message_set_status(
                 message, SOUP_STATUS_METHOD_NOT_ALLOWED, NULL);
@@ -513,6 +748,21 @@ static void handle_request(SoupServer *server, SoupServerMessage *message,
     if (g_strcmp0(path, "/api/skins") == 0) {
         if (method_is(message, "GET"))
             handle_skins(web, message);
+        else
+            soup_server_message_set_status(
+                message, SOUP_STATUS_METHOD_NOT_ALLOWED, NULL);
+        return;
+    }
+
+    if (g_strcmp0(path, "/api/card") == 0) {
+        /* POST rather than PUT, unlike the layout and the skin beside it.
+         * The paired ESP32 firmware serves the same editor page, and its
+         * ESP-IDF web server registers handlers for GET, POST and OPTIONS
+         * only: a PUT never reaches one there. Spelling this route the same
+         * way on both is one fewer difference between two files that are
+         * meant to stay the same page. */
+        if (method_is(message, "POST"))
+            handle_post_card(web, message);
         else
             soup_server_message_set_status(
                 message, SOUP_STATUS_METHOD_NOT_ALLOWED, NULL);

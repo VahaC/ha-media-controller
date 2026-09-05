@@ -90,6 +90,18 @@ typedef struct {
      * cards. */
     gboolean position;
     gboolean stoppable;
+    /* The catalog identifier of the picture this element's cards draw, or
+     * NULL when the person chose none and the domain decides. It is a name
+     * and never a position, so the Media Controller integration may reorder
+     * or extend its catalog without moving anybody's icon.
+     *
+     * It lives beside the name because both are facts about the element
+     * rather than about where somebody dragged its card: a house with a
+     * tablet and an ESP32 panel chooses a lamp's picture once, and a panel
+     * that is reinstalled gets it back with the registry. A card in the
+     * layout document may still name one itself, which is what an older
+     * editor wrote; that is honoured underneath this one. */
+    gchar *icon;
 } PanelEntity;
 
 /* The tablet-local settings Home Assistant owns. They used to live only in

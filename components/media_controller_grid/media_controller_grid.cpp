@@ -366,6 +366,55 @@ std::string card_reading(const Entry &entry) {
   return std::string();
 }
 
+/* How long a card's display name may be, in characters and not in bytes.
+ * It is the integration's `MAX_NAME_LENGTH`, checked here as well so that the
+ * editor is told at once rather than after a round trip, and so that nothing
+ * unbounded is ever put on the wire. Characters, because the name is UTF-8
+ * and a limit in bytes would let a Latin name be twice as long as a Cyrillic
+ * one for no reason a person could see. */
+static const size_t MAX_CARD_NAME_CHARS = 64;
+
+/* Whitespace at either end is dropped, so a field somebody cleared by typing
+ * a space is the same as one they emptied. Only ASCII whitespace: the byte
+ * values below cannot appear inside a multi-byte UTF-8 sequence, so this is
+ * safe on any script without knowing anything about it. */
+static std::string trim_name(const std::string &value) {
+  size_t start = 0;
+  size_t end = value.size();
+  auto space = [](char c) {
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v';
+  };
+  while (start < end && space(value[start]))
+    start++;
+  while (end > start && space(value[end - 1]))
+    end--;
+  return value.substr(start, end - start);
+}
+
+/* Control characters are refused rather than stripped: a newline in a tile
+ * label is somebody pasting the wrong thing, and quietly keeping half of what
+ * they pasted is worse than telling them. A continuation byte of a UTF-8
+ * sequence is always >= 0x80, so testing bytes is enough. */
+static bool name_is_printable(const std::string &value) {
+  for (unsigned char c : value) {
+    if (c < 0x20 || c == 0x7F)
+      return false;
+  }
+  return true;
+}
+
+/* How many characters a name is. Continuation bytes are 10xxxxxx and are not
+ * counted, so "Настільна лампа" is fifteen characters here and not
+ * twenty-nine. */
+static size_t name_characters(const std::string &value) {
+  size_t count = 0;
+  for (unsigned char c : value) {
+    if ((c & 0xC0) != 0x80)
+      count++;
+  }
+  return count;
+}
+
 static uint8_t icon_from_name(const char *name) {
   if (name == nullptr || *name == '\0')
     return 0;
@@ -430,11 +479,16 @@ void MediaControllerGrid::dump_config() {
                 "  Editor: %s (port %u)\n"
                 "  Grid: %ux%u cells of %u px\n"
                 "  Cards in flash: %u\n"
-                "  Skins: %u, of which %u carry a preview",
+                "  Skins: %u, of which %u carry a preview\n"
+                "  Card artwork: %u in flash as a fallback, %u downloadable, "
+                "up to %u held at %ux%u",
                 url.c_str(), this->port_, GRID_COLUMNS, GRID_ROWS, GRID_CELL_PX,
                 static_cast<unsigned>(this->cards_.size()),
                 static_cast<unsigned>(this->skins_.size()),
-                static_cast<unsigned>(this->previews_.size()));
+                static_cast<unsigned>(this->previews_.size()),
+                static_cast<unsigned>(ICON_COUNT),
+                static_cast<unsigned>(this->catalog_.size()),
+                static_cast<unsigned>(ICON_CACHE_LIMIT), ICON_PIXELS, ICON_PIXELS);
   ESP_LOGCONFIG(TAG, "  The editor has no password. Do not forward this port through a router.");
 }
 
@@ -492,6 +546,13 @@ bool MediaControllerGrid::ingest_entities(const std::string &attributes) {
       entry.entity = entity;
       const char *name = element["name"].as<const char *>();
       entry.name = name != nullptr ? name : "";
+      /* The picture the user chose for this element, as a catalog
+       * identifier. Absent means they chose none and the domain decides. An
+       * identifier of a shape the catalog could not have published is
+       * dropped here rather than carried around and refused later. */
+      const char *icon = element["icon"].as<const char *>();
+      if (icon != nullptr && icon_id_is_sane_(icon))
+        entry.icon = icon;
       entry.domain = domain_from_name(element["domain"].as<const char *>());
       entry.togglable = false;
       entry.dimmable = false;
@@ -555,7 +616,7 @@ bool MediaControllerGrid::ingest_entities(const std::string &attributes) {
       const Entry &was = this->entries_[i];
       const Entry &now = parsed[i];
       if (was.rid != now.rid || was.entity != now.entity || was.name != now.name ||
-          was.domain != now.domain || was.togglable != now.togglable ||
+          was.icon != now.icon || was.domain != now.domain || was.togglable != now.togglable ||
           was.dimmable != now.dimmable || was.settable_temp != now.settable_temp ||
           was.min_temp != now.min_temp || was.max_temp != now.max_temp ||
           was.temp_step != now.temp_step) {
@@ -602,7 +663,369 @@ bool MediaControllerGrid::ingest_entities(const std::string &attributes) {
     this->adopt_(this->default_layout_(), false);
     return true;
   }
+  /* The registry decides which picture each card wants, so a registry that
+   * moved is the other half of the question `adopt_` asks after a layout
+   * change. Without this a card whose icon was just chosen in the editor
+   * would leave the previous picture evictable and the new one unpinned. */
+  this->refresh_icon_pins();
   return true;
+}
+
+// --------------------------------------------------------------- card art
+//
+// Everything that turns a catalog identifier into pixels LVGL can blit. The
+// pictures are downloaded from Home Assistant and never compiled in; the six
+// in flash are the fallback underneath, for a device that has not been
+// answered yet and for one that cannot be.
+
+bool MediaControllerGrid::icon_id_is_sane_(const std::string &id) {
+  /* The same shape the integration publishes: lowercase, digits and hyphens,
+   * bounded. It is checked here as well as there because this value ends up
+   * in a URL, and a client trusts a payload no further than it has to.
+   * Nothing that fails this is stored, asked for, or put on the wire. */
+  if (id.empty() || id.size() > ICON_ID_MAX)
+    return false;
+  for (size_t i = 0; i < id.size(); i++) {
+    const char c = id[i];
+    if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'))
+      continue;
+    /* A hyphen anywhere but first, so that "-x" is not an identifier. */
+    if (c == '-' && i > 0)
+      continue;
+    return false;
+  }
+  return true;
+}
+
+bool MediaControllerGrid::catalog_has_(const std::string &id) const {
+  for (const auto &icon : this->catalog_) {
+    if (icon.id == id)
+      return true;
+  }
+  return false;
+}
+
+bool MediaControllerGrid::ingest_icon_catalog(const std::string &document) {
+  std::vector<CatalogIcon> parsed;
+  uint32_t revision = 0;
+
+  const bool read = json::parse_json(document, [&](JsonObject root) -> bool {
+    revision = static_cast<uint32_t>(root["revision"] | 0);
+    JsonArray icons = root["icons"].as<JsonArray>();
+    if (icons.isNull())
+      return false;
+    for (JsonObject element : icons) {
+      const char *id = element["id"].as<const char *>();
+      if (id == nullptr)
+        continue;
+      CatalogIcon icon{};
+      icon.id = id;
+      if (!icon_id_is_sane_(icon.id))
+        continue;
+      const char *label = element["label"].as<const char *>();
+      icon.label = label != nullptr ? label : icon.id;
+      parsed.push_back(std::move(icon));
+      /* A catalog larger than the cache is still a usable catalog — the
+       * editor lists it and the cards use a handful of it — but one large
+       * enough to be a memory problem in itself is not. */
+      if (parsed.size() >= 128)
+        break;
+    }
+    return true;
+  });
+
+  if (!read) {
+    ESP_LOGW(TAG, "The icon catalog was not readable");
+    return false;
+  }
+
+  bool changed = revision != this->catalog_revision_ || parsed.size() != this->catalog_.size();
+  if (!changed) {
+    for (size_t i = 0; i < parsed.size(); i++) {
+      if (parsed[i].id != this->catalog_[i].id) {
+        changed = true;
+        break;
+      }
+    }
+  }
+  if (!changed)
+    return false;
+
+  {
+    LockGuard guard{this->lock_};
+    this->catalog_ = std::move(parsed);
+    this->catalog_revision_ = revision;
+    /* A catalog that moved is reason to try a picture that failed once more:
+     * the likeliest cause of a failure is an integration that did not carry
+     * the file, and the likeliest cause of a new catalog is one that now
+     * does. */
+    for (auto &icon : this->icons_) {
+      if (icon->pixels == nullptr)
+        icon->failed_ms = 0;
+    }
+  }
+  ESP_LOGD(TAG, "The icon catalog carries %u picture(s), revision %u",
+           static_cast<unsigned>(this->catalog_.size()),
+           static_cast<unsigned>(this->catalog_revision_));
+  return true;
+}
+
+std::string MediaControllerGrid::card_icon_id(const Card &card, const Entry *entry) const {
+  /* The registry first: it is where the editor writes, where a second panel
+   * reads the same answer, and what a wiped device gets back. */
+  if (entry != nullptr && !entry->icon.empty())
+    return entry->icon;
+  /* Then the name a layout document written by an older editor still carries.
+   * It is honoured for as long as it is there and never written again, so a
+   * card keeps the picture somebody chose for it until the first time anybody
+   * chooses another one. */
+  if (card.icon > 0 && card.icon <= ICON_COUNT)
+    return ICON_NAMES[card.icon - 1];
+  return {};
+}
+
+CachedIcon *MediaControllerGrid::find_icon_(const std::string &id) {
+  for (auto &icon : this->icons_) {
+    if (icon->id == id)
+      return icon.get();
+  }
+  return nullptr;
+}
+
+bool MediaControllerGrid::evict_icon_() {
+  /* A row that failed is the cheapest thing to lose: it holds no pixels and
+   * remembers only that an identifier did not arrive. */
+  for (size_t i = 0; i < this->icons_.size(); i++) {
+    if (this->icons_[i]->pixels == nullptr && !this->icons_[i]->pinned) {
+      this->icons_.erase(this->icons_.begin() + i);
+      return true;
+    }
+  }
+  /* Then the picture no card is drawing that was looked at longest ago. A
+   * pinned row is never a candidate: LVGL holds the address of its descriptor
+   * for as long as a widget draws it, and freeing one would be a crash rather
+   * than a stale picture. */
+  size_t oldest = this->icons_.size();
+  uint32_t oldest_age = 0;
+  const uint32_t now = millis();
+  for (size_t i = 0; i < this->icons_.size(); i++) {
+    if (this->icons_[i]->pinned)
+      continue;
+    const uint32_t age = now - this->icons_[i]->used_ms;
+    if (oldest == this->icons_.size() || age > oldest_age) {
+      oldest = i;
+      oldest_age = age;
+    }
+  }
+  if (oldest == this->icons_.size())
+    return false;
+  ESP_LOGD(TAG, "Dropping the cached icon %s", this->icons_[oldest]->id.c_str());
+  RAMAllocator<uint8_t> allocator{};
+  allocator.deallocate(this->icons_[oldest]->pixels, ICON_PIXEL_BYTES);
+  this->icons_.erase(this->icons_.begin() + oldest);
+  return true;
+}
+
+CachedIcon *MediaControllerGrid::reserve_icon_(const std::string &id) {
+  if (CachedIcon *existing = this->find_icon_(id))
+    return existing;
+  if (this->icons_.size() >= ICON_CACHE_LIMIT && !this->evict_icon_())
+    return nullptr;
+  std::unique_ptr<CachedIcon> icon(new CachedIcon());
+  icon->id = id;
+  icon->used_ms = millis();
+  this->icons_.push_back(std::move(icon));
+  return this->icons_.back().get();
+}
+
+void MediaControllerGrid::refresh_icon_pins() {
+  LockGuard guard{this->lock_};
+  for (auto &icon : this->icons_)
+    icon->pinned = false;
+  const uint32_t now = millis();
+  for (const auto &card : this->cards_) {
+    const Entry *entry = nullptr;
+    for (const auto &candidate : this->entries_) {
+      if (candidate.rid == card.rid) {
+        entry = &candidate;
+        break;
+      }
+    }
+    const std::string id = this->card_icon_id(card, entry);
+    if (id.empty())
+      continue;
+    if (CachedIcon *cached = this->find_icon_(id)) {
+      cached->pinned = cached->pixels != nullptr;
+      cached->used_ms = now;
+    }
+  }
+}
+
+std::string MediaControllerGrid::next_wanted_icon() {
+  LockGuard guard{this->lock_};
+  if (!this->icon_in_flight_.empty())
+    return {};
+
+  const uint32_t now = millis();
+  auto worth_asking = [&](const std::string &id) -> bool {
+    if (id.empty() || !icon_id_is_sane_(id))
+      return false;
+    /* Only what Home Assistant says it has. A legacy per-card name this build
+     * carries in flash but the catalog does not publish is drawn from flash
+     * and never asked for. */
+    if (!this->catalog_has_(id))
+      return false;
+    const CachedIcon *cached = this->find_icon_(id);
+    if (cached == nullptr)
+      return true;
+    if (cached->pixels != nullptr)
+      return false;
+    /* Tried and failed. Left alone for a while rather than retried every
+     * loop: Home Assistant being down must not become a request per tick. */
+    return cached->failed_ms == 0 || now - cached->failed_ms >= ICON_RETRY_MS;
+  };
+
+  /* What the room page is drawing comes first, always. */
+  for (const auto &card : this->cards_) {
+    const Entry *entry = nullptr;
+    for (const auto &candidate : this->entries_) {
+      if (candidate.rid == card.rid) {
+        entry = &candidate;
+        break;
+      }
+    }
+    const std::string id = this->card_icon_id(card, entry);
+    if (worth_asking(id)) {
+      this->icon_in_flight_ = id;
+      return id;
+    }
+  }
+
+  /* The rest of the catalog only while somebody has the editor open, because
+   * a list of every picture is the only place the rest of it is looked at. */
+  if (this->editor_seen_ms_ == 0 || now - this->editor_seen_ms_ > ICON_PREFETCH_MS)
+    return {};
+  for (const auto &icon : this->catalog_) {
+    if (worth_asking(icon.id)) {
+      this->icon_in_flight_ = icon.id;
+      return icon.id;
+    }
+  }
+  return {};
+}
+
+bool MediaControllerGrid::icon_downloaded(const std::string &id, const std::string &payload) {
+  LockGuard guard{this->lock_};
+  if (this->icon_in_flight_ == id)
+    this->icon_in_flight_.clear();
+  if (!icon_id_is_sane_(id))
+    return false;
+
+  /* Asked before anything is stored, because after it is stored the answer
+   * would be the same for a picture nothing draws. A card that is already
+   * drawing this identifier from the cache needs no rebuild either: it is
+   * only the ones still on the fallback that have something to gain. */
+  bool wanted_by_card = false;
+  for (const auto &card : this->cards_) {
+    const Entry *entry = nullptr;
+    for (const auto &candidate : this->entries_) {
+      if (candidate.rid == card.rid) {
+        entry = &candidate;
+        break;
+      }
+    }
+    if (this->card_icon_id(card, entry) == id) {
+      wanted_by_card = true;
+      break;
+    }
+  }
+  const CachedIcon *before = this->find_icon_(id);
+  const bool was_drawn = before != nullptr && before->pixels != nullptr;
+
+  CachedIcon *cached = this->reserve_icon_(id);
+  if (cached == nullptr) {
+    /* Every row is pinned, so there is nowhere to put this without freeing a
+     * buffer LVGL is drawing. The card keeps the built-in artwork, which is
+     * exactly what the fallback is for. */
+    ESP_LOGD(TAG, "No room to cache the icon %s", id.c_str());
+    return false;
+  }
+
+  /* Refused rather than half-stored. A body of the wrong length, of the wrong
+   * magic, or of the wrong size is a download that was interrupted, a proxy
+   * that answered something else, or a variant this build cannot draw, and
+   * every one of them would be a buffer of the wrong shape handed to LVGL. */
+  const bool usable = payload.size() == ICON_PAYLOAD_BYTES && memcmp(payload.data(), "MCI1", 4) == 0 &&
+                      static_cast<uint8_t>(payload[4]) == (ICON_PIXELS & 0xFF) &&
+                      static_cast<uint8_t>(payload[5]) == ((ICON_PIXELS >> 8) & 0xFF);
+  if (!usable) {
+    ESP_LOGW(TAG, "The icon %s arrived as %u byte(s) and was refused", id.c_str(),
+             static_cast<unsigned>(payload.size()));
+    if (cached->pixels == nullptr)
+      cached->failed_ms = millis();
+    return false;
+  }
+
+  /* The default allocator prefers external RAM and falls back to internal,
+   * which is exactly the order this wants: a hundred kilobytes of card
+   * artwork out of internal RAM would be felt everywhere else on this
+   * device, and a device with no PSRAM should still draw its cards. */
+  RAMAllocator<uint8_t> allocator{};
+  uint8_t *pixels = cached->pixels;
+  if (pixels == nullptr) {
+    pixels = allocator.allocate(ICON_PIXEL_BYTES);
+    if (pixels == nullptr) {
+      ESP_LOGW(TAG, "No memory for the icon %s", id.c_str());
+      cached->failed_ms = millis();
+      return false;
+    }
+  }
+  memcpy(pixels, payload.data() + ICON_HEADER_BYTES, ICON_PIXEL_BYTES);
+  cached->pixels = pixels;
+  cached->failed_ms = 0;
+  cached->used_ms = millis();
+#ifdef USE_LVGL
+  cached->dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+  cached->dsc.header.cf = LV_COLOR_FORMAT_ARGB8888;
+  cached->dsc.header.flags = 0;
+  cached->dsc.header.w = ICON_PIXELS;
+  cached->dsc.header.h = ICON_PIXELS;
+  cached->dsc.header.stride = ICON_PIXELS * 4;
+  cached->dsc.header.reserved_2 = 0;
+  cached->dsc.data_size = ICON_PIXEL_BYTES;
+  cached->dsc.data = pixels;
+#endif
+  /* Pinned here as well as in refresh_icon_pins: this is the moment a card's
+   * picture becomes evictable, and it must not be evicted between here and
+   * the rebuild that hands it to a widget. */
+  cached->pinned = cached->pinned || wanted_by_card;
+  ESP_LOGD(TAG, "Cached the icon %s (%u of %u rows in use)", id.c_str(),
+           static_cast<unsigned>(this->icons_.size()), static_cast<unsigned>(ICON_CACHE_LIMIT));
+  return wanted_by_card && !was_drawn;
+}
+
+#ifdef USE_LVGL
+const lv_image_dsc_t *MediaControllerGrid::icon_for(const Card &card, const Entry *entry) {
+  const std::string id = this->card_icon_id(card, entry);
+  if (id.empty())
+    return nullptr;
+  LockGuard guard{this->lock_};
+  CachedIcon *cached = this->find_icon_(id);
+  if (cached == nullptr || cached->pixels == nullptr)
+    return nullptr;
+  cached->used_ms = millis();
+  /* Pinned the moment it is drawn as well as when the pins are recomputed:
+   * this is the call that hands LVGL the address, so this is where the
+   * promise not to free it starts. */
+  cached->pinned = true;
+  return &cached->dsc;
+}
+#endif
+
+void MediaControllerGrid::card_write_finished(bool ok, const std::string &message) {
+  LockGuard guard{this->lock_};
+  this->card_state_ = ok ? CARD_OK : CARD_FAILED;
+  this->card_message_ = message;
 }
 
 // -------------------------------------------------------------- the layout
@@ -763,6 +1186,9 @@ void MediaControllerGrid::adopt_(std::vector<Card> &&cards, bool backup) {
     LockGuard guard{this->lock_};
     this->cards_ = std::move(cards);
   }
+  /* Which pictures are in use has just changed, and a picture in use may
+   * never be evicted from under the widget drawing it. */
+  this->refresh_icon_pins();
   this->save_to_flash_();
   if (backup && this->backup_) {
     /* The copy in Home Assistant is what makes a wiped device recover its own
@@ -1104,21 +1530,36 @@ namespace {
 const char *const SKIN_PREFIX = "/skins/";
 const char *const SKIN_SUFFIX = ".png";
 
+/* What a card icon is addressed as. The identifier after it is compared with
+ * the pictures this device has downloaded and never used to address anything;
+ * there is no filesystem here to traverse. No extension: the two panels serve
+ * different image formats out of what each of them happens to hold, and the
+ * shared editor page asks for the icon rather than for a file. */
+const char *const ICON_PREFIX = "/icons/";
+
 enum Route : uint8_t {
   ROUTE_NONE = 0,
   ROUTE_EDITOR,
   ROUTE_SKIN_PREVIEW,
+  ROUTE_ICON,
   ROUTE_ENTITIES,
   ROUTE_GET_LAYOUT,
   ROUTE_SAVE_LAYOUT,
   ROUTE_RESTORE_LAYOUT,
   ROUTE_SKINS,
   ROUTE_SET_SKIN,
+  ROUTE_SET_CARD,
 };
 
-/* Eight routes, and this is all of them. There is deliberately no catch-all
+/* Ten routes, and this is all of them. There is deliberately no catch-all
  * and no path that takes an entity, a service or a URL from the caller: this
  * server has no password, so what it cannot express is the security model.
+ *
+ * The two added for card artwork keep that rule rather than bending it. The
+ * picture route serves what this device has already downloaded for its own
+ * cards and can reach nothing else; the card route changes the name and icon
+ * of an element this device is already drawing, and every value in it is
+ * checked here and again by the integration that owns the registry.
  *
  * The T560 panel spells the three writes PUT and DELETE. Here they are POST,
  * because ESPHome's ESP-IDF web server registers URI handlers for GET, POST
@@ -1130,6 +1571,8 @@ Route route_of(http_method method, const char *url) {
       return ROUTE_EDITOR;
     if (strncmp(url, SKIN_PREFIX, strlen(SKIN_PREFIX)) == 0)
       return ROUTE_SKIN_PREVIEW;
+    if (strncmp(url, ICON_PREFIX, strlen(ICON_PREFIX)) == 0)
+      return ROUTE_ICON;
     if (strcmp(url, "/api/entities") == 0)
       return ROUTE_ENTITIES;
     if (strcmp(url, "/api/layout") == 0)
@@ -1145,6 +1588,8 @@ Route route_of(http_method method, const char *url) {
       return ROUTE_RESTORE_LAYOUT;
     if (strcmp(url, "/api/skin") == 0)
       return ROUTE_SET_SKIN;
+    if (strcmp(url, "/api/card") == 0)
+      return ROUTE_SET_CARD;
     return ROUTE_NONE;
   }
   return ROUTE_NONE;
@@ -1184,6 +1629,9 @@ void MediaControllerGrid::handleRequest(AsyncWebServerRequest *request) {
     case ROUTE_SKIN_PREVIEW:
       this->handle_skin_preview_(request, url.c_str());
       break;
+    case ROUTE_ICON:
+      this->handle_icon_(request, url.c_str());
+      break;
     case ROUTE_ENTITIES:
       this->handle_entities_(request);
       break;
@@ -1201,6 +1649,9 @@ void MediaControllerGrid::handleRequest(AsyncWebServerRequest *request) {
       break;
     case ROUTE_SET_SKIN:
       this->handle_set_skin_(request);
+      break;
+    case ROUTE_SET_CARD:
+      this->handle_set_card_(request);
       break;
     default:
       send_error_(request, 404, "No such route.");
@@ -1261,6 +1712,220 @@ void MediaControllerGrid::handle_skin_preview_(AsyncWebServerRequest *request, c
   send_error_(request, 404, "This device carries no picture of that skin.");
 }
 
+/* One catalog picture, for the editor page.
+ *
+ * It is served out of the same bounded cache the cards draw from, wrapped in
+ * a BMP header on the way out. That is why there is no proxy here and no
+ * second download: the device has already fetched these pixels for its own
+ * use, and a browser reads a 32-bit BMP with an alpha mask without a decoder,
+ * a library, or anything from outside the house.
+ *
+ * The identifier in the path is compared with what is in the cache and never
+ * used to address anything: there is no filesystem here to traverse. An icon
+ * this device has not downloaded yet is a 404, and the editor then drops the
+ * image and keeps the name — exactly what it already does for a skin this
+ * build carries no picture of.
+ */
+void MediaControllerGrid::handle_icon_(AsyncWebServerRequest *request, const char *url) {
+  const std::string id = url + strlen(ICON_PREFIX);
+  if (!icon_id_is_sane_(id)) {
+    send_error_(request, 404, "No such icon.");
+    return;
+  }
+
+  /* Built under the lock and sent without it: a send takes as long as the
+   * client needs to read it, and holding the lock across one would stall the
+   * main loop for exactly that long. */
+  std::vector<uint8_t> bmp;
+  {
+    LockGuard guard{this->lock_};
+    /* Asking for a picture is what says somebody has the editor open, which
+     * is what makes `next_wanted_icon` fetch the rest of the catalog rather
+     * than only what the cards use. */
+    this->editor_seen_ms_ = millis();
+    const CachedIcon *cached = this->find_icon_(id);
+    if (cached != nullptr && cached->pixels != nullptr) {
+      /* A BITMAPV4HEADER, because that is the only BMP shape browsers agree
+       * carries alpha. The pixels need no rearranging at all: they are
+       * already B, G, R, A in memory, which is exactly what the masks below
+       * say. */
+      const uint32_t header = 14 + 108;
+      bmp.assign(header + ICON_PIXEL_BYTES, 0);
+      uint8_t *out = bmp.data();
+      auto put32 = [out](size_t at, uint32_t value) {
+        out[at] = value & 0xFF;
+        out[at + 1] = (value >> 8) & 0xFF;
+        out[at + 2] = (value >> 16) & 0xFF;
+        out[at + 3] = (value >> 24) & 0xFF;
+      };
+      out[0] = 'B';
+      out[1] = 'M';
+      put32(2, header + ICON_PIXEL_BYTES);
+      put32(10, header);
+      put32(14, 108);          /* BITMAPV4HEADER */
+      put32(18, ICON_PIXELS);  /* width */
+      /* A negative height is a top-down bitmap, which is the order the pixels
+       * are already in. Flipping them here instead would be forty memcpys per
+       * request for a picture that is going to be drawn the right way up. */
+      put32(22, static_cast<uint32_t>(-static_cast<int32_t>(ICON_PIXELS)));
+      out[26] = 1;   /* planes */
+      out[28] = 32;  /* bits per pixel */
+      put32(30, 3);  /* BI_BITFIELDS */
+      put32(34, ICON_PIXEL_BYTES);
+      put32(54, 0x00FF0000);  /* red */
+      put32(58, 0x0000FF00);  /* green */
+      put32(62, 0x000000FF);  /* blue */
+      put32(66, 0xFF000000);  /* alpha */
+      put32(70, 0x57696E20);  /* 'Win ', the sRGB colour space */
+      memcpy(out + header, cached->pixels, ICON_PIXEL_BYTES);
+    }
+  }
+
+  if (bmp.empty()) {
+    /* Not downloaded, or downloaded and refused. Asking for it is what puts
+     * it on the list, so the picture usually arrives before the editor's next
+     * attempt; until then the editor drops the image and keeps the name. */
+    send_error_(request, 404, "This device has not downloaded that icon yet.");
+    return;
+  }
+
+  auto *response = request->beginResponse(200, "image/bmp", bmp.data(), bmp.size());
+  /* The pictures change only when the integration is upgraded, and the
+   * editor asks for one per catalog row on every render. */
+  response->addHeader("Cache-Control", "max-age=3600");
+  request->send(response);
+}
+
+/* The display name and icon of one card.
+ *
+ * This is the only route that ends in a write to Home Assistant's own data,
+ * and it is deliberately the narrowest one here. It can change the name and
+ * the picture of an element **this device already draws**, and there is no
+ * path through it that names an entity, calls a service, adds an element, or
+ * reaches anything the registry does not already carry. Everything it accepts
+ * is checked twice: here, and again by the integration, which is the side
+ * that actually owns the registry.
+ *
+ * A key that is absent means "leave this alone" and a key that is present
+ * means "set it to this, including to nothing". The difference matters: a
+ * card whose name field simply shows the Home Assistant entity's own name
+ * must not have that name stored as a custom one just because somebody
+ * changed its icon, or it would stop following the entity through a rename.
+ */
+void MediaControllerGrid::handle_set_card_(AsyncWebServerRequest *request) {
+  std::string rid_text;
+  std::string name;
+  std::string icon;
+  bool has_name = false;
+  bool has_icon = false;
+
+  const bool read = json::parse_json(this->body_, [&](JsonObject root) -> bool {
+    const char *value = root["rid"].as<const char *>();
+    if (value != nullptr)
+      rid_text = value;
+    if (!root["name"].isNull()) {
+      has_name = true;
+      const char *text = root["name"].as<const char *>();
+      name = text != nullptr ? text : "";
+    }
+    if (!root["icon"].isNull()) {
+      has_icon = true;
+      const char *text = root["icon"].as<const char *>();
+      icon = text != nullptr ? text : "";
+    }
+    return true;
+  });
+  if (!read) {
+    send_error_(request, 400, "The request is not a JSON object.");
+    return;
+  }
+  if (!has_name && !has_icon) {
+    send_error_(request, 400, "There is nothing to change.");
+    return;
+  }
+
+  uint32_t rid = 0;
+  if (!parse_rid(rid_text.c_str(), &rid)) {
+    send_error_(request, 400, "That is not a registry identifier.");
+    return;
+  }
+
+  if (has_name) {
+    name = trim_name(name);
+    if (!name_is_printable(name)) {
+      send_error_(request, 400, "A name cannot contain control characters.");
+      return;
+    }
+    if (name_characters(name) > MAX_CARD_NAME_CHARS) {
+      char buffer[80];
+      snprintf(buffer, sizeof(buffer), "A name may be at most %u characters.",
+               static_cast<unsigned>(MAX_CARD_NAME_CHARS));
+      send_error_(request, 400, buffer);
+      return;
+    }
+  }
+
+  /* The element has to be one this device is already drawing, and the icon
+   * one Home Assistant says it publishes. Those two checks are the whole of
+   * why this route is not a way into a registry the caller knows nothing
+   * about. */
+  bool known_card = false;
+  bool known_icon = true;
+  {
+    LockGuard guard{this->lock_};
+    known_card = this->entry(rid) != nullptr;
+    if (has_icon && !icon.empty())
+      known_icon = this->catalog_has_(icon);
+  }
+  if (!known_card) {
+    send_error_(request, 404, "This device draws no such card.");
+    return;
+  }
+  if (!known_icon) {
+    send_error_(request, 400, "Home Assistant does not publish that icon.");
+    return;
+  }
+
+  const bool writable = static_cast<bool>(this->card_writer_);
+  if (writable) {
+    /* The body is built here rather than in the script that sends it, for the
+     * same reason the layout document is: what may be said is this
+     * component's business, and the other half of the seam only has to put a
+     * string on the wire. */
+    JsonDocument doc;
+    JsonObject root = doc.to<JsonObject>();
+    root["rid"] = rid_text;
+    if (has_name)
+      root["name"] = name;
+    if (has_icon)
+      root["icon"] = icon;
+    std::string request_body;
+    serialize_to(doc, &request_body);
+
+    {
+      LockGuard guard{this->lock_};
+      this->card_state_ = CARD_PENDING;
+      this->card_message_.clear();
+    }
+    /* Deferred, because the write reaches Home Assistant over HTTP and that
+     * blocks the main loop; this runs on the HTTP server task. The editor
+     * watches `card` on /api/entities for the outcome, exactly as it watches
+     * `restore`. */
+    this->defer([this, request_body]() { this->card_writer_(request_body); });
+  }
+
+  JsonDocument doc;
+  JsonObject root = doc.to<JsonObject>();
+  root["status"] = "ok";
+  /* Whether the change is on its way to Home Assistant is reported, never
+   * enforced: a device that has not paired yet still has an editor, and the
+   * person using it should be told which of the two happened. */
+  root["synced"] = writable;
+  std::string body;
+  serialize_to(doc, &body);
+  send_json_(request, 200, body);
+}
+
 void MediaControllerGrid::handle_entities_(AsyncWebServerRequest *request) {
   /* The body is built under the lock and sent without it: a send takes as
    * long as the client needs to read it, and holding the lock across one
@@ -1284,17 +1949,39 @@ void MediaControllerGrid::handle_entities_(AsyncWebServerRequest *request) {
       item["rid"] = format_rid(entry.rid);
       item["entity"] = entry.entity;
       item["name"] = entry.name;
+      /* What the user chose for this element, so that the editor can show
+       * the choice rather than guess at it from the picture on screen. */
+      item["icon"] = entry.icon;
       item["domain"] = domain_to_name(entry.domain);
       item["brightness"] = entry.dimmable;
       item["color_temp"] = false;
       item["target_temperature"] = entry.settable_temp;
     }
 
-    /* The artwork this build carries, so the editor offers exactly what the
-     * device can draw rather than a list written down twice. */
+    /* The artwork Home Assistant publishes, so the editor offers exactly
+     * what a card can be given rather than a list written down twice. It is
+     * the integration's catalog and not this build's flash: adding a picture
+     * there must not mean reflashing every device in the house.
+     *
+     * Empty before the catalog has been fetched, and empty for good on a
+     * device that has never paired. The editor then offers Automatic alone,
+     * which is the honest answer: there is nothing else this device could be
+     * told to draw. */
     JsonArray icons = root["icons"].to<JsonArray>();
-    for (size_t i = 0; i < ICON_COUNT; i++)
-      icons.add(ICON_NAMES[i]);
+    for (const auto &icon : this->catalog_) {
+      JsonObject row = icons.add<JsonObject>();
+      row["id"] = icon.id;
+      row["label"] = icon.label;
+    }
+    /* Asking what this device knows is what says somebody has the editor
+     * open, which is what makes the catalog worth fetching ahead of the
+     * handful of pictures the cards actually use. */
+    this->editor_seen_ms_ = millis();
+
+    /* What the editor may not exceed, so the limit is enforced in one place
+     * and read in the other rather than written down twice. */
+    JsonObject limits = root["limits"].to<JsonObject>();
+    limits["name"] = MAX_CARD_NAME_CHARS;
 
     JsonObject grid = root["grid"].to<JsonObject>();
     grid["cols"] = GRID_COLUMNS;
@@ -1318,6 +2005,17 @@ void MediaControllerGrid::handle_entities_(AsyncWebServerRequest *request) {
                        : this->restore_state_ == RESTORE_FAILED ? "failed"
                                                                 : "idle";
     restore["message"] = this->restore_message_;
+
+    /* How the last card edit ended, and it lives here for the same reason
+     * the restore does: the write reaches Home Assistant over HTTP, which
+     * blocks the main loop, so it cannot be answered inside the request that
+     * asked for it. */
+    JsonObject card = root["card"].to<JsonObject>();
+    card["state"] = this->card_state_ == CARD_PENDING  ? "pending"
+                    : this->card_state_ == CARD_OK     ? "ok"
+                    : this->card_state_ == CARD_FAILED ? "failed"
+                                                       : "idle";
+    card["message"] = this->card_message_;
 
     serialize_to(doc, &body);
   }

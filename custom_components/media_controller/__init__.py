@@ -61,6 +61,8 @@ from .profiles import (
     panel_profile,
 )
 from .pairing import PairingStore
+from .icons import async_setup_icon_endpoints
+from .panel_card import async_setup_card_endpoint
 from .panel_layout import async_setup_layout_endpoint
 from .panel_state import PanelSettings, PanelState
 from .provision import PanelProvisionView
@@ -264,6 +266,15 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
     # The same ownership check, for the durable copy of a panel's own grid.
     # See panel_layout.py for why it is an endpoint of its own.
     async_setup_layout_endpoint(hass)
+    # And again, for the one thing the on-device layout editor may write back
+    # to Home Assistant: the display name and icon of a card it already draws.
+    # See panel_card.py for how narrow that is and why it has to be.
+    async_setup_card_endpoint(hass)
+    # The card artwork itself. Authenticated like everything else, and a
+    # separate request rather than a block on the config sensor: panels poll
+    # that sensor about once a second, and a catalog that changes when the
+    # integration is upgraded has no business on that channel.
+    async_setup_icon_endpoints(hass)
 
     async def async_handle_refresh(call: ServiceCall) -> None:
         runtimes: dict[str, MediaControllerRuntime] = hass.data[DOMAIN][

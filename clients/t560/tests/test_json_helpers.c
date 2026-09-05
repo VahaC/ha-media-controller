@@ -1,5 +1,6 @@
 #include "json_helpers.h"
 
+#include "test_panel_cards.h"
 #include "test_panel_config.h"
 #include "test_panel_grid.h"
 
@@ -109,6 +110,7 @@ int main(int argc, char **argv)
     g_test_add_func("/json/optional-accessor-types",
                     test_optional_accessors_check_the_type);
     g_test_add_func("/json/builder-serialization", test_builder_serialization);
+    panel_cards_tests_register();
     panel_config_tests_register();
     panel_grid_tests_register();
     return g_test_run();

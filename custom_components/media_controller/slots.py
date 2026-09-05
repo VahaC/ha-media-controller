@@ -24,6 +24,7 @@ from homeassistant.helpers import entity_registry as er
 
 from .const import slot_entity_key, slot_label_key
 from .contract import CONTRACT_VERSION
+from .icon_catalog import normalize_icon_id
 from .profiles import (
     CAP_CONTROLS,
     CAP_MAX_KELVIN,
@@ -418,6 +419,25 @@ class ClientConfiguration:
             listener()
 
     @callback
+    def async_set_entries(self, entries: Iterable[RegistryEntry]) -> bool:
+        """Replace the registry in place and rebuild the payload if it moved.
+
+        This is how a change made outside the options flow reaches a panel
+        without a config-entry reload. A reload would recreate every entity
+        this panel owns and make the device re-read a layout that did not
+        change, all for a name somebody typed into the editor — see
+        `panel_entity.async_store_settings`, which avoids the same reload for
+        the same reason.
+        """
+        replacement = list(entries)
+        if replacement == self.entries:
+            return False
+        self.entries = replacement
+        for listener in list(self._listeners):
+            listener()
+        return True
+
+    @callback
     def async_refresh_registry_targets(self) -> None:
         """Follow the registry's targets after a Home Assistant rename.
 
@@ -540,6 +560,14 @@ class ClientConfiguration:
                     min_temp=entry.min_temp,
                     max_temp=entry.max_temp,
                     target_temp_step=entry.target_temp_step,
+                    # Normalized here rather than read straight from
+                    # storage. The picture a person chose is a fact about the
+                    # element and not something resolved from the target the
+                    # way controls and bounds are, but an identifier the
+                    # catalog has since stopped publishing must reach a
+                    # client as "automatic" rather than as a name it will
+                    # spend a download on and never find.
+                    icon=normalize_icon_id(entry.icon),
                 )
                 for entry in resolved
             )

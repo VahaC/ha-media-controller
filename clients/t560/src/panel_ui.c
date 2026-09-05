@@ -3370,9 +3370,24 @@ static void room_cards_rebuild(PanelUi *ui)
         card->sensor_unit = NULL;
         card->forecast_count = 0;
         card->forecast_at = 0;
+        /* Which picture the card draws, in the order the contract resolves
+         * it: the one the person chose, which Home Assistant keeps against
+         * the registry element and both panels therefore agree on; then the
+         * name this card carries in the layout document itself, which is
+         * what an older editor wrote and is honoured until anybody chooses
+         * anything; then the domain's own suggestion.
+         *
+         * A name this build carries no artwork for simply draws none:
+         * icon_set() finds nothing, exactly as it already does for a sensor
+         * block. The catalog the integration publishes is larger than what
+         * is compiled in here, and a card naming one of the extra pictures
+         * must degrade rather than fail. */
+        const gchar *chosen = entity != NULL && entity->icon != NULL
+                                  ? entity->icon
+                                  : placed->icon;
         card->icon = g_strdup(
-            placed->icon != NULL
-                ? placed->icon
+            chosen != NULL
+                ? chosen
                 : icon_for_domain(entity != NULL ? entity->domain : NULL));
         if (placed->color != NULL) {
             card->accent = (guint)g_ascii_strtoull(placed->color + 1, NULL,

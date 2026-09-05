@@ -291,11 +291,16 @@ reports no address and gets no link.
 device that had to be logged into would not be. What makes the missing password
 survivable is the shape of the API rather than a promise:
 
-- there are exactly **eight routes**, and not one of them is a general proxy to
+- there are exactly **ten routes**, and not one of them is a general proxy to
   Home Assistant. Nothing there can read a state, call an arbitrary service, or
-  reach an entity the device does not already draw. The one route that takes a
-  name from the caller — the skin preview — compares it with the skins linked
-  in at codegen time and never builds a path out of it;
+  reach an entity the device does not already draw. The two routes that take a
+  name from the caller — the skin preview and the card picture — compare it
+  with what this build actually holds, and neither builds a path out of it;
+- the one route that reaches Home Assistant at all, `POST /api/card`, changes
+  the display name and the icon of a card **this device is already drawing**
+  and nothing else. It cannot name an entity, add an element, or touch another
+  device, and every value in it is checked here and again by the integration
+  that owns the registry;
 - the registry is served from the payload the device has already parsed, so a
   request to the editor never becomes a request to Home Assistant;
 - the Home Assistant token never leaves the device and is readable through no
@@ -316,17 +321,81 @@ uses. ESPHome's ESP-IDF web server registers URI handlers for `GET`, `POST` and
 | --- | --- |
 | `GET /` | the editor page, one gzipped asset in flash |
 | `GET /skins/<name>.png` | what one skin looks like |
-| `GET /api/entities` | the registry, the artwork, the grid size, the last restore |
+| `GET /icons/<id>` | one card picture, out of what this device downloaded |
+| `GET /api/entities` | the registry, the catalog, the grid size, the last restore and card write |
 | `GET /api/layout` | the arrangement on screen |
 | `POST /api/layout` | adopt and persist an arrangement |
 | `POST /api/layout/restore` | ask for the copy Home Assistant holds |
 | `GET /api/skins` | the skins this build draws, and the one on screen |
 | `POST /api/skin` | ask Home Assistant for a skin |
+| `POST /api/card` | ask Home Assistant for a card's display name and icon |
 
 `POST /api/skin` calls `select.select_option` on this device's own *Player
 Skin* select and nothing else, and the name is checked against the three skins
 this build draws before it is sent. Home Assistant stays the owner of the value:
 the device writes nothing locally and adopts the new skin on its next poll.
+
+`POST /api/card` calls the integration's card-appearance endpoint for one
+`rid` this device already draws. The name is trimmed, checked for control
+characters and bounded at 64 characters here before it is sent; the icon has to
+be one the published catalog carries. Home Assistant stays the owner of both:
+the device writes nothing locally and the new name arrives on its next poll,
+which is also what makes a house with a tablet and an ESP32 panel agree about
+what a lamp is called without either of them telling the other. The write
+cannot be answered inside the request — an HTTP call blocks the main loop — so
+the device answers `queued` and reports the outcome on `GET /api/entities`,
+exactly as **Restore** does.
+
+### The card artwork
+
+The pictures a card draws are **downloaded from Home Assistant** and are not
+compiled in. Six are still linked into this firmware, and they are the
+fallback: what a card shows before Home Assistant has answered, while it is
+unreachable, when a download fails, and for an identifier this build has never
+heard of. A room page that cannot reach Home Assistant is a page with plain
+artwork on it, never an empty one.
+
+Adding a picture to the catalog therefore costs no reflash. It used to: a card
+stored a **1-based index into an array compiled into this firmware**, so the
+set could grow only by flashing every device in the house, and reordering the
+array would have silently moved everybody's icons. A card now stores a stable
+identifier, in Home Assistant, against the registry element.
+
+How the downloads behave, and why:
+
+- the **catalog** — which identifiers exist, and what to call them — is asked
+  for once after pairing and then every six hours. It changes when the
+  integration is upgraded and never otherwise. It is deliberately not a block
+  on the config sensor, which this device polls once a second;
+- **one picture at a time**, spread over the poll tick rather than fetched in a
+  burst. Each is six kilobytes through a request that blocks the main loop, and
+  a burst is exactly what would be felt as a stall under a finger;
+- what the **cards** draw comes first, always. The rest of the catalog is
+  fetched only while somebody has the editor open, because a list of every
+  picture is the only place the rest of it is looked at;
+- a picture is decoded **once per identifier and shared**. A page of sixty-four
+  cards naming three pictures holds three of them, not sixty-four, and the
+  cache is bounded at sixteen — about 100 KB, taken from PSRAM where there is
+  any. A picture a card is drawing is never evicted, because LVGL holds the
+  address of its descriptor for as long as the widget exists;
+- a download that fails is **left alone for a minute** rather than retried on
+  every tick, so an unreachable Home Assistant does not become a request per
+  loop;
+- what arrives is a **pre-rendered variant and not a PNG**: an eight-byte
+  header and then ARGB8888 at exactly 40 x 40, which is the size a card draws.
+  This build sets `LV_COLOR_16_SWAP` and leaves `LV_DRAW_SW_SUPPORT_SWAPPED`
+  off, so LVGL cannot transform a source at all, and the device has no PNG
+  decoder to spare either. A body of the wrong length or the wrong header is
+  refused rather than half-stored: it would be a buffer of the wrong shape
+  handed to a renderer.
+
+`GET /icons/<id>` serves the editor whatever the device has already
+downloaded, wrapped in a BMP header on the way out — the pixels need no
+rearranging, because they are already in the order a 32-bit BMP with an alpha
+mask describes. There is no second download for the browser and no proxy: the
+Home Assistant token never comes near it. An identifier the device has not
+fetched yet is a 404, and the editor drops the image and keeps the name, which
+is what it already does for a skin this build carries no picture of.
 
 ### The skin previews
 
@@ -421,9 +490,16 @@ service call — the same contract the T560 panel keeps.
 ### Where the layout lives
 
 On the device it is one NVS blob of 512 bytes: 64 records of 8 bytes, each
-holding the `rid`, the cell, the span and the icon. It is a blob and not a
-string global because `max_restore_data_length` is capped at 254 bytes, which a
-grid was never going to fit.
+holding the `rid`, the cell and the span. It is a blob and not a string global
+because `max_restore_data_length` is capped at 254 bytes, which a grid was
+never going to fit.
+
+The eighth byte of a record still holds the old icon index, and it is still
+read. A layout document written by an older editor names one of the six
+built-in pictures, and a card keeps drawing it until the first time anybody
+chooses anything — at which point the choice goes to Home Assistant, where the
+registry keeps it, and the stored index is shadowed. The editor clears it on
+the next save. Nothing writes an index again.
 
 After every save the device also sends a copy to Home Assistant, at
 `/api/media_controller/panel_layout/<panel_id>`, where `panel_id` is the MAC
@@ -457,6 +533,21 @@ None of this has run on the physical device yet.
 9. Open `http://<device-ip>/` from a phone. Move a card, resize it, change its
    icon, save. The page redraws within a second and the layout survives a
    reboot.
+9a. Give a card a display name, including a Cyrillic one, and confirm it
+    appears on the physical card within a poll and survives a reboot. Clear
+    the field and confirm the Home Assistant entity name comes back. Try a
+    name over 64 characters and one with a newline pasted into it: both must
+    be refused with a message rather than stored.
+9b. Choose an integration-hosted icon the firmware carries no copy of —
+    `desk-lamp` or `desk-led-strip` — and confirm it appears on the physical
+    card. Watch the log for `Cached the icon` and for the cache count; give
+    two cards the same icon and confirm only one copy is held. Check free
+    PSRAM and internal heap before and after opening the editor, which is
+    what prefetches the whole catalog.
+9c. With Home Assistant stopped, reboot. Every card must draw built-in
+    artwork, navigation and taps must keep working, and the log must not
+    fill with icon requests. Start Home Assistant again and confirm the
+    pictures arrive without a reboot.
 10. Erase the device's flash and reflash it, then press **Restore** in the
     editor. The arrangement must come back from Home Assistant.
 11. Change the skin in the editor. Home Assistant's *Player Skin* select moves,

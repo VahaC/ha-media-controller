@@ -5,8 +5,16 @@
 #include "esphome/core/preferences.h"
 #include "esphome/components/web_server_base/web_server_base.h"
 
+#ifdef USE_LVGL
+/* Not <lvgl.h> directly: PlatformIO fails a build that merely mentions a
+ * header it cannot resolve, even inside an #ifdef, and this proxy is the
+ * workaround every other ESPHome component uses for exactly that. */
+#include "esphome/components/lvgl/lvgl_proxy.h"
+#endif
+
 #include <cmath>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -172,6 +180,13 @@ struct Entry {
   float min_temp;
   float max_temp;
   float temp_step;
+  /* The catalog identifier of the picture this element's cards draw, or
+   * empty when the user chose none and the domain decides. It arrives in the
+   * `entities` block beside the name, because which picture a lamp wears is
+   * a fact about the lamp and not about where somebody dragged its card: a
+   * house with two panels chooses it once, and a device that is wiped gets
+   * it back with the registry. */
+  std::string icon;
   /* The last state Home Assistant reported for `entity`, as the template
    * endpoint rendered it: "on", "off", "unavailable", or empty before the
    * first answer. For a thermostat it is the mode — "heat", "cool", "off" —
@@ -296,6 +311,106 @@ std::string weather_sub(const Entry &entry);
  * empty — because that is a card the poll has said nothing about yet. */
 std::string card_reading(const Entry &entry);
 
+/* ------------------------------------------------------------- card art
+ *
+ * The artwork a card draws is downloaded from Home Assistant and never
+ * compiled in. Six pictures used to be linked into this firmware and a card
+ * stored a **1-based index into that array**, which meant the set could only
+ * grow by reflashing every device in the house, and reordering it would have
+ * silently moved everybody's icons. The catalog now lives in the integration,
+ * a card stores a stable identifier, and this is the machinery that turns one
+ * of those identifiers into pixels LVGL can blit.
+ *
+ * The six built-in pictures stay, and stay in flash. They are the fallback:
+ * what a card draws before Home Assistant has answered, while it is
+ * unreachable, when a download fails, and for an identifier this build has
+ * never heard of. A room page that cannot reach Home Assistant is a room page
+ * with plain artwork on it, never an empty one.
+ */
+
+/* Exactly what the integration serves, and the only variant this build asks
+ * for. The picture is used at the size it arrives at and never transformed:
+ * this build sets LV_COLOR_16_SWAP and leaves LV_DRAW_SW_SUPPORT_SWAPPED off,
+ * so LVGL's software renderer cannot scale a source at all. See AGENTS.md. */
+static const uint16_t ICON_PIXELS = 40;
+/* "MCI1" and the size, twice. It is here so that a truncated download, a
+ * proxy that answered something else, or a variant of another size cannot be
+ * mistaken for the picture that was asked for and handed to LVGL as a buffer
+ * of the wrong shape. */
+static const size_t ICON_HEADER_BYTES = 8;
+/* ARGB8888, in the little-endian B, G, R, A order LVGL reads and ESPHome
+ * already writes for the artwork compiled into this firmware. A downloaded
+ * icon and a built-in one are therefore the same kind of thing. */
+static const size_t ICON_PIXEL_BYTES = static_cast<size_t>(ICON_PIXELS) * ICON_PIXELS * 4;
+static const size_t ICON_PAYLOAD_BYTES = ICON_HEADER_BYTES + ICON_PIXEL_BYTES;
+
+/* How many pictures are held decoded at once. Sixteen is 102 KB, which is
+ * nothing in PSRAM and rather a lot in internal RAM — hence the allocator.
+ * The bound is what keeps a catalog that grows from becoming a device that
+ * runs out of memory: a page of sixty-four cards naming three icons holds
+ * three of these and not sixty-four, because the cache is keyed on the
+ * identifier and every card that names one shares the same decoded copy. */
+static const uint8_t ICON_CACHE_LIMIT = 16;
+
+/* The longest identifier this build will store or ask for. The integration
+ * publishes nothing longer; anything that is is not from the catalog. */
+static const size_t ICON_ID_MAX = 32;
+
+/* How long a failed download is left alone before it is tried again. Home
+ * Assistant being down must not turn into a request per loop, and an icon
+ * that is genuinely missing must not be asked for forever. */
+static const uint32_t ICON_RETRY_MS = 60000;
+
+/* How long after the editor last asked what this device knows the catalog
+ * keeps being fetched ahead of what the cards need. The editor shows every
+ * icon in the catalog and the cards use a handful, so the rest are worth
+ * having only while somebody is looking at them. */
+static const uint32_t ICON_PREFETCH_MS = 120000;
+
+/* One row of the catalog Home Assistant publishes. The label is what the
+ * editor calls the icon and nothing compares it; the identifier is what a
+ * registry element stores and what a request names. */
+struct CatalogIcon {
+  std::string id;
+  std::string label;
+};
+
+/* One downloaded picture, kept decoded.
+ *
+ * These are held by unique_ptr in a vector for one reason: LVGL keeps the
+ * **address** of the descriptor for as long as a widget draws it, and a
+ * vector of values moves its elements when it grows. */
+struct CachedIcon {
+  std::string id;
+  /* The pixels, in PSRAM where there is any. Null means this identifier has
+   * been tried and has not arrived: the row is kept so that the failure is
+   * remembered and not retried on every loop. */
+  uint8_t *pixels{nullptr};
+  /* When it was last drawn or served, for eviction, and when it last failed,
+   * for the retry. Both are millis(). */
+  uint32_t used_ms{0};
+  uint32_t failed_ms{0};
+  /* Whether a card on the current layout draws it. A pinned row is never
+   * evicted, because evicting one would free a buffer an LVGL widget is
+   * still pointing at. */
+  bool pinned{false};
+#ifdef USE_LVGL
+  /* Handed to lv_image_set_src. Its address must stay put, which is what the
+   * unique_ptr above is for. */
+  lv_image_dsc_t dsc{};
+#endif
+};
+
+/* How the last card edit ended, reported to the editor the same way a restore
+ * is and for the same reason: the write reaches Home Assistant over HTTP,
+ * which blocks the main loop, so it cannot be answered inside the request. */
+enum CardWriteState : uint8_t {
+  CARD_IDLE = 0,
+  CARD_PENDING = 1,
+  CARD_OK = 2,
+  CARD_FAILED = 3,
+};
+
 /* Why the last restore ended the way it did, reported to the editor. */
 enum RestoreState : uint8_t {
   RESTORE_IDLE = 0,
@@ -355,10 +470,70 @@ class MediaControllerGrid final : public AsyncWebHandler, public Component {
   /* Ask Home Assistant to select a skin. Nothing is written locally: Home
    * Assistant owns the value and this device adopts it on its next poll. */
   void set_skin_writer(std::function<void(std::string)> &&f) { this->skin_writer_ = std::move(f); }
+  /* Ask Home Assistant to store the display name and icon of one registry
+   * element. Nothing is written locally, exactly as with the skin: the
+   * registry belongs to Home Assistant, and the new name arrives back the
+   * ordinary way, in the next config poll.
+   *
+   * The argument is the whole request body, already built and already
+   * validated, for the same reason the backup writer is handed a whole
+   * layout document: what may be said is this component's business, and the
+   * other half of the seam only has to put a string on the wire. It also
+   * carries the one thing a fixed argument list could not — which of the two
+   * fields is being set, because leaving a name alone and clearing it are
+   * different requests. */
+  void set_card_writer(std::function<void(std::string)> &&f) {
+    this->card_writer_ = std::move(f);
+  }
+  /* Ask Home Assistant for one icon at ICON_PIXELS. The answer arrives later,
+   * through `icon_downloaded`. */
+  void set_icon_fetcher(std::function<void(std::string)> &&f) { this->icon_fetcher_ = std::move(f); }
 
   /* The answer to a restore request. `document` is the layout Home Assistant
    * held, or empty when it holds none. */
   void restore_finished(bool ok, const std::string &document, const std::string &message);
+  /* The answer to a card edit. The editor is watching /api/entities for it. */
+  void card_write_finished(bool ok, const std::string &message);
+
+  // ------------------------------------------------------------- card art
+
+  /* Replaces the catalog Home Assistant publishes. Returns whether it
+   * actually changed, which is what tells the caller to stop asking for a
+   * while. The document carries no image data at all — the pictures are
+   * separate requests, made only for the icons that are actually wanted. */
+  bool ingest_icon_catalog(const std::string &document);
+  /* The identifier of the next picture worth asking for, or empty when there
+   * is nothing to fetch. Cards come first and the rest of the catalog only
+   * while the editor is open; a download that failed is left alone for
+   * ICON_RETRY_MS. One at a time on purpose: each is six kilobytes through a
+   * request that blocks the main loop. */
+  std::string next_wanted_icon();
+  /* Takes one downloaded variant. Anything that is not exactly what was asked
+   * for — wrong magic, wrong size, short body — is refused, and the
+   * identifier is marked as failed rather than half-stored. `payload` empty
+   * marks the failure without a body, which is what an HTTP error reports.
+   *
+   * Returns whether a card on the current layout draws this picture and was
+   * drawing the fallback until now, which is the caller's signal to rebuild
+   * the page. A picture nothing draws changes nothing on screen and must
+   * cost no rebuild: the editor prefetches the whole catalog, and rebuilding
+   * the room page once per prefetched row would be a page rebuilt eight
+   * times for a page that did not change. */
+  bool icon_downloaded(const std::string &id, const std::string &payload);
+#ifdef USE_LVGL
+  /* The picture one card should draw, or nullptr when this build has nothing
+   * downloaded for it and the caller should fall back to its own artwork.
+   * Cards naming the same identifier are handed the same descriptor. */
+  const lv_image_dsc_t *icon_for(const Card &card, const Entry *entry);
+#endif
+  /* Which identifier a card resolves to, before the cache is consulted: the
+   * registry's choice, or the legacy per-card name a layout written by an
+   * older editor still carries. Empty means the domain decides. */
+  std::string card_icon_id(const Card &card, const Entry *entry) const;
+  /* Marks the icons the current layout draws so that they are never evicted
+   * from under an LVGL widget. Called whenever the cards or the registry
+   * change, which is the only time the answer can move. */
+  void refresh_icon_pins();
 
   // ------------------------------------------------------- the registry
   //
@@ -446,6 +621,8 @@ class MediaControllerGrid final : public AsyncWebHandler, public Component {
 
   void handle_editor_(AsyncWebServerRequest *request);
   void handle_skin_preview_(AsyncWebServerRequest *request, const char *url);
+  void handle_icon_(AsyncWebServerRequest *request, const char *url);
+  void handle_set_card_(AsyncWebServerRequest *request);
   void handle_entities_(AsyncWebServerRequest *request);
   void handle_get_layout_(AsyncWebServerRequest *request);
   void handle_save_layout_(AsyncWebServerRequest *request);
@@ -474,6 +651,36 @@ class MediaControllerGrid final : public AsyncWebHandler, public Component {
   std::vector<Card> cards_;
   ESPPreferenceObject pref_;
 
+  /* The catalog Home Assistant publishes, and the pictures downloaded from
+   * it. Both are read by the server task and written by the main loop, so
+   * both are under the lock below. */
+  std::vector<CatalogIcon> catalog_;
+  uint32_t catalog_revision_{0};
+  std::vector<std::unique_ptr<CachedIcon>> icons_;
+  /* When the editor last asked what this device knows. Icons the cards do
+   * not use are fetched only for ICON_PREFETCH_MS after it, because they
+   * exist to be looked at in a list nobody has open the rest of the time. */
+  uint32_t editor_seen_ms_{0};
+  /* The identifier handed to the fetcher and not yet answered. One at a
+   * time: each is six kilobytes through a request that blocks the main
+   * loop. */
+  std::string icon_in_flight_;
+
+  /* Returns the cache row for an identifier, creating it when asked. Both
+   * forms expect the lock to be held. */
+  CachedIcon *find_icon_(const std::string &id);
+  CachedIcon *reserve_icon_(const std::string &id);
+  /* Frees the least useful row so that a new one fits: a failure first, then
+   * the least recently used picture no card is drawing. Returns false when
+   * every row is pinned, which is the signal to keep the built-in artwork
+   * rather than evict something a widget is pointing at. */
+  bool evict_icon_();
+  /* Whether this is something the catalog could plausibly have published. It
+   * is checked before an identifier is stored, asked for, or turned into a
+   * request, so nothing that reaches the wire came unexamined off a URL. */
+  static bool icon_id_is_sane_(const std::string &id);
+  bool catalog_has_(const std::string &id) const;
+
   /* The routes are answered on the HTTP server's own task, and everything
    * they read is written by the main loop: the registry is replaced when a
    * poll brings a new revision, and the layout when one is saved. A vector of
@@ -489,6 +696,8 @@ class MediaControllerGrid final : public AsyncWebHandler, public Component {
   std::function<void(std::string)> backup_{};
   std::function<void()> restore_{};
   std::function<void(std::string)> skin_writer_{};
+  std::function<void(std::string)> card_writer_{};
+  std::function<void(std::string)> icon_fetcher_{};
 
   std::string skin_;
   bool skin_writable_{false};
@@ -496,16 +705,26 @@ class MediaControllerGrid final : public AsyncWebHandler, public Component {
   RestoreState restore_state_{RESTORE_IDLE};
   std::string restore_message_;
 
+  CardWriteState card_state_{CARD_IDLE};
+  std::string card_message_;
+
   /* The body of the request being received. esp_http_server hands a raw body
    * over in chunks and services one request at a time, so a single buffer is
    * enough. */
   std::string body_;
 };
 
-/* The artwork this build carries, in the order the editor offers it. A card
- * stores the index rather than the name so that the whole grid stays eight
- * bytes per card; the document keeps the name, because it is shared with a
- * panel whose artwork is its own. */
+/* The artwork this build carries in flash. It is no longer what the editor
+ * offers — that is the catalog Home Assistant publishes — but the fallback
+ * underneath it: what a card draws before Home Assistant has answered, while
+ * it is unreachable, when a download fails, and for an identifier this build
+ * has never heard of.
+ *
+ * A card may still carry one of these names as its own `icon`, because a
+ * layout document written by an older editor does, and the index in `Card` is
+ * how that is stored. It is read and honoured and never written again: the
+ * editor writes the identifier to the registry now, where a second panel and
+ * a wiped device can both find it. */
 extern const char *const ICON_NAMES[];
 extern const size_t ICON_COUNT;
 

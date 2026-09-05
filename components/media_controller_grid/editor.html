@@ -134,6 +134,41 @@ input[type=color] { padding: 2px; height: 40px; background: #16273c; border: 1px
   background: #0d1826;
 }
 .skin-preview.current { border-color: var(--accent); color: var(--accent); }
+/* The card artwork, offered the same way the skins are and for the same
+   reason: a name says nothing about a picture. The pictures come from the
+   catalog the Media Controller integration publishes, through this device —
+   the editor never reaches Home Assistant and holds no token. A tile whose
+   image does not arrive keeps its name and drops the image, exactly as a
+   skin with no picture does. */
+.icons {
+  display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px;
+}
+.icon-tile {
+  flex: 0 0 auto; display: flex; flex-direction: column; align-items: center;
+  gap: 4px; padding: 6px 4px; width: 62px; min-height: 0; font-size: 11px;
+  color: var(--muted); background: #16273c; border: 1px solid var(--edge);
+  border-radius: 9px; overflow: hidden;
+}
+.icon-tile img {
+  display: block; width: 32px; height: 32px; image-rendering: auto;
+}
+.icon-tile .label {
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.icon-tile.current { border-color: var(--accent); color: var(--accent); }
+/* The Automatic tile has no picture to show, so it shows the word instead
+   and keeps the same footprint as the ones that do. */
+.icon-tile .auto {
+  display: flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; font-size: 17px; color: var(--muted);
+}
+.card .art {
+  position: absolute; top: 6px; right: 6px; width: 20px; height: 20px;
+  opacity: .85;
+}
+#status.warn { color: #e8c46a; }
+#card-name { min-width: 0; }
 /* Adding a card is the one action with no control of its own — it is two
    taps, in two different places — so it says so where the entities are. */
 #palette-hint { margin-bottom: 11px; }
@@ -170,9 +205,18 @@ input[type=color] { padding: 2px; height: 40px; background: #16273c; border: 1px
             <select id="entity"></select>
           </div>
           <div class="row">
+            <label for="card-name">Name</label>
+            <input type="text" id="card-name" autocomplete="off"
+                   placeholder="From Home Assistant">
+            <button id="clear-name"
+                    title="Use the name Home Assistant gives this entity"
+                    >Auto</button>
+          </div>
+          <div class="row">
             <label for="icon">Icon</label>
             <select id="icon"></select>
           </div>
+          <div class="icons" id="icon-previews"></div>
           <div class="row" id="color-row">
             <label for="color">Colour</label>
             <input type="color" id="color" value="#4dd0e1">
@@ -213,7 +257,22 @@ input[type=color] { padding: 2px; height: 40px; background: #16273c; border: 1px
 
 var grid = { v: 1, cols: 8, rows: 8, cards: [] };
 var entities = [];
+/* The card artwork the Media Controller integration publishes, as
+   {id, label} rows. It is the device's answer and never a list written down
+   here a second time: adding a picture to the integration must not mean
+   changing this page, and it must not mean reflashing anything either.
+
+   An older device answers with an array of plain strings, so both shapes are
+   accepted and a string becomes its own label. */
 var icons = [];
+/* How long a display name may be. The device says, so the limit lives in one
+   place; this is only the value used before it has answered. */
+var nameLimit = 64;
+/* Identifiers whose picture this device could not produce. Selecting one card
+   after another re-renders the tiles, so without this a picture that cannot
+   be had would take over the status line every time somebody touched a
+   card. */
+var iconMisses = {};
 /* What the device says it can draw. Absent keys read as "yes", so a
    device that says nothing gets the page it always had. */
 var supports = { colors: true };
@@ -242,6 +301,63 @@ function say(text, kind) {
 function markDirty(value) {
   dirty = value;
   saveEl.disabled = !value;
+}
+
+/* Which picture a card draws, in the order the device resolves it: what the
+   person chose, kept in Home Assistant against the registry element, and then
+   the name a layout document written by an older editor still carries. The
+   second is honoured and never written again — choosing anything clears it,
+   which is why the icon control marks the layout dirty. */
+function iconFor(card, entity) {
+  if (entity && entity.icon) { return entity.icon; }
+  if (card && card.icon) { return card.icon; }
+  return "";
+}
+
+/* What one catalog row is called. An older device answers with plain
+   strings, and a string is its own label. */
+function iconLabel(icon) {
+  if (typeof icon === "string") { return icon; }
+  return (icon && (icon.label || icon.id)) || "";
+}
+
+function iconId(icon) {
+  if (typeof icon === "string") { return icon; }
+  return (icon && icon.id) || "";
+}
+
+/* One picture, asked of this device rather than of Home Assistant: the
+   browser holds no token and must never be given one, and the device has
+   already fetched these for its own cards. The two panels serve different
+   image formats out of what each of them happens to hold, which is why there
+   is no extension here — the page asks for the icon, not for a file. */
+function iconImage(id, onMissing) {
+  var image = document.createElement("img");
+  image.alt = "";
+  image.decoding = "async";
+  /* Asking for a picture is also what puts it on the device's list, so the
+     first render of a catalog it has not fetched yet is a miss per row and
+     the retries are what fill them in. They are spread out rather than
+     hammered: each one costs the device an HTTP request, and on the ESP32
+     that blocks its main loop. After the last attempt the image is dropped
+     and the name stands on its own, exactly as it does for a skin the device
+     carries no picture of. */
+  var delays = [1200, 2500, 4000, 6000];
+  var attempt = 0;
+  image.addEventListener("error", function () {
+    if (attempt >= delays.length) {
+      image.remove();
+      if (onMissing) { onMissing(id); }
+      return;
+    }
+    var wait = delays[attempt];
+    attempt += 1;
+    setTimeout(function () {
+      image.src = "/icons/" + encodeURIComponent(id) + "?try=" + attempt;
+    }, wait);
+  });
+  image.src = "/icons/" + encodeURIComponent(id);
+  return image;
 }
 
 function entityFor(rid) {
@@ -337,6 +453,13 @@ function cardNode(card, index) {
     node.appendChild(swatch);
   }
 
+  var art = iconFor(card, entity);
+  if (art) {
+    var picture = iconImage(art);
+    picture.className = "art";
+    node.appendChild(picture);
+  }
+
   var kind = document.createElement("div");
   kind.className = "kind";
   kind.textContent = entity ? entity.domain : "unknown";
@@ -392,7 +515,10 @@ function startDrag(event, index, resizing) {
     origin.w = candidate.w;
     origin.h = candidate.h;
     layoutCards();
-    renderEditor();
+    /* Only the geometry: a drag changes nothing else the panel shows, and
+       rebuilding the whole of it here would rebuild the icon list — a tile
+       and an image request per catalog row — several times a second. */
+    renderCardGeometry();
     markDirty(true);
   }
 
@@ -444,6 +570,15 @@ function select(index) {
   renderEditor();
 }
 
+/* The one line a drag moves. Split out of renderEditor so that dragging a
+   card costs a string rather than a rebuilt panel. */
+function renderCardGeometry() {
+  var card = selected >= 0 ? grid.cards[selected] : null;
+  if (!card) { return; }
+  document.getElementById("size").textContent =
+    card.w + " x " + card.h + " cells at " + card.x + "," + card.y;
+}
+
 function renderEditor() {
   var card = selected >= 0 ? grid.cards[selected] : null;
   fieldsEl.hidden = !card;
@@ -467,23 +602,51 @@ function renderEditor() {
   }
   entitySelect.value = card.rid;
 
+  /* The name on the tile. It shows what the card says now, which is the
+     label the person typed or, when they typed none, the name Home Assistant
+     gives the entity — and clearing the field is how you go back to the
+     second. There is no third value to show: the payload carries the name in
+     force and not both of them, because sixty-four elements times two names
+     is a payload this device reads out of a fixed buffer. */
+  var nameInput = document.getElementById("card-name");
+  nameInput.value = known ? known.name : "";
+  nameInput.maxLength = nameLimit;
+  nameInput.disabled = !known;
+  document.getElementById("clear-name").disabled = !known;
+
+  var chosen = iconFor(card, known);
   var iconSelect = document.getElementById("icon");
   iconSelect.textContent = "";
   var auto = document.createElement("option");
   auto.value = "";
   auto.textContent = "Automatic";
   iconSelect.appendChild(auto);
+  var offered = {};
   for (var j = 0; j < icons.length; j++) {
+    var id = iconId(icons[j]);
+    if (!id) { continue; }
+    offered[id] = true;
     var iconOption = document.createElement("option");
-    iconOption.value = icons[j];
-    iconOption.textContent = icons[j];
+    iconOption.value = id;
+    iconOption.textContent = iconLabel(icons[j]);
     iconSelect.appendChild(iconOption);
   }
-  iconSelect.value = card.icon || "";
+  /* A picture this card names that the catalog no longer publishes. It is
+     still what the card is drawing, so it is still what the list has to show:
+     silently reading as Automatic would tell somebody their icon was gone the
+     moment they touched anything else on the card. */
+  if (chosen && !offered[chosen]) {
+    var stale = document.createElement("option");
+    stale.value = chosen;
+    stale.textContent = chosen + " (not in the catalog)";
+    iconSelect.appendChild(stale);
+  }
+  iconSelect.value = chosen;
+  iconSelect.disabled = !known;
+  renderIconTiles(chosen, !known);
 
   document.getElementById("color").value = card.color || "#4dd0e1";
-  document.getElementById("size").textContent =
-    card.w + " x " + card.h + " cells at " + card.x + "," + card.y;
+  renderCardGeometry();
 }
 
 function renderPalette() {
@@ -545,11 +708,229 @@ document.getElementById("entity").addEventListener("change", function () {
   renderCards();
 });
 
+/* The tiles beside the list, and the same rule the skin tiles follow: a tap
+   writes the select's value and fires its change event, so choosing an icon
+   stays in one handler however it was chosen. */
+function renderIconTiles(current, disabled) {
+  var box = document.getElementById("icon-previews");
+  box.textContent = "";
+
+  var rows = [{ id: "", label: "Automatic" }];
+  for (var i = 0; i < icons.length; i++) {
+    var id = iconId(icons[i]);
+    if (id) { rows.push({ id: id, label: iconLabel(icons[i]) }); }
+  }
+
+  rows.forEach(function (row) {
+    var tile = document.createElement("button");
+    tile.className = "icon-tile" + (row.id === current ? " current" : "");
+    tile.dataset.icon = row.id;
+    tile.title = row.label;
+    tile.disabled = !!disabled;
+
+    if (row.id) {
+      /* Only the picture this card is actually drawing is worth a message.
+         A catalog row nobody chose that did not arrive is a gap in a list,
+         and saying so once per row would bury the status line. */
+      tile.appendChild(
+        iconImage(row.id, row.id === current ? reportIconMiss : null));
+    } else {
+      var mark = document.createElement("span");
+      mark.className = "auto";
+      mark.textContent = "\u2013";
+      tile.appendChild(mark);
+    }
+
+    var label = document.createElement("span");
+    label.className = "label";
+    label.textContent = row.label;
+    tile.appendChild(label);
+
+    tile.addEventListener("click", function () {
+      var select = document.getElementById("icon");
+      if (select.disabled || select.value === row.id) { return; }
+      select.value = row.id;
+      select.dispatchEvent(new Event("change"));
+    });
+    box.appendChild(tile);
+  });
+}
+
+/* A picture this device could not produce. It is not an error in the layout
+   and never stops anything: the card falls back to the artwork built into the
+   device, and this only explains the gap where one is visible. */
+function reportIconMiss(id) {
+  if (iconMisses[id]) { return; }
+  iconMisses[id] = true;
+  say("This device could not load the " + id + " icon, so its cards draw " +
+      "the built-in artwork instead.", "warn");
+}
+
+/* Everything that changes how one card is labelled goes through here.
+   The name and the icon both belong to the registry element, which is Home
+   Assistant's, so this device is asked to pass the change on and the new
+   value comes back the ordinary way, in the next poll. Nothing about the
+   grid is written by this: moving a card is a layout change and saved with
+   Save, and naming one is not. */
+function writeCard(rid, changes, described) {
+  var body = { rid: rid };
+  if (changes.hasOwnProperty("name")) { body.name = changes.name; }
+  if (changes.hasOwnProperty("icon")) { body.icon = changes.icon; }
+
+  say("Asking Home Assistant to " + described + "\u2026");
+  return fetch("/api/card", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  }).then(function (response) {
+    return response.json().then(function (answer) {
+      if (!response.ok) {
+        /* The device refused it, which means the value itself is wrong: too
+           long a name, a control character in it, an icon nothing publishes,
+           or a card this device does not draw. Saying so here is the whole
+           point of the device checking as well as Home Assistant. */
+        throw new Error(answer.error || "The change was refused.");
+      }
+      return answer;
+    });
+  }).then(function (answer) {
+    if (answer.synced === false) {
+      /* Nothing was stored anywhere: the name and the icon live in Home
+         Assistant, and this device has not paired with one. */
+      throw new Error("This device is not paired with Home Assistant, so " +
+                      "the change was not saved.");
+    }
+    return awaitCard(12);
+  });
+}
+
+/* Asks the device how the change it was given ended.
+
+   It cannot be answered inside the request that started it: the write reaches
+   Home Assistant over HTTP, which blocks the device's main loop, so the
+   device takes the request and reports the outcome on /api/entities, which is
+   the route that says what this device's situation is. A device that answers
+   synchronously simply reports "ok" on the first ask. */
+function awaitCard(attempts) {
+  if (attempts <= 0) {
+    return { settled: false, message: "" };
+  }
+  return new Promise(function (resolve) { setTimeout(resolve, 500); })
+    .then(function () { return fetch("/api/entities"); })
+    .then(function (response) { return response.json(); })
+    .then(function (body) {
+      var card = body.card || {};
+      if (card.state === "pending") { return awaitCard(attempts - 1); }
+      if (card.state === "failed") {
+        throw new Error(card.message || "Home Assistant refused the change.");
+      }
+      /* Deliberately **not** re-read from this answer. Home Assistant has
+         accepted the change, but the device's own copy of the registry does
+         not move until its next config poll — up to a second later — so what
+         is in this body is still the previous name. Taking it would put the
+         old value straight back into the field somebody just changed. The
+         page keeps what it asked for, which is what was stored; a reload
+         reads the device's own payload the ordinary way, and a refusal is
+         put right by loadEntities in the catch below. */
+      return { settled: true, message: card.message || "" };
+    });
+}
+
 document.getElementById("icon").addEventListener("change", function () {
   if (selected < 0) { return; }
-  if (this.value) { grid.cards[selected].icon = this.value; }
-  else { delete grid.cards[selected].icon; }
-  markDirty(true);
+  var card = grid.cards[selected];
+  var rid = card.rid;
+  var chosen = this.value;
+  /* A layout document written by an older editor names the picture itself,
+     and that name would go on shadowing the choice made here. Clearing it is
+     a change to the layout and therefore something to Save, which is why the
+     message below says so when it happened and stays quiet when it did
+     not. */
+  var hadOwn = !!card.icon;
+  if (hadOwn) { delete card.icon; markDirty(true); }
+
+  var known = entityFor(rid);
+  if (known) { known.icon = chosen; }
+  renderCards();
+
+  writeCard(rid, { icon: chosen }, chosen ? "use the " + chosen + " icon"
+                                          : "choose the icon automatically")
+    .then(function (outcome) {
+      renderCards();
+      if (!outcome.settled) {
+        say("Home Assistant has not confirmed the icon yet.", "warn");
+      } else if (hadOwn) {
+        say("Icon saved in Home Assistant. This card also named one of its " +
+            "own; press Save to drop it.", "warn");
+      } else {
+        say("Icon saved in Home Assistant.", "ok");
+      }
+    })
+    .catch(function (error) {
+      say(String(error.message || error), "error");
+      /* Put back what the device actually has, so the control never shows a
+         choice that was refused. */
+      loadEntities().then(renderCards);
+    });
+});
+
+/* Both ways of setting a name end here, so the rule about what an empty one
+   means is written once. */
+function applyName(value) {
+  if (selected < 0) { return; }
+  var rid = grid.cards[selected].rid;
+  var known = entityFor(rid);
+  if (!known) { return; }
+
+  var name = String(value == null ? "" : value).trim();
+  if (name.length > nameLimit) {
+    say("A name may be at most " + nameLimit + " characters.", "error");
+    return;
+  }
+  var was = known.name;
+  if (name === was) { return; }
+
+  /* The tile shows the new name at once. It is put back from the device's
+     own answer either way, so an optimistic preview cannot survive a
+     refusal. */
+  known.name = name;
+  renderCards();
+
+  writeCard(rid, { name: name }, name ? "call this card " + name
+                                      : "use the Home Assistant entity name")
+    .then(function (outcome) {
+      renderCards();
+      var applied = entityFor(rid);
+      document.getElementById("card-name").value = applied ? applied.name : "";
+      if (!outcome.settled) {
+        say("Home Assistant has not confirmed the name yet.", "warn");
+      } else if (name) {
+        say("Name saved in Home Assistant.", "ok");
+      } else {
+        /* Cleared, so the tile is back to whatever Home Assistant calls the
+           entity — and it follows that name from now on, including through a
+           rename. */
+        say("The Home Assistant entity name is back.", "ok");
+      }
+    })
+    .catch(function (error) {
+      known.name = was;
+      say(String(error.message || error), "error");
+      loadEntities().then(renderCards);
+    });
+}
+
+document.getElementById("card-name").addEventListener("change", function () {
+  applyName(this.value);
+});
+
+document.getElementById("card-name").addEventListener("keydown", function (e) {
+  if (e.key === "Enter") { e.preventDefault(); this.blur(); }
+});
+
+document.getElementById("clear-name").addEventListener("click", function () {
+  document.getElementById("card-name").value = "";
+  applyName("");
 });
 
 document.getElementById("color").addEventListener("change", function () {
@@ -779,6 +1160,11 @@ function loadEntities() {
     .then(function (body) {
       entities = body.entities || [];
       icons = body.icons || [];
+      /* What the device will accept, so the field and the device cannot
+         disagree about it. An older device says nothing and the built-in
+         value stands. */
+      var limits = body.limits || {};
+      if (limits.name > 0) { nameLimit = limits.name; }
       var says = body.supports || {};
       supports.colors = says.colors !== false;
       /* Hidden rather than disabled: a control that cannot do anything

@@ -7,6 +7,7 @@
 #include "panel_display.h"
 #include "panel_pairing.h"
 #include "panel_ui.h"
+#include "panel_cards.h"
 #include "panel_web.h"
 #include "system_status.h"
 
@@ -65,6 +66,14 @@ typedef struct {
      * in config.ini or its port could not be bound. The room page works
      * either way; only the editing does not. */
     PanelWeb *web;
+    /* The card artwork: the catalog Home Assistant publishes and the
+     * pictures downloaded from it, held for the editor to serve. Neither is
+     * ever fetched more often than it changes — the catalog moves when the
+     * integration is upgraded, and a picture never does. */
+    PanelCards *cards;
+    gint64 next_catalog_poll_us;
+    gboolean catalog_pending;
+    gboolean icon_pending;
     /* The last payload written to the layout cache. It is compared before
      * every write: the config sensor is polled every cycle, and rewriting an
      * unchanged file once a second would wear the tablet's flash and would
@@ -1264,7 +1273,7 @@ static void poll_room_cards(PanelApplication *application)
  * entity is asked at most every forty-five minutes, through the ordinary
  * service channel and naming that entity alone — never the full state list
  * AGENTS.md forbids. */
-#define PANEL_FORECAST_INTERVAL_US (45 * 60 * G_USEC_PER_SEC)
+#define PANEL_FORECAST_INTERVAL_US ((gint64)45 * 60 * G_USEC_PER_SEC)
 
 typedef struct {
     PanelApplication *application;
@@ -1487,6 +1496,108 @@ static void maybe_poll_forecast(PanelApplication *application, gint64 now)
  * an endpoint of its own rather than a block on the config sensor: the config
  * sensor is polled every second, and a layout is read twice in the life of a
  * panel. See the panel layout endpoint in docs/CONTRACT.md. */
+/* ------------------------------------------------------------- card art */
+
+/* How often the catalog is asked for. It changes when the Media Controller
+ * integration is upgraded and never otherwise, so anything oftener would be a
+ * request spent on an answer that is always the same. It is deliberately not
+ * a block on the config sensor for the same reason the layout backup is not:
+ * that payload is polled about once a second. */
+#define PANEL_CATALOG_INTERVAL_US ((gint64)6 * 60 * 60 * G_USEC_PER_SEC)
+
+static void catalog_finished(guint status_code, GBytes *body,
+                             const GError *error, gpointer user_data)
+{
+    PanelApplication *application = user_data;
+    gsize length = 0;
+    const gchar *data = body != NULL ? g_bytes_get_data(body, &length) : NULL;
+
+    application->catalog_pending = FALSE;
+    if (error != NULL || status_code < 200 || status_code >= 300 ||
+        data == NULL) {
+        /* Not reported anywhere a person looks: an unreachable Home
+         * Assistant is already visible on the status line, and every card
+         * keeps the artwork this build carries. */
+        g_debug("The icon catalog could not be read");
+        return;
+    }
+    panel_cards_set_catalog(application->cards, data, (gssize)length);
+}
+
+typedef struct {
+    PanelApplication *application;
+    gchar *icon;
+} IconRequest;
+
+static void icon_request_free(gpointer user_data)
+{
+    IconRequest *request = user_data;
+
+    if (request == NULL)
+        return;
+    g_free(request->icon);
+    g_free(request);
+}
+
+static void icon_finished(guint status_code, GBytes *body,
+                          const GError *error, gpointer user_data)
+{
+    IconRequest *request = user_data;
+    PanelApplication *application = request->application;
+
+    application->icon_pending = FALSE;
+    if (error != NULL || status_code < 200 || status_code >= 300 ||
+        body == NULL || g_bytes_get_size(body) == 0) {
+        /* Recorded as a miss so that it is left alone for a while instead of
+         * asked for on every tick. The editor drops the image and keeps the
+         * name, and every card keeps the artwork this build carries. */
+        panel_cards_mark_missing(application->cards, request->icon);
+        return;
+    }
+    panel_cards_store_image(application->cards, request->icon, body);
+}
+
+/* One picture at a time, and only what the catalog says exists. Each is a
+ * couple of kilobytes and they are spread over the poll rather than fetched
+ * in a burst, because the GTK main loop on this tablet is a release
+ * requirement and a burst of downloads is exactly what it must not do. */
+static void maybe_fetch_card_art(PanelApplication *application, gint64 now)
+{
+    if (application->client == NULL)
+        return;
+
+    if (!application->catalog_pending &&
+        (application->next_catalog_poll_us == 0 ||
+         now >= application->next_catalog_poll_us)) {
+        application->next_catalog_poll_us = now + PANEL_CATALOG_INTERVAL_US;
+        application->catalog_pending = home_assistant_client_get_path(
+            application->client, "/api/media_controller/icons",
+            catalog_finished, application, NULL);
+    }
+
+    if (application->icon_pending)
+        return;
+
+    const gchar *wanted = panel_cards_next_wanted(application->cards);
+    if (wanted == NULL)
+        return;
+
+    /* The identifier is the catalog's, already checked against the shape the
+     * integration publishes and found in the list it published. Nothing a
+     * caller typed reaches this line. */
+    gchar *path = g_strdup_printf("/api/media_controller/icon/%s/png",
+                                  wanted);
+    IconRequest *request = g_new0(IconRequest, 1);
+    request->application = application;
+    request->icon = g_strdup(wanted);
+    application->icon_pending = home_assistant_client_get_path(
+        application->client, path, icon_finished, request,
+        icon_request_free);
+    if (!application->icon_pending)
+        icon_request_free(request);
+    g_free(path);
+}
+
 static gchar *layout_backup_path(PanelApplication *application)
 {
     gchar *escaped = g_uri_escape_string(application->config->panel_id, NULL,
@@ -1658,6 +1769,99 @@ static gboolean editor_select_skin(const gchar *name, gchar **error_message,
     return called;
 }
 
+static PanelCards *editor_cards(gpointer user_data)
+{
+    PanelApplication *application = user_data;
+    return application->cards;
+}
+
+static void card_write_finished(guint status_code, GBytes *body,
+                                const GError *error, gpointer user_data)
+{
+    PanelApplication *application = user_data;
+
+    (void)body;
+    if (error != NULL) {
+        panel_cards_write_finished(application->cards, FALSE,
+                                   "Home Assistant could not be reached.");
+        return;
+    }
+    if (status_code < 200 || status_code >= 300) {
+        gchar *text = g_strdup_printf(
+            "Home Assistant refused the change (HTTP %u).", status_code);
+        panel_cards_write_finished(application->cards, FALSE, text);
+        g_free(text);
+        return;
+    }
+    /* The new name and icon arrive back the ordinary way, in the next config
+     * poll, because Home Assistant owns the registry and this panel only
+     * asked. Nothing is written locally, so there is nothing to redraw
+     * here. */
+    panel_cards_write_finished(application->cards, TRUE, "");
+}
+
+/* Asks Home Assistant to store the display name and the icon of one registry
+ * element, and nothing else. The rid is one this panel is already drawing —
+ * panel_web checked before calling — the name has already been through
+ * panel_card_name_normalize, and the icon is one the published catalog
+ * carries. The integration checks all three again, because it is the side
+ * that owns the registry.
+ *
+ * A NULL argument means "leave that one alone", and it is left out of the
+ * body rather than sent empty: an empty name means "use the Home Assistant
+ * entity's own name", so the two could not share a spelling. */
+static gboolean editor_write_card(const gchar *rid, const gchar *name,
+                                  const gchar *icon, gchar **error_message,
+                                  gpointer user_data)
+{
+    PanelApplication *application = user_data;
+
+    if (application->config->panel_id == NULL ||
+        *application->config->panel_id == '\0') {
+        *error_message = g_strdup(
+            "This panel is not paired with Home Assistant, so the change "
+            "was not saved.");
+        return FALSE;
+    }
+
+    JsonBuilder *builder = json_builder_new();
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "rid");
+    json_builder_add_string_value(builder, rid);
+    if (name != NULL) {
+        json_builder_set_member_name(builder, "name");
+        json_builder_add_string_value(builder, name);
+    }
+    if (icon != NULL) {
+        json_builder_set_member_name(builder, "icon");
+        json_builder_add_string_value(builder, icon);
+    }
+    json_builder_end_object(builder);
+
+    gchar *json = json_builder_to_string(builder);
+    gchar *escaped = g_uri_escape_string(application->config->panel_id, NULL,
+                                         TRUE);
+    gchar *path = g_strdup_printf("/api/media_controller/panel_card/%s",
+                                  escaped);
+
+    panel_cards_write_started(application->cards);
+    gboolean sent = home_assistant_client_post_path(
+        application->client, path, json, card_write_finished, application,
+        NULL);
+
+    g_free(path);
+    g_free(escaped);
+    g_free(json);
+    g_object_unref(builder);
+
+    if (!sent) {
+        panel_cards_write_finished(application->cards, FALSE,
+                                   "The Home Assistant URL is not usable.");
+        *error_message = g_strdup("The Home Assistant URL is not usable.");
+    }
+    return sent;
+}
+
 static void start_editor(PanelApplication *application)
 {
     static const PanelWebCallbacks CALLBACKS = {
@@ -1666,7 +1870,9 @@ static void start_editor(PanelApplication *application)
         .grid = editor_grid,
         .save_grid = editor_save_grid,
         .restore = editor_restore,
-        .select_skin = editor_select_skin
+        .select_skin = editor_select_skin,
+        .cards = editor_cards,
+        .write_card = editor_write_card
     };
     gchar *failure = NULL;
 
@@ -1727,6 +1933,7 @@ static gboolean poll_states(gpointer user_data)
     }
     poll_room_cards(application);
     maybe_poll_forecast(application, now);
+    maybe_fetch_card_art(application, now);
 
     /* Every request was rejected before it started, so no callback will run
      * to report the outcome. */
@@ -1904,6 +2111,7 @@ static PanelApplication *panel_application_new(void)
     application->queue_ids = g_ptr_array_new_with_free_func(g_free);
     application->playlist_names = g_ptr_array_new_with_free_func(g_free);
     application->playlist_uris = g_ptr_array_new_with_free_func(g_free);
+    application->cards = panel_cards_new();
     return application;
 }
 
@@ -1923,6 +2131,8 @@ static void panel_application_free(PanelApplication *application)
     /* Before the interface: a request in flight calls back into it. */
     panel_web_free(application->web);
     home_assistant_client_free(application->client);
+    /* After the client: a download in flight writes into it. */
+    panel_cards_free(application->cards);
     panel_ui_free(application->ui);
     app_config_free(application->config);
     g_ptr_array_unref(application->queue_titles);

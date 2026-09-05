@@ -359,6 +359,12 @@ class EntityPayload:
     min_temp: float | None = None
     max_temp: float | None = None
     target_temp_step: float | None = None
+    # The catalog identifier of the picture this tile draws, or "" when the
+    # user chose none and the client draws whatever its domain suggests. It
+    # is a name and never a position, so the catalog may be reordered without
+    # moving anybody's icon, and a client that does not know it ignores it
+    # exactly as it ignores a control it cannot draw.
+    icon: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         """Return the client-facing registry object."""
@@ -369,6 +375,11 @@ class EntityPayload:
             "domain": self.domain,
             "controls": list(self.controls),
         }
+        # Sent only when one was chosen. An absent key and an empty one mean
+        # the same thing to a client, and leaving it out keeps the payload of
+        # an installation that has chosen no icons exactly the size it was.
+        if self.icon:
+            payload["icon"] = self.icon
         if self.min_kelvin is not None:
             payload["min_kelvin"] = self.min_kelvin
         if self.max_kelvin is not None:

@@ -70,6 +70,7 @@ firmware/media-controller-ui.yaml     Shared ESPHome interface: display, LVGL, t
 firmware/media-controller.yaml        Classic transport: native API, flashed config
 firmware/media-controller-paired.yaml Paired transport: REST, config from Home Assistant
 firmware/assets/                      Image assets, fetched at compile time
+custom_components/media_controller/icons/  Card artwork the integration serves to panels
 components/media_controller_grid/     ESPHome external component: the paired room grid and its editor
 clients/t560/                         GTK3 tablet panel (C, Python helpers)
 docs/                                 Cross-component documentation
@@ -115,6 +116,7 @@ of the integration and every affected client.
 
 ```text
 python -m unittest discover -s tests -v                 # integration transformations
+python tools/make-icon-assets.py --check                # card artwork is in step with the catalog
 cd clients/t560 && make test                            # panel JSON parsing + helpers
 esphome config firmware/media-controller.yaml           # classic firmware
 esphome config firmware/media-controller-paired.yaml    # paired firmware

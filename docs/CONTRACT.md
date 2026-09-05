@@ -125,6 +125,26 @@ What version 7 adds, precisely:
 `toggle` is **not** new and means on a thermostat what it has always meant:
 the element can be turned off and on again. See **Climate cards** below.
 
+**Card appearance** was added after version 7 and moves no version number,
+for the same reason **Room states** below does not: nothing already in the
+payload changes shape, and a client that knows none of it behaves exactly as
+it did before any of it existed. It is three things:
+
+- one optional key on a registry element, `icon`, naming a picture from a
+  catalog the integration publishes. An older client ignores it and draws
+  whatever it drew before;
+- two read-only endpoints, **Card artwork** below, that publish the catalog
+  and serve one picture at a time. A client that does not ask never learns
+  they exist;
+- one write endpoint, **Card appearance endpoint** below, through which a
+  panel that hosts its own layout editor asks Home Assistant to store the
+  display name and the icon of an element it already draws.
+
+`name` is not new either, and neither is where it comes from. What is new is
+that something can now set it: the field has been in the registry since
+version 6 and no flow wrote it, so every tile has been named after its Home
+Assistant entity. See **Display names** below.
+
 ## Producer
 
 `custom_components/media_controller` creates one device per configured Music
@@ -372,6 +392,7 @@ client profile allows, in any of the groups below, and removes them again.
   "rid": "a3f1c92d",
   "entity": "light.desk_lamp",
   "name": "Настільна лампа",
+  "icon": "desk-lamp",
   "domain": "light",
   "controls": ["toggle", "brightness", "color_temp"],
   "min_kelvin": 2200,
@@ -394,7 +415,17 @@ client profile allows, in any of the groups below, and removes them again.
   per-installation: never hardcode one.
 - `name` is what the tile says. It is the label the user typed, or the
   entity's `friendly_name` when they typed none, and it is UTF-8: Cyrillic and
-  every other script survive intact.
+  every other script survive intact. Only the name in force travels: a client
+  is not told which of the two it is looking at, because sixty-four elements
+  times two names is a payload the paired ESP32 reads out of a fixed buffer
+  for a distinction nothing draws. See **Display names** below.
+- `icon` is the catalog identifier of the picture the tile draws, and it is
+  **absent when the user chose none**, which is every element until somebody
+  chooses one. A client that does not know the key ignores it and draws what
+  it drew before; a client that does draws the picture and falls back to its
+  own artwork when it cannot. It is a name and never a position: the catalog
+  may be reordered, added to or shortened without moving anybody's icon. See
+  **Card artwork** below.
 - `domain` is the Home Assistant domain of `entity`, repeated here so that a
   client can pick a card without parsing the entity ID. It is one of the group
   domains below. **A client that cannot draw a domain ignores that element**,
@@ -441,6 +472,37 @@ The table describes the contract vocabulary, not a requirement that every
 client draw every domain. A client ignores a domain it cannot draw, so the
 T560 and paired ESP32 may implement different subsets while both speak
 contract version 7.
+
+### Display names
+
+A registry element carries the name its tile shows. Until now nothing wrote
+it: the field existed, the payload carried it, and every flow left it empty,
+so a tile was named after its Home Assistant entity and there was no other
+possibility. A panel that hosts its own layout editor can now set it through
+the **Card appearance endpoint** below.
+
+The rules, and they are the integration's rather than any client's, because
+the integration is what stores the value:
+
+- it is **UTF-8 and every script is accepted**. Cyrillic, Greek, CJK and emoji
+  are ordinary names, and one survives a save, a restart and a restore
+  unchanged;
+- leading and trailing whitespace is **trimmed**, so a field cleared by typing
+  a space is a field that was cleared;
+- **an empty name means "use the Home Assistant entity's own name"**. That is
+  the one value with a meaning of its own, and it is what makes the field
+  clearable without a second control. An element whose name is empty follows
+  its entity through a rename, exactly as it did before names could be set;
+- **control characters are refused**, not stripped. A newline in a tile label
+  is somebody pasting the wrong thing;
+- the length is bounded at **64 characters** — characters, not bytes, so a
+  Cyrillic name may be exactly as long as a Latin one. The bound exists
+  because the paired ESP32 holds the whole registry in RAM and reads it out of
+  a fixed response buffer.
+
+Setting a display name **never renames the Home Assistant entity**. The
+entity keeps its own name, its own entity ID and its own registry row, and a
+person who wants those changed changes them where Home Assistant keeps them.
 
 ### Climate cards
 
@@ -846,6 +908,143 @@ another's battery level.
 Answers: `200` with `{"status": "ok"}`; `400` for an unusable body; `403` when
 the token belongs to another account; `404` when no loaded panel has that ID.
 
+## Card artwork
+
+```text
+GET  /api/media_controller/icons
+GET  /api/media_controller/icon/<icon_id>/<variant>
+```
+
+The pictures a room card can draw. They used to be compiled into each client —
+six in the ESP32 firmware, eight in the tablet — and a card stored a **1-based
+index into that array**, so the set could grow only by reflashing every device
+in the house, and reordering it would have silently moved everybody's icons.
+The catalog is the integration's now, a card stores a stable identifier, and a
+client downloads the picture it needs.
+
+- an **icon identifier** is lowercase letters, digits and hyphens, at most 32
+  characters, and it does not begin with a hyphen. It is stable for the life
+  of the catalog and it is what a registry element stores. The first eight are
+  `light-1`, `light-2`, `desk-lamp`, `desk-led-strip`, `fan`, `ac`, `blind`
+  and `weather` — the names the two clients already carried compiled in, so
+  every icon anybody has already chosen maps to itself and nothing migrates;
+- the **catalog** is a document and carries no image data at all. That is what
+  makes it safe to fetch on a schedule: it changes when the integration is
+  upgraded and never otherwise, and a `revision` says when it did, so a client
+  that has read it once need never read it again;
+- it is deliberately **not a block on the config sensor**, for exactly the
+  reason the layout backup is not one: that sensor is polled every
+  `poll_interval_ms` — once a second by default — and a catalog on it would
+  travel to every panel in the house every second for a list that changes when
+  somebody updates HACS;
+- a **variant** is a supported pixel size or the literal `png`. Anything else
+  is a 404. An open size parameter would be an invitation to ask for 4096 and
+  find out what the device does with it;
+- both routes are **authenticated the ordinary way**, with the token the panel
+  was handed when it paired. The token never reaches a browser: the editor
+  page a panel hosts asks *its own device* for pictures, and the device
+  answers out of what it has already downloaded.
+
+The catalog:
+
+```json
+{
+  "revision": 2098342174,
+  "sizes": [40],
+  "esp32_bytes": 6408,
+  "icons": [
+    {"id": "desk-lamp", "label": "Desk lamp"},
+    {"id": "blind", "label": "Blind"}
+  ]
+}
+```
+
+`label` is what an editor calls the icon. Nothing stores it and nothing
+compares it, so it may be changed freely; `id` may not.
+
+The two variants:
+
+- **`png`** is the source artwork, for a client that can decode one. The T560
+  panel fetches these and serves them to its editor page;
+- **a pixel size** is the picture pre-rendered to exactly that size, in
+  exactly the bytes LVGL blits: an eight-byte header — the ASCII `MCI1` and
+  the size twice, as two little-endian 16-bit values — followed by ARGB8888
+  in the little-endian B, G, R, A order LVGL reads. The only published size is
+  **40**, which is what a card on the paired ESP32 draws, and `esp32_bytes`
+  says what one weighs so a client can size its buffer and refuse a truncated
+  download without parsing anything.
+
+  It is pre-rendered rather than served as a PNG because of a hardware fact,
+  not a preference: the ESP32 firmware sets `LV_COLOR_16_SWAP` and leaves
+  `LV_DRAW_SW_SUPPORT_SWAPPED` off, so LVGL's software renderer cannot
+  transform a source at all — see AGENTS.md — and that device has no PNG
+  decoder to spare either.
+
+What a client must do with all of it:
+
+- **share one decoded picture between every card that names it.** The cache is
+  keyed on the identifier, so a page of sixty-four cards naming three pictures
+  holds three of them and not sixty-four;
+- **keep the cache bounded**, and prefer external RAM where there is any;
+- **never persist the catalog.** It is small, it is cheap to fetch, and a copy
+  in flash is a copy that goes stale;
+- **fall back rather than fail.** An identifier the catalog does not publish,
+  a download that does not arrive, a Home Assistant that cannot be reached and
+  a picture of the wrong shape all mean the same thing to a card: draw the
+  artwork the client carries itself. A missing icon never stops a card, a room
+  page, or navigation.
+
+Answers: `200` with the document or the bytes; `404` for an identifier the
+catalog does not publish, a variant this build does not serve, and a file the
+installation does not carry. A request whose identifier is not of the shape
+above is a `404` before anything is opened: the identifier is resolved to a
+catalog row and the filename is built from the row, so a path cannot be
+expressed in one however it is spelled or escaped.
+
+## Card appearance endpoint
+
+```text
+POST /api/media_controller/panel_card/<panel_id>
+```
+
+```json
+{"rid": "a3f1c92d", "name": "Настільна лампа", "icon": "desk-lamp"}
+```
+
+A panel that hosts its own layout editor uses this to store the two things a
+person can say about how a card is drawn. It is the narrowest endpoint here
+and it is written that way on purpose: the editor a panel serves has no
+authentication of its own — see `docs/ESP32_PAIRED_CONTROLLER.md` — and the
+whole of that decision rests on there being nothing worth reaching through it.
+
+- it changes **one element of one panel's registry, and nothing else**. The
+  `rid` must already be in *that* panel's registry. There is no path here that
+  creates an element, deletes one, points one at a different entity, names an
+  entity at all, calls a service, or touches any other config entry;
+- **a key that is absent means "leave this alone"** and a key that is present
+  means "set it to this, including to nothing". The difference matters: a card
+  whose name field simply shows the Home Assistant entity's own name must not
+  have that name stored as a custom one because somebody changed its icon, or
+  it would stop following the entity through a rename;
+- `name` follows the rules in **Display names** above;
+- `icon` is an identifier the catalog publishes, or `""` for automatic. There
+  is no third option: no URL, no path and no upload;
+- authentication and isolation are the status endpoint's, unchanged. The
+  request carries the panel's own access token and Home Assistant accepts it
+  only from the Home Assistant user created for **that** panel. One panel
+  cannot rename another's cards;
+- nothing is stored on the device. Home Assistant owns the registry, and the
+  new name and icon arrive back the ordinary way, in the next config poll —
+  which is also what makes a house with two panels agree about what a lamp is
+  called without either of them telling the other.
+
+Answers: `200` with `{"status": "ok", "rid": ..., "name": ..., "icon": ...}`,
+echoing what was actually stored, so that a caller can see an empty name come
+back as the entity's own; `400` for a body that is not usable, a name that is
+too long or carries control characters, and an icon the catalog does not
+publish; `403` when the token belongs to another account; `404` when no loaded
+panel has that ID, and when that panel's registry has no such `rid`.
+
 ## Panel layout endpoint
 
 ```text
@@ -1074,6 +1273,12 @@ Tests that protect the contract:
   endpoint carries: what is a usable grid and what is dropped;
 - `tests/test_layout_backup.py` — the layout a panel stores here: that it is
   opaque, private to one panel, and bounded;
+- `tests/test_icon_catalog.py` — the icon identifiers and the variants: that
+  an identifier is a key and never a path, that a reordered catalog moves
+  nothing, and that the pre-rendered variant is exactly the shape it claims;
+- `tests/test_card_appearance.py` — display names: trimming, the bound,
+  Unicode, clearing, refusal of control characters, and setting the name and
+  the icon of one element by `rid` without touching another;
 - `tests/test_pairing.py` — the rules that guard the provisioning endpoint;
 - `tests/test_panel_state.py` — the settings, the command channel, and the
   validation of a status report;

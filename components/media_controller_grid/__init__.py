@@ -74,13 +74,19 @@ def _final_validate(config: ConfigType) -> ConfigType:
 
     The listening socket itself belongs to `web_server_base` and is registered
     there. These are the concurrent connections on top of it: a phone opening
-    the page fetches the document and three JSON routes at once, and then one
-    skin preview per skin the device draws.
+    the page fetches the document and three JSON routes at once, then one skin
+    preview per skin the device draws, then one picture per row of the icon
+    catalog Home Assistant publishes.
+
+    Six, because that is what a browser will actually open at once against one
+    origin, and the catalog is not known at codegen time in any case — it comes
+    from Home Assistant at runtime, which is the whole point of it. A device
+    that draws more skins than that reserves one per skin instead.
     """
     from esphome.components import socket
 
     socket.consume_sockets(
-        max(3, len(config[CONF_SKINS])), "media_controller_grid"
+        max(6, len(config[CONF_SKINS])), "media_controller_grid"
     )(config)
     return config
 
