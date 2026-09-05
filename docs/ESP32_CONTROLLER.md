@@ -19,6 +19,12 @@ image assets from this repository during validation and compilation.
 > against one Home Assistant at the same time. Nothing here changed; a device
 > already in the field needs no attention.
 
+The paired firmware 0.3.1 waits for its restored Home Assistant token before
+requesting the icon catalog. A failed or malformed response is retried after
+one minute; the normal six-hour interval starts only after a usable catalog
+arrives. Its 32 kB response buffer has ample room for the current 13 kB catalog
+without reserving 49 kB for each request.
+
 The paired firmware's web editor loads icon previews directly from Home
 Assistant. Update the Media Controller integration to 1.6.2-dev or later and
 restart Home Assistant before flashing this firmware change. The browser must

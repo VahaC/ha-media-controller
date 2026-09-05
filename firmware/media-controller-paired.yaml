@@ -29,7 +29,7 @@ substitutions:
   # if .local names are unreliable on your network.
   ha_url: "http://homeassistant.local:8123"
 
-  firmware_version: "0.3.0"
+  firmware_version: "0.3.1"
 
   # The version of docs/CONTRACT.md this firmware implements. firmware_version
   # says when this build shipped; this says what it understands, and it is the
@@ -301,13 +301,21 @@ globals:
 
   # -- The icon catalog is asked for rarely: it changes when the
   # -- integration is upgraded and never otherwise, and a device that polls
-  # -- it like the config sensor would spend a request a second on a list of
-  # -- eight names. Zero means "never fetched", which is what makes the first
+  # -- it like the config sensor would spend a request a second on hundreds of
+  # -- names. Zero means "never fetched", which is what makes the first
   # -- poll after a boot ask for it. --
   - id: last_catalog_poll_ms
     type: uint32_t
     restore_value: false
     initial_value: '0'
+
+  # -- Retry quickly until the first usable catalog arrives. Once it does,
+  # -- the interval becomes six hours because the catalog changes only with
+  # -- an integration update. --
+  - id: catalog_poll_interval_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: '60000'
 
   # -- The picture currently being downloaded, so that the answer can be
   # -- filed under the identifier that was asked for. One at a time: each is
@@ -1211,7 +1219,7 @@ script:
   # -- Which pictures exist, with no image data in any of it. It is asked for
   # -- rarely on purpose: the catalog changes when the integration is
   # -- upgraded and never otherwise, so putting it on the config poll would
-  # -- spend a request a second on a list of eight names. That is the same
+  # -- spend a request a second on hundreds of names. That is the same
   # -- reason the layout backup is an endpoint of its own. --
   - id: poll_icon_catalog
     mode: restart
@@ -1225,19 +1233,26 @@ script:
                 request_headers:
                   Authorization: !lambda return id(auth_header).c_str();
                 capture_response: true
-                # -- Up to 512 rows of an identifier and a label. Names, not
+                # -- Up to 512 rows of an identifier and a label. The current
+                # -- 316-row catalog is about 13 kB. Keep headroom without
+                # -- reserving a 49 kB request buffer on the ESP32. Names, not
                 # -- pictures: the pictures are separate requests, made only
                 # -- for the handful a card actually draws. --
-                max_response_buffer_size: 49152
+                max_response_buffer_size: 32768
                 on_response:
                   then:
                     - lambda: |-
                         if (response->status_code != 200) {
                           ESP_LOGW("icons", "Catalog HTTP %d",
                                    response->status_code);
+                          id(catalog_poll_interval_ms) = 60000;
                           return;
                         }
-                        id(room_grid)->ingest_icon_catalog(body);
+                        if (!id(room_grid)->ingest_icon_catalog(body)) {
+                          id(catalog_poll_interval_ms) = 60000;
+                          return;
+                        }
+                        id(catalog_poll_interval_ms) = 21600000;
 
   # -- One picture, at the exact size a card draws it. A pre-rendered variant
   # -- and not a PNG: this build sets LV_COLOR_16_SWAP and leaves
@@ -2598,8 +2613,10 @@ interval:
           //    six hours. It changes when the integration is upgraded and
           //    never otherwise, so anything oftener would be a request
           //    spent on an answer that is always the same. --
-          if (id(last_catalog_poll_ms) == 0 ||
-              now - id(last_catalog_poll_ms) >= 21600000) {
+          if (!id(ha_token).empty() &&
+              (id(last_catalog_poll_ms) == 0 ||
+               now - id(last_catalog_poll_ms) >=
+                   id(catalog_poll_interval_ms))) {
             id(last_catalog_poll_ms) = now;
             id(poll_icon_catalog)->execute();
           }

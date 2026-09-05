@@ -495,10 +495,10 @@ class MediaControllerGrid final : public AsyncWebHandler, public Component {
 
   // ------------------------------------------------------------- card art
 
-  /* Replaces the catalog Home Assistant publishes. Returns whether it
-   * actually changed, which is what tells the caller to stop asking for a
-   * while. The document carries no image data at all — the pictures are
-   * separate requests, made only for the icons that are actually wanted. */
+  /* Accepts the catalog Home Assistant publishes. Returns whether the
+   * document was usable; an unchanged valid catalog is still a success. The
+   * document carries no image data at all — pictures are separate requests,
+   * made only for icons that layout cards actually use. */
   bool ingest_icon_catalog(const std::string &document);
   /* The identifier of the next picture worth asking for, or empty when there
    * is nothing to fetch. Only icons used by layout cards are fetched;

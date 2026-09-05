@@ -1,20 +1,46 @@
 """Public previews expose bundled PNGs only, without changing asset auth."""
 
 import importlib.util
+import json
 from pathlib import Path
 import sys
 import types
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from aiohttp import web
-
-
 class IconPreviewTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         root = Path(__file__).parents[1] / "custom_components/media_controller"
         package = types.ModuleType("preview_test_integration")
         package.__path__ = [str(root)]
+        aiohttp = types.ModuleType("aiohttp")
+        web = types.ModuleType("aiohttp.web")
+
+        class Response:
+            def __init__(
+                self,
+                *,
+                body=b"",
+                content_type=None,
+                headers=None,
+                status=200,
+            ):
+                self.body = body
+                self.content_type = content_type
+                self.headers = headers or {}
+                self.status = status
+
+        def json_response(data, status=200):
+            return Response(
+                body=json.dumps(data).encode("utf-8"),
+                content_type="application/json",
+                status=status,
+            )
+
+        web.Request = object
+        web.Response = Response
+        web.json_response = json_response
+        aiohttp.web = web
         http = types.ModuleType("homeassistant.components.http")
 
         class View:
@@ -28,6 +54,8 @@ class IconPreviewTests(unittest.IsolatedAsyncioTestCase):
         core.HomeAssistant = object
         modules = {
             package.__name__: package,
+            "aiohttp": aiohttp,
+            "aiohttp.web": web,
             "homeassistant": types.ModuleType("homeassistant"),
             "homeassistant.components": types.ModuleType("homeassistant.components"),
             "homeassistant.components.http": http,

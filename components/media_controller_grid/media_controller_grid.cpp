@@ -749,7 +749,7 @@ bool MediaControllerGrid::ingest_icon_catalog(const std::string &document) {
     }
   }
   if (!changed)
-    return false;
+    return true;
 
   {
     LockGuard guard{this->lock_};

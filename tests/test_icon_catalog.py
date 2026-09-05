@@ -141,7 +141,7 @@ class CatalogTests(unittest.TestCase):
     def test_catalog_fits_maintained_panel_limits(self) -> None:
         payload = icon_catalog.catalog_payload()
         self.assertLessEqual(len(payload["icons"]), 512)
-        self.assertLessEqual(len(json.dumps(payload).encode("utf-8")), 49152)
+        self.assertLessEqual(len(json.dumps(payload).encode("utf-8")), 32768)
 
     def test_the_document_carries_no_image_data(self) -> None:
         """It is fetched on a schedule, so it has to stay small."""

@@ -40,8 +40,9 @@ no attention.
 
 ## Validation status
 
-`esphome config` and a full ESPHome 2026.8.0 compile pass — 38.7% RAM, 22.9%
-flash, against the classic firmware's 38.0% and 21.9%. The difference is the
+`esphome config` and a full ESPHome 2026.8.2 compile pass. Firmware 0.3.1
+uses 39.0% RAM and 22.5% flash and retries the icon catalog after startup and
+HTTP failures. The difference from the classic firmware is the
 room grid: the external component, its gzipped editor page, ArduinoJson, the
 HTTP server, and four more image assets. **This firmware has not yet run on the
 physical device.** Work through the
