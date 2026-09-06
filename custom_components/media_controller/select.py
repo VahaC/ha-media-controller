@@ -1,6 +1,6 @@
-"""The two selects a panel owns: the page it is on, and the layout it draws.
+"""The panel's page, layout and screen orientation selects.
 
-They are the same platform and nothing else. The page is a reading with a
+The page is a reading with a
 command behind it: the client reports where a person navigated, and accepts a
 request to go elsewhere, which makes the panel addressable from an automation.
 The skin is a setting: Home Assistant owns it, the client adopts it on its next
@@ -19,7 +19,7 @@ from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .panel_entity import PanelEntity, async_store_settings
-from .panel_state import PAGES, SETTING_PLAYER_SKIN
+from .panel_state import PAGES, SETTING_PLAYER_SKIN, SETTING_SCREEN_ROTATION
 
 
 async def async_setup_entry(
@@ -33,6 +33,8 @@ async def async_setup_entry(
         return
 
     entities: list[SelectEntity] = [PanelPageSelect(entry, runtime)]
+    if runtime.client.profile.rotations:
+        entities.append(PanelRotationSelect(entry, runtime))
     # A client that draws one interface gets no skin selector: an entity whose
     # only option is the way things already look is a control that does
     # nothing. The options are the client's own names, so the tablet offers its
@@ -40,6 +42,30 @@ async def async_setup_entry(
     if runtime.client.profile.skins:
         entities.append(PanelPlayerSkinSelect(entry, runtime))
     async_add_entities(entities)
+
+
+class PanelRotationSelect(PanelEntity, SelectEntity):
+    """Persistent desired display orientation, limited by the client profile."""
+
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_icon = "mdi:screen-rotation"
+
+    def __init__(self, entry: ConfigEntry, runtime: Any) -> None:
+        super().__init__(entry, runtime, "screen_rotation")
+        self._attr_options = [str(angle) for angle in runtime.client.profile.rotations]
+
+    @property
+    def current_option(self) -> str | None:
+        """Return the requested orientation, or unknown before a choice."""
+        option = str(self._panel.settings.screen_rotation)
+        return option if option in self._attr_options else None
+
+    async def async_select_option(self, option: str) -> None:
+        """Persist a supported angle for the next client poll."""
+        if option not in self._attr_options:
+            raise ServiceValidationError(f"Unsupported screen rotation: {option}")
+        settings = self._panel.set_setting(SETTING_SCREEN_ROTATION, int(option))
+        async_store_settings(self.hass, self._entry, settings)
 
 
 class PanelPageSelect(PanelEntity, SelectEntity):

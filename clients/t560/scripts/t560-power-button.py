@@ -17,9 +17,13 @@ and this handler re-reads that cache whenever it changes.
 """
 
 import configparser
+from concurrent.futures import ThreadPoolExecutor
 import ctypes
 import json
+import math
 import os
+from pathlib import Path
+import re
 import select
 import signal
 import subprocess
@@ -159,6 +163,111 @@ def home_assistant_screen_off(path=LAYOUT_CACHE):
     if not isinstance(value, int) or isinstance(value, bool):
         return None
     return clamp_screen_off(value)
+
+
+def home_assistant_rotation(path=LAYOUT_CACHE):
+    """Read an optional supported angle from the accepted configuration cache."""
+    try:
+        document = json.loads(Path(os.path.expanduser(path)).read_text(encoding="utf-8"))
+        value = document["attributes"]["settings"]["screen_rotation"]
+    except (OSError, UnicodeError, ValueError, KeyError, TypeError):
+        return None
+    return value if type(value) is int and value in (0, 180) else None
+
+
+def rotation_command(*args):
+    """Run a bounded X11 command in the rotation worker, never in GTK."""
+    return subprocess.run(
+        list(args), env={**os.environ, "DISPLAY": os.environ.get("DISPLAY", ":0")},
+        check=True, capture_output=True, text=True, timeout=3,
+    ).stdout
+
+
+def rotation_touchscreens():
+    """Resolve direct-touch kernel devices to XInput IDs without fixed names."""
+    devices = set()
+    for path in Path("/sys/class/input").glob("event*/device"):
+        try:
+            # INPUT_PROP_DIRECT is bit 1 in the least significant word.
+            direct = int((path / "properties").read_text().split()[-1], 16) & 2
+            name = (path / "name").read_text().strip()
+        except (OSError, ValueError, IndexError):
+            continue
+        if direct:
+            ids = rotation_command("xinput", "list", "--id-only", name).split()
+            devices.update(value for value in ids if value.isdecimal())
+    return sorted(devices)
+
+
+def rotated_touch_matrix(matrix, previous, requested):
+    """Compose a half-turn with the existing calibration, without accumulating it."""
+    values = [float(value) for value in matrix]
+    if len(values) != 9 or not all(math.isfinite(value) for value in values):
+        raise ValueError("invalid touchscreen matrix")
+    if previous == requested:
+        return matrix
+    # F * M, where F maps (x, y) to (1-x, 1-y). F is its own inverse.
+    values = [values[6 + i] - values[i] for i in range(3)] + [
+        values[6 + i] - values[3 + i] for i in range(3)
+    ] + values[6:]
+    return [format(value, ".9g") for value in values]
+
+
+def apply_screen_rotation(angle):
+    """Rotate one active output and map its touch devices, rolling back failure."""
+    if type(angle) is not int or angle not in (0, 180):
+        return False
+    output = previous = None
+    matrices = {}
+    requested = "normal" if angle == 0 else "inverted"
+    changed = False
+    try:
+        lines = rotation_command("xrandr", "--query").splitlines()
+        active = [line for line in lines if re.search(
+            r" connected (?:primary )?\d+x\d+\+\d+\+\d+", line)]
+        if len(active) != 1:
+            raise ValueError("expected exactly one active display")
+        line = active[0]
+        output = line.split()[0]
+        match = re.search(r"\d+x\d+\+\d+\+\d+\s+(normal|left|inverted|right)\b", line)
+        previous = match.group(1) if match else "normal"
+        if previous not in ("normal", "inverted"):
+            raise ValueError("display has an unsupported base orientation")
+        devices = rotation_touchscreens()
+        if not devices:
+            raise ValueError("no direct touchscreen found")
+        for device in devices:
+            state = rotation_command("xinput", "query-state", device)
+            if re.search(r"button\[\d+\]=down", state):
+                raise ValueError("touchscreen is active")
+            props = rotation_command("xinput", "list-props", device)
+            match = re.search(r"Coordinate Transformation Matrix \(\d+\):\s*([^\n]+)", props)
+            if not match:
+                raise ValueError("touchscreen has no coordinate transformation matrix")
+            matrix = match.group(1).replace(",", " ").split()
+            if len(matrix) != 9:
+                raise ValueError("invalid touchscreen matrix")
+            matrices[device] = matrix
+        transformed = {device: rotated_touch_matrix(matrix, previous, requested)
+                       for device, matrix in matrices.items()}
+        changed = True
+        rotation_command("xrandr", "--output", output, "--rotate", requested)
+        for device in devices:
+            rotation_command("xinput", "set-prop", device,
+                             "Coordinate Transformation Matrix", *transformed[device])
+        log(f"home assistant: screen rotation {angle} degrees")
+        return True
+    except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as error:
+        log(f"WARNING: screen rotation failed: {error}")
+        if changed:
+            try:
+                rotation_command("xrandr", "--output", output, "--rotate", previous)
+                for device, matrix in matrices.items():
+                    rotation_command("xinput", "set-prop", device,
+                                     "Coordinate Transformation Matrix", *matrix)
+            except (OSError, subprocess.SubprocessError) as rollback_error:
+                log(f"ERROR: screen rotation rollback failed: {rollback_error}")
+        return False
 
 
 def config_screen_off(path=CONFIG_FILE):
@@ -622,6 +731,13 @@ def main():
     # Home Assistant owns the timeout; the panel caches the payload carrying
     # it, and a new timestamp on that cache is the signal to re-read.
     settings_stamp = layout_cache_stamp()
+    # Keep external commands away from the wake-touch and power-button loop.
+    rotation_worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rotation")
+    rotation_future = None
+    rotation_applied = None
+    rotation_requested = None
+    rotation_retry = 0
+    requested_rotation = home_assistant_rotation()
     backlight = backlight_device()
     xext.DPMSEnable(display)
     x11.XSelectInput(display, root, KEY_PRESS_MASK | KEY_RELEASE_MASK)
@@ -776,9 +892,16 @@ def main():
             log("long press: opened power menu")
 
         if now >= next_poll:
+            if rotation_future is not None and rotation_future.done():
+                succeeded = rotation_future.result()
+                if succeeded:
+                    rotation_applied = rotation_requested
+                rotation_future = None
+                rotation_retry = 0 if succeeded else now + 30
             stamp = layout_cache_stamp()
             if stamp != settings_stamp:
                 settings_stamp = stamp
+                requested_rotation = home_assistant_rotation()
                 requested = screen_off_seconds()
                 if requested != auto_off_seconds:
                     auto_off_seconds = requested
@@ -787,6 +910,12 @@ def main():
                     apply_screen_off(auto_off_seconds, idle_detection)
                     log("auto screen off: " + describe_auto_off(
                         auto_off_seconds, idle_detection))
+
+            if (rotation_future is None and requested_rotation is not None
+                    and requested_rotation != rotation_applied and now >= rotation_retry
+                    and not wake_touch):
+                rotation_requested = requested_rotation
+                rotation_future = rotation_worker.submit(apply_screen_rotation, requested_rotation)
 
             # What Home Assistant asked for, through the panel. It is applied
             # here rather than in the panel process so that the pointer grab

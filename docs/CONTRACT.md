@@ -722,6 +722,14 @@ proxies and its payload are exactly what they were.
 
 ### Panel settings
 
+`settings.screen_rotation` is an optional integer in clockwise degrees relative
+to the normal display orientation: T560 accepts 0 and 180; paired ESP32 accepts
+0, 90, 180 and 270. The `Screen rotation` configuration select stores the desired
+value across Home Assistant restarts. Missing or invalid values leave the client
+orientation unchanged. Older clients ignore this additive field (contract 7).
+Clients rotate touch coordinates together with the display and preserve the
+wake-touch guard. Classic ESP32 exposes a restoring ESPHome select directly.
+
 `settings` is a desired configuration, not an event: the newest payload simply
 wins, and a client adopts it without acknowledging it. It is what used to be
 edited in `config.ini` over SSH.
@@ -732,6 +740,7 @@ edited in `config.ini` over SSH.
 | `playlist_poll_interval_ms` | milliseconds | 10000 – 3600000 |
 | `screen_off_seconds` | seconds | 0, or 5 – 3600 |
 | `player_skin` | name | the client's own, or absent |
+| `screen_rotation` | clockwise degrees | T560: 0, 180; ESP32-S3 panel: 0, 90, 180, 270; or absent |
 
 Home Assistant clamps every value before it sends one; a client clamps again
 rather than trusting the payload. `screen_off_seconds` is 0 for never.

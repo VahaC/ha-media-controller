@@ -55,6 +55,12 @@ SETTING_POLL_INTERVAL = "poll_interval_ms"
 SETTING_PLAYLIST_POLL_INTERVAL = "playlist_poll_interval_ms"
 SETTING_SCREEN_OFF = "screen_off_seconds"
 SETTING_PLAYER_SKIN = "player_skin"
+SETTING_SCREEN_ROTATION = "screen_rotation"
+
+
+def _screen_rotation(value: Any) -> int | None:
+    """Accept only supported integer angles; absence preserves local settings."""
+    return value if type(value) is int and value in (0, 90, 180, 270) else None
 
 # How a client draws itself. The names are the client's own — the tablet has
 # two and the ESP32 three, and neither would know what to do with the other's
@@ -226,6 +232,7 @@ class PanelSettings:
     playlist_poll_interval_ms: int = DEFAULT_PLAYLIST_POLL_INTERVAL_MS
     screen_off_seconds: int = DEFAULT_SCREEN_OFF_SECONDS
     player_skin: str = PLAYER_SKIN_UNSET
+    screen_rotation: int | None = None
 
     @classmethod
     def from_stored(cls, stored: Mapping[str, Any] | None) -> PanelSettings:
@@ -246,6 +253,7 @@ class PanelSettings:
             ),
             screen_off_seconds=_screen_off(source.get(SETTING_SCREEN_OFF)),
             player_skin=_player_skin(source.get(SETTING_PLAYER_SKIN)),
+            screen_rotation=_screen_rotation(source.get(SETTING_SCREEN_ROTATION)),
         )
 
     def with_value(self, key: str, value: Any) -> PanelSettings:
@@ -261,6 +269,7 @@ class PanelSettings:
             SETTING_PLAYLIST_POLL_INTERVAL: self.playlist_poll_interval_ms,
             SETTING_SCREEN_OFF: self.screen_off_seconds,
             SETTING_PLAYER_SKIN: self.player_skin,
+            SETTING_SCREEN_ROTATION: self.screen_rotation,
         }
 
     def as_payload(self) -> dict[str, Any]:
@@ -271,6 +280,8 @@ class PanelSettings:
         fallback instead of being handed a name it would have to reject.
         """
         payload = self.as_stored()
+        if self.screen_rotation is None:
+            payload.pop(SETTING_SCREEN_ROTATION, None)
         if not self.player_skin:
             payload.pop(SETTING_PLAYER_SKIN, None)
         return payload

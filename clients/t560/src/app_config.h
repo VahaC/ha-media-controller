@@ -7,7 +7,7 @@
  * Assistant in the status report, which is what shows the software version on
  * the panel's device, and it is the user agent of every request. Keep it in
  * step with pkgver in packaging/APKBUILD. */
-#define T560_PANEL_VERSION "0.6.0"
+#define T560_PANEL_VERSION "0.7.0"
 
 /* The version of docs/CONTRACT.md this build implements.
  *

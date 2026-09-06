@@ -23,6 +23,7 @@
 #                                 play_queue_item
 #   Scripts this file offers.     ui_apply_skin(skin) — the layout named in
 #                                 the config sensor, in contract spelling
+#                                 ui_apply_rotation(angle) — clockwise degrees
 #   Globals this file offers.     room_page_index — which LVGL page the room
 #                                 controls live on, as an index into the
 #                                 lvgl pages list. -1, the default, means the
@@ -56,6 +57,7 @@ esphome:
       # -- published earlier during setup were skipped by the ui_ready guard, so
       # -- the full theme is applied once here instead. --
       - lambda: id(ui_ready) = true;
+      - script.execute: apply_screen_rotation
       - script.execute: apply_theme
       # -- Honour the screen style restored from flash before the first frame. --
       - script.execute: show_home_page
@@ -384,6 +386,18 @@ text:
 # -- The value survives reboots, so no reflash is needed to change it. --
 select:
   - platform: template
+    id: screen_rotation
+    name: "Screen rotation"
+    entity_category: config
+    optimistic: true
+    restore_value: true
+    initial_option: "0"
+    options: ["0", "90", "180", "270"]
+    on_value:
+      then:
+        - script.execute: apply_screen_rotation
+
+  - platform: template
     name: "Screen Style"
     id: screen_style
     optimistic: true
@@ -504,6 +518,30 @@ interval:
             - light.turn_off: backlight
 
 script:
+  - id: ui_apply_rotation
+    parameters:
+      angle: string
+    then:
+      - lambda: |-
+          if (angle != "0" && angle != "90" && angle != "180" && angle != "270") return;
+          if (id(screen_rotation).current_option() == angle) return;
+          auto call = id(screen_rotation).make_call();
+          call.set_option(angle);
+          call.perform();
+
+  - id: apply_screen_rotation
+    mode: restart
+    then:
+      - if:
+          condition:
+            lambda: return id(ui_ready);
+          then:
+            # Finish an active gesture before changing its coordinate system.
+            - wait_until:
+                lambda: return !id(tft_touch).get_touch().has_value();
+            - lvgl.display.set_rotation:
+                rotation: !lambda return atoi(id(screen_rotation).current_option().c_str());
+
   # ════════════════════════════════════════════════════════════
   # HOME LAYOUT SELECTION
   # ════════════════════════════════════════════════════════════

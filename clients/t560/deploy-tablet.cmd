@@ -65,6 +65,13 @@ if errorlevel 1 (
     goto :failure
 )
 
+echo Checking screen rotation tools on the tablet...
+"%SSH_EXE%" -t "%TABLET_TARGET%" "set -eu; if command -v xrandr >/dev/null 2>&1 && command -v xinput >/dev/null 2>&1; then echo 'rotation tools: present'; exit 0; fi; if [ $(id -u) = 0 ]; then SU=env; elif command -v doas >/dev/null 2>&1; then SU=doas; elif command -v sudo >/dev/null 2>&1; then SU=sudo; else echo 'ERROR: xrandr or xinput is missing and this account cannot install it.' >&2; echo 'Run once as root: apk add xrandr xinput' >&2; exit 1; fi; echo 'rotation tools: installing'; $SU apk add --no-cache xrandr xinput"
+if errorlevel 1 (
+    echo ERROR: Screen rotation tools could not be set up on the tablet.
+    goto :failure
+)
+
 echo Deploying the T560 panel to %TABLET_TARGET%...
 "%SSH_EXE%" "%TABLET_TARGET%" "mkdir -p '%REMOTE_BIN%' '%REMOTE_STATE%'"
 if errorlevel 1 goto :failure

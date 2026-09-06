@@ -16,10 +16,9 @@ image assets from this repository during validation and compilation.
 > Assistant with a six-digit code and needs no entity IDs and no token at all.
 > They share every pixel of their interface — see the
 > [comparison](ESP32_PAIRED_CONTROLLER.md#which-firmware-to-use) — and both work
-> against one Home Assistant at the same time. Nothing here changed; a device
-> already in the field needs no attention.
+> against one Home Assistant at the same time.
 
-The paired firmware 0.3.1 waits for its restored Home Assistant token before
+The paired firmware 0.4.0 waits for its restored Home Assistant token before
 requesting the icon catalog. A failed or malformed response is retried after
 one minute; the normal six-hour interval starts only after a usable catalog
 arrives. Its 32 kB response buffer has ample room for the current 13 kB catalog
@@ -248,6 +247,21 @@ switching is instant and the newly shown one is already up to date. Swiping left
 or right from either one still opens Room Controls, and Room Controls returns to
 whichever layout is currently selected.
 
+### Screen rotation
+
+The display can be rotated at runtime to 0°, 90°, 180° or 270°. On classic
+firmware, use **Screen rotation** on the ESPHome device. On paired firmware,
+use **Screen rotation** on the Media Controller panel device; the corresponding
+ESPHome select is internal so there is one owner. The value survives reboots.
+
+LVGL rotates the rendered display and GT911 coordinates together. Rotation is
+deferred until the current touch is released, so a gesture cannot continue in
+a different coordinate system.
+
+ESPHome 2026.8 uses software rotation for this ST7701S display and allocates a
+second LVGL draw buffer for it. Check the heap and minimum-heap diagnostics at
+every angle on the physical controller before release.
+
 ### Appearance entities
 
 These template entities are also stored on the device and applied at boot:
@@ -372,6 +386,9 @@ On the physical ESP32-S3 + ST7701S + GT911 device, verify all of the following:
 16. Change `Screen Style` while the queue, playlists, or room controls page is
     open. The device must stay on that page and only apply the new layout when
     it next returns home.
+17. Select 0°, 90°, 180° and 270° in **Screen rotation**. At each angle, verify
+    taps in all four corners, swipes in both directions, and the first-touch
+    wake guard. Confirm that the selected angle survives a reboot.
 
 ## Development
 

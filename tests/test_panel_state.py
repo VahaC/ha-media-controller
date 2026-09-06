@@ -47,6 +47,29 @@ class SettingsTests(unittest.TestCase):
         settings = panel_state.PanelSettings.from_stored(None)
         self.assertEqual(settings.player_skin, "")
 
+    def test_no_rotation_is_chosen_by_default(self) -> None:
+        settings = panel_state.PanelSettings.from_stored(None)
+        self.assertIsNone(settings.screen_rotation)
+        self.assertNotIn("screen_rotation", settings.as_payload())
+
+    def test_supported_rotations_survive_a_round_trip(self) -> None:
+        for angle in (0, 90, 180, 270):
+            with self.subTest(angle=angle):
+                settings = panel_state.PanelSettings.from_stored(
+                    {"screen_rotation": angle}
+                )
+                self.assertEqual(settings.screen_rotation, angle)
+                self.assertEqual(settings.as_payload()["screen_rotation"], angle)
+
+    def test_invalid_rotations_are_dropped(self) -> None:
+        for angle in (None, True, "180", -90, 45, 360):
+            with self.subTest(angle=angle):
+                settings = panel_state.PanelSettings.from_stored(
+                    {"screen_rotation": angle}
+                )
+                self.assertIsNone(settings.screen_rotation)
+                self.assertNotIn("screen_rotation", settings.as_payload())
+
     def test_an_unchosen_skin_is_left_out_of_the_payload(self) -> None:
         """A client that was never configured keeps its own fallback."""
         settings = panel_state.PanelSettings.from_stored(None)

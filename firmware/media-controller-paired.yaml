@@ -29,7 +29,7 @@ substitutions:
   # if .local names are unreliable on your network.
   ha_url: "http://homeassistant.local:8123"
 
-  firmware_version: "0.3.1"
+  firmware_version: "0.4.0"
 
   # The version of docs/CONTRACT.md this firmware implements. firmware_version
   # says when this build shipped; this says what it understands, and it is the
@@ -513,6 +513,9 @@ globals:
   - id: pending_skin
     type: std::string
     restore_value: false
+  - id: pending_rotation
+    type: std::string
+    restore_value: false
   - id: last_playlist_poll_ms
     type: uint32_t
     restore_value: false
@@ -659,6 +662,8 @@ globals:
 
 # Keep the editor synchronized with both restored and remotely selected styles.
 select:
+  - id: !extend screen_rotation
+    internal: true
   - id: !extend screen_style
     on_value:
       then:
@@ -1516,6 +1521,8 @@ script:
                           //    flash alone: Home Assistant has not chosen. --
                           id(pending_skin) = id(json_field)(settings,
                                                             "player_skin");
+                          id(pending_rotation) = id(json_field)(settings,
+                                                                "screen_rotation");
                         }
 
                         // -- The Player Skin select on this device's own Home
@@ -1563,6 +1570,9 @@ script:
                               id: ui_apply_skin
                               skin: !lambda return id(pending_skin);
                     - script.execute: read_commands
+                    - script.execute:
+                        id: ui_apply_rotation
+                        angle: !lambda return id(pending_rotation);
                     - script.execute: apply_commands
                     # -- The registry is handed over only when the revision
                     # -- moved. Walking sixty-four elements with ArduinoJson

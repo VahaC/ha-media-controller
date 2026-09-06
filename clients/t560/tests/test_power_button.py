@@ -3,6 +3,8 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
+from unittest import mock
 
 
 SCRIPT = Path(__file__).parents[1] / "scripts" / "t560-power-button.py"
@@ -99,6 +101,115 @@ class HomeAssistantScreenOffTest(unittest.TestCase):
         self.assertIsNone(
             POWER_BUTTON.home_assistant_screen_off("/nonexistent/layout.json")
         )
+
+
+class ScreenRotationTest(unittest.TestCase):
+    def read(self, settings):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "layout.json"
+            path.write_text(
+                json.dumps({"attributes": {"settings": settings}}),
+                encoding="utf-8",
+            )
+            return POWER_BUTTON.home_assistant_rotation(str(path))
+
+    def test_t560_accepts_only_half_turns(self):
+        self.assertEqual(self.read({"screen_rotation": 0}), 0)
+        self.assertEqual(self.read({"screen_rotation": 180}), 180)
+        for angle in (90, 270, 360, "180", True):
+            with self.subTest(angle=angle):
+                self.assertIsNone(self.read({"screen_rotation": angle}))
+
+    def test_missing_or_unusable_payload_has_no_rotation(self):
+        self.assertIsNone(self.read({}))
+        self.assertIsNone(
+            POWER_BUTTON.home_assistant_rotation("/nonexistent/layout.json")
+        )
+
+    def test_half_turn_is_composed_with_existing_calibration(self):
+        matrix = ["2", "0", "0.1", "0", "3", "0.2", "0", "0", "1"]
+        self.assertEqual(
+            POWER_BUTTON.rotated_touch_matrix(matrix, "normal", "inverted"),
+            ["-2", "0", "0.9", "0", "-3", "0.8", "0", "0", "1"],
+        )
+
+    def test_second_half_turn_restores_calibration(self):
+        original = ["1", "0", "0", "0", "1", "0", "0", "0", "1"]
+        inverted = POWER_BUTTON.rotated_touch_matrix(
+            original, "normal", "inverted"
+        )
+        self.assertEqual(
+            POWER_BUTTON.rotated_touch_matrix(
+                inverted, "inverted", "normal"
+            ),
+            original,
+        )
+
+    def test_unchanged_orientation_keeps_the_matrix_exactly(self):
+        matrix = ["1.000", "0", "0", "0", "1.000", "0", "0", "0", "1"]
+        self.assertIs(
+            POWER_BUTTON.rotated_touch_matrix(matrix, "normal", "normal"),
+            matrix,
+        )
+
+    def test_display_and_touchscreen_are_changed_together(self):
+        calls = []
+
+        def command(*arguments):
+            calls.append(arguments)
+            if arguments == ("xrandr", "--query"):
+                return (
+                    "DSI-1 connected 800x1280+0+0 "
+                    "(normal left inverted right x axis y axis)\n"
+                )
+            if arguments[:2] == ("xinput", "query-state"):
+                return "button[1]=up\n"
+            if arguments[:2] == ("xinput", "list-props"):
+                return (
+                    "Coordinate Transformation Matrix (123): "
+                    "1, 0, 0, 0, 1, 0, 0, 0, 1\n"
+                )
+            return ""
+
+        with mock.patch.object(
+            POWER_BUTTON, "rotation_touchscreens", return_value=["12"]
+        ), mock.patch.object(
+            POWER_BUTTON, "rotation_command", side_effect=command
+        ):
+            self.assertTrue(POWER_BUTTON.apply_screen_rotation(180))
+
+        self.assertIn(
+            ("xrandr", "--output", "DSI-1", "--rotate", "inverted"),
+            calls,
+        )
+        self.assertIn(
+            (
+                "xinput", "set-prop", "12",
+                "Coordinate Transformation Matrix",
+                "-1", "0", "1", "0", "-1", "1", "0", "0", "1",
+            ),
+            calls,
+        )
+
+    def test_active_touch_defers_rotation(self):
+        calls = []
+
+        def command(*arguments):
+            calls.append(arguments)
+            if arguments == ("xrandr", "--query"):
+                return "DSI-1 connected 800x1280+0+0 (normal left inverted right)\n"
+            if arguments[:2] == ("xinput", "query-state"):
+                return "button[1]=down\n"
+            return ""
+
+        with mock.patch.object(
+            POWER_BUTTON, "rotation_touchscreens", return_value=["12"]
+        ), mock.patch.object(
+            POWER_BUTTON, "rotation_command", side_effect=command
+        ):
+            self.assertFalse(POWER_BUTTON.apply_screen_rotation(180))
+
+        self.assertFalse(any(call[:2] == ("xrandr", "--output") for call in calls))
 
 
 class DisplayRequestTest(unittest.TestCase):

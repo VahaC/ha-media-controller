@@ -223,6 +223,15 @@
       }
     },
     "select": {
+      "screen_rotation": {
+        "name": "Screen rotation",
+        "state": {
+          "0": "0°",
+          "90": "90°",
+          "180": "180°",
+          "270": "270°"
+        }
+      },
       "page": {
         "name": "Page",
         "state": {

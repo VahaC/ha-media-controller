@@ -161,6 +161,9 @@ class ClientProfile:
     # neither would know what to do with the other's names. Empty for a client
     # that draws one interface.
     skins: tuple[str, ...] = ()
+    # Clockwise display angles the client can apply together with touch input.
+    # Empty for the classic ESP32 because its select is supplied by ESPHome.
+    rotations: tuple[int, ...] = ()
     # What kind of update a stale build of this client needs; see the
     # constants above. Every panel is checked the same way — they pair, poll
     # and report alike — so this picks the wording of the repair issue and
@@ -234,6 +237,7 @@ SKIN_COVER_CARD = "cover_card"
 # file, and nothing about it is ever compiled into an image.
 T560 = ClientProfile(
     slug="t560",
+    rotations=(0, 180),
     name="T560 panel",
     skins=(SKIN_MODERN, SKIN_CASSETTE),
     update_kind=UPDATE_KIND_TABLET,
@@ -264,6 +268,7 @@ T560 = ClientProfile(
 # temperature with.
 ESP32_S3_PANEL = ClientProfile(
     slug="esp32_s3_panel",
+    rotations=(0, 90, 180, 270),
     name="ESP32-S3 panel",
     skins=(SKIN_CLASSIC, SKIN_MINIMAL_RING, SKIN_COVER_CARD),
     update_kind=UPDATE_KIND_FIRMWARE,

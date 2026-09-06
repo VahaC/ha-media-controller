@@ -226,6 +226,7 @@ They exist so that nothing on a wall-mounted panel has to be reached over SSH.
 | **Screen** | Backlight on or off, and what it currently is. | yes |
 | **Page** | Which page the panel shows, and sending it to another. | yes |
 | **Player skin** | Which of its layouts the panel draws. | yes, its three home layouts |
+| **Screen rotation** | Display and touch orientation in clockwise degrees. | yes, all quarter turns |
 | **Restart panel app** | Restarts the application on the panel. | yes, reboots the device |
 | **Battery**, **Charging** | What the device reports about its power. | no — mains powered |
 | **Connected** | Whether the device is reporting at all. | yes |
@@ -281,6 +282,11 @@ that panel's own:
 
 It is a setting rather than a request, so it is applied on the next poll,
 within a second, and restarts nothing.
+
+**Screen rotation** follows the same stored-settings path. A T560 offers 0°
+and 180°; a paired ESP32 offers 0°, 90°, 180° and 270°. The display and touch
+coordinates change together. Until a value is selected, the client keeps its
+existing orientation.
 
 The paired ESP32 keeps its *Screen Style* select on its own ESPHome device.
 That select is still where the value lives and what it restores from after a

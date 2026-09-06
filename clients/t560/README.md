@@ -340,6 +340,14 @@ that owns the file; without it the tablet reports no controllable backlight and
 the brightness control in Home Assistant stays unavailable. Turning the display
 on and off works either way.
 
+Home Assistant also owns **Screen rotation** for the tablet. It offers 0° and
+180° and applies the choice through this same handler. The handler rotates the
+single active X11 output and composes a half-turn with every direct
+touchscreen's existing calibration matrix. It waits until no touch is active;
+if display or touch configuration fails, it restores the previous output and
+matrices and retries later. The `xrandr` and `xinput` runtime packages are
+required and are included by the APK.
+
 The Media Controller integration in
 [custom_components/media_controller/](../../custom_components/media_controller)
 must be installed and configured in Home Assistant first, and this tablet must

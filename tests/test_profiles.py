@@ -512,6 +512,11 @@ class SkinTests(unittest.TestCase):
             ("classic", "minimal_ring", "cover_card"),
         )
 
+    def test_each_panel_offers_only_supported_screen_rotations(self) -> None:
+        self.assertEqual(profiles.T560.rotations, (0, 180))
+        self.assertEqual(profiles.ESP32_S3_PANEL.rotations, (0, 90, 180, 270))
+        self.assertEqual(profiles.ESP32_S3.rotations, ())
+
     def test_a_client_does_not_know_another_client_s_layouts(self) -> None:
         self.assertTrue(profiles.T560.knows_skin("cassette"))
         self.assertFalse(profiles.T560.knows_skin("cover_card"))
