@@ -341,11 +341,13 @@ the brightness control in Home Assistant stays unavailable. Turning the display
 on and off works either way.
 
 Home Assistant also owns **Screen rotation** for the tablet. It offers 0° and
-180° and applies the choice through this same handler. The handler rotates the
-single active X11 output and composes a half-turn with every direct
-touchscreen's existing calibration matrix. It waits until no touch is active;
-if display or touch configuration fails, it restores the previous output and
-matrices and retries later. The `xrandr` and `xinput` runtime packages are
+180° and applies the choice through this same handler. The handler waits until
+no touch is active. It uses `xrandr` and `xinput` when the X11 driver supports
+runtime rotation. The T560 fbdev driver exposes only its startup orientation,
+so `deploy-tablet.cmd` also installs a restricted root helper that may write
+only 0° or 180° to a dedicated Xorg configuration file. Changing that setting
+restarts the graphical session so the framebuffer and touchscreen calibration
+start in the same orientation. The `xrandr` and `xinput` runtime packages are
 required and are included by the APK.
 
 The Media Controller integration in

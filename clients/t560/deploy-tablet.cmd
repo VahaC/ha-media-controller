@@ -39,6 +39,8 @@ if not defined SSH_EXE (
 )
 echo Using SSH client: %SSH_EXE%
 
+rem postmarketOS non-login SSH sessions can omit /sbin and /usr/sbin from PATH.
+rem Dependency checks below set a complete system PATH before invoking sudo.
 for %%F in (
     "t560-panel"
     "scripts\t560-panel-watchdog"
@@ -49,6 +51,7 @@ for %%F in (
     "scripts\t560-home-button"
     "scripts\t560-configure-openbox.py"
     "scripts\t560-announce-panel"
+    "scripts\t560-set-screen-rotation"
 ) do (
     if not exist "%%~F" (
         echo ERROR: Missing local file: %%~F
@@ -59,14 +62,14 @@ for %%F in (
 echo Checking mDNS support on the tablet...
 rem Without Avahi the panel cannot announce itself and Home Assistant will
 rem never offer to add it. -t is used so that doas or sudo can prompt.
-"%SSH_EXE%" -t "%TABLET_TARGET%" "set -eu; if [ $(id -u) = 0 ]; then SU=env; elif command -v doas >/dev/null 2>&1; then SU=doas; elif command -v sudo >/dev/null 2>&1; then SU=sudo; else SU=none; fi; if command -v avahi-publish-service >/dev/null 2>&1 && command -v avahi-browse >/dev/null 2>&1; then echo 'avahi: present'; else if [ $SU = none ]; then echo 'ERROR: Avahi is missing and this account cannot install it.' >&2; echo 'Run once as root: apk add avahi avahi-tools dbus; rc-update add dbus default; rc-update add avahi-daemon default; rc-service dbus start; rc-service avahi-daemon start' >&2; exit 1; fi; echo 'avahi: installing'; $SU apk add --no-cache avahi avahi-tools dbus; fi; if ! pgrep -x avahi-daemon >/dev/null 2>&1; then if [ $SU = none ]; then echo 'ERROR: avahi-daemon is not running and this account cannot start it.' >&2; exit 1; fi; $SU rc-update add dbus default >/dev/null 2>&1 || true; $SU rc-update add avahi-daemon default >/dev/null 2>&1 || true; $SU rc-service dbus start >/dev/null 2>&1 || true; $SU rc-service avahi-daemon start >/dev/null 2>&1 || true; sleep 2; fi; pgrep -x avahi-daemon >/dev/null 2>&1 || { echo 'ERROR: avahi-daemon did not start.' >&2; exit 1; }; echo 'avahi-daemon: running'"
+"%SSH_EXE%" -t "%TABLET_TARGET%" "set -eu; PATH=/usr/sbin:/sbin:/usr/bin:/bin; export PATH; if [ $(id -u) = 0 ]; then SU=env; elif command -v doas >/dev/null 2>&1; then SU=doas; elif command -v sudo >/dev/null 2>&1; then SU=sudo; else SU=none; fi; if command -v avahi-publish-service >/dev/null 2>&1 && command -v avahi-browse >/dev/null 2>&1; then echo 'avahi: present'; else if [ $SU = none ]; then echo 'ERROR: Avahi is missing and this account cannot install it.' >&2; echo 'Run once as root: apk add avahi avahi-tools dbus; rc-update add dbus default; rc-update add avahi-daemon default; rc-service dbus start; rc-service avahi-daemon start' >&2; exit 1; fi; echo 'avahi: installing'; $SU apk add --no-cache avahi avahi-tools dbus; fi; if ! pgrep -x avahi-daemon >/dev/null 2>&1; then if [ $SU = none ]; then echo 'ERROR: avahi-daemon is not running and this account cannot start it.' >&2; exit 1; fi; $SU rc-update add dbus default >/dev/null 2>&1 || true; $SU rc-update add avahi-daemon default >/dev/null 2>&1 || true; $SU rc-service dbus start >/dev/null 2>&1 || true; $SU rc-service avahi-daemon start >/dev/null 2>&1 || true; sleep 2; fi; pgrep -x avahi-daemon >/dev/null 2>&1 || { echo 'ERROR: avahi-daemon did not start.' >&2; exit 1; }; echo 'avahi-daemon: running'"
 if errorlevel 1 (
     echo ERROR: mDNS could not be set up on the tablet.
     goto :failure
 )
 
 echo Checking screen rotation tools on the tablet...
-"%SSH_EXE%" -t "%TABLET_TARGET%" "set -eu; if command -v xrandr >/dev/null 2>&1 && command -v xinput >/dev/null 2>&1; then echo 'rotation tools: present'; exit 0; fi; if [ $(id -u) = 0 ]; then SU=env; elif command -v doas >/dev/null 2>&1; then SU=doas; elif command -v sudo >/dev/null 2>&1; then SU=sudo; else echo 'ERROR: xrandr or xinput is missing and this account cannot install it.' >&2; echo 'Run once as root: apk add xrandr xinput' >&2; exit 1; fi; echo 'rotation tools: installing'; $SU apk add --no-cache xrandr xinput"
+"%SSH_EXE%" -t "%TABLET_TARGET%" "set -eu; PATH=/usr/sbin:/sbin:/usr/bin:/bin; export PATH; if command -v xrandr >/dev/null 2>&1 && command -v xinput >/dev/null 2>&1; then echo 'rotation tools: present'; exit 0; fi; if [ $(id -u) = 0 ]; then SU=env; elif command -v doas >/dev/null 2>&1; then SU=doas; elif command -v sudo >/dev/null 2>&1; then SU=sudo; else echo 'ERROR: xrandr or xinput is missing and this account cannot install it.' >&2; echo 'Run once as root: apk add xrandr xinput' >&2; exit 1; fi; echo 'rotation tools: installing'; $SU apk add --no-cache xrandr xinput"
 if errorlevel 1 (
     echo ERROR: Screen rotation tools could not be set up on the tablet.
     goto :failure
@@ -94,6 +97,19 @@ call :send_file "scripts\t560-configure-openbox.py" "%REMOTE_BIN%/t560-configure
 if errorlevel 1 goto :failure
 call :send_file "scripts\t560-announce-panel" "%REMOTE_BIN%/t560-announce-panel.new"
 if errorlevel 1 goto :failure
+call :send_file "scripts\t560-set-screen-rotation" "%REMOTE_STATE%/t560-set-screen-rotation.new"
+if errorlevel 1 goto :failure
+
+echo Installing the restricted screen rotation helper...
+"%SSH_EXE%" "%TABLET_TARGET%" "chmod 755 '%REMOTE_STATE%/t560-set-screen-rotation.new'; sed -i 's/\r$//' '%REMOTE_STATE%/t560-set-screen-rotation.new'"
+if errorlevel 1 goto :failure
+"%SSH_EXE%" -t "%TABLET_TARGET%" "set -eu; PATH=/usr/sbin:/sbin:/usr/bin:/bin; export PATH; if [ $(id -u) = 0 ]; then SU=env; elif command -v doas >/dev/null 2>&1; then SU=doas; elif command -v sudo >/dev/null 2>&1; then SU=sudo; else echo 'ERROR: Screen rotation setup requires root access.' >&2; exit 1; fi; $SU '%REMOTE_STATE%/t560-set-screen-rotation.new' --install '%TABLET_USER%'"
+if errorlevel 1 goto :failure
+"%SSH_EXE%" "%TABLET_TARGET%" "sudo -n /usr/local/sbin/t560-set-screen-rotation 0"
+if errorlevel 1 (
+    echo ERROR: The restricted screen rotation permission is not active.
+    goto :failure
+)
 
 echo Deploying the launcher icon and the desktop entries...
 "%SSH_EXE%" "%TABLET_TARGET%" "mkdir -p '%REMOTE_APPS%' '%REMOTE_ICONS%/16x16/apps' '%REMOTE_ICONS%/24x24/apps' '%REMOTE_ICONS%/32x32/apps' '%REMOTE_ICONS%/48x48/apps' '%REMOTE_ICONS%/64x64/apps' '%REMOTE_ICONS%/128x128/apps' '%REMOTE_ICONS%/256x256/apps' '%REMOTE_ICONS%/512x512/apps'"

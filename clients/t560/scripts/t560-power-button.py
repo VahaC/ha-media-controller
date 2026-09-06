@@ -59,6 +59,8 @@ CACHE_DIR = "~/.cache/t560-music-panel"
 LAYOUT_CACHE = f"{CACHE_DIR}/layout.json"
 DISPLAY_REQUEST = f"{CACHE_DIR}/display-request.ini"
 DISPLAY_STATE = f"{CACHE_DIR}/display-state.ini"
+ROTATION_HELPER = "/usr/local/sbin/t560-set-screen-rotation"
+XORG_ROTATION_CONFIG = "/etc/X11/xorg.conf.d/90-t560-screen-rotation.conf"
 # The panel treats a state file older than three minutes as absent, which is
 # how a handler that died stops being believed.
 STATE_REWRITE_SECONDS = 30
@@ -194,9 +196,44 @@ def rotation_touchscreens():
         except (OSError, ValueError, IndexError):
             continue
         if direct:
-            ids = rotation_command("xinput", "list", "--id-only", name).split()
+            # A touchscreen can expose pointer and keyboard devices with the
+            # same name. The type prefix keeps xinput's lookup unambiguous.
+            ids = rotation_command(
+                "xinput", "list", "--id-only", f"pointer:{name}"
+            ).split()
             devices.update(value for value in ids if value.isdecimal())
     return sorted(devices)
+
+
+def configured_screen_rotation(path=XORG_ROTATION_CONFIG):
+    """Return the orientation selected for fbdev at Xorg startup, if managed."""
+    try:
+        contents = Path(path).read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
+    match = re.search(r"^# T560 screen rotation: (0|180)$", contents, re.MULTILINE)
+    return int(match.group(1)) if match else None
+
+
+def apply_fbdev_screen_rotation(angle):
+    """Write the startup orientation and restart the user's X session."""
+    try:
+        subprocess.run(
+            ["sudo", "-n", ROTATION_HELPER, str(angle)],
+            check=True, capture_output=True, text=True, timeout=3,
+        )
+        log(f"home assistant: screen rotation {angle} degrees; restarting X session")
+        subprocess.Popen(
+            ["pkill", "-TERM", "-u", str(os.getuid()), "-x", "xinit"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        return True
+    except (OSError, subprocess.SubprocessError) as error:
+        detail = getattr(error, "stderr", "") or ""
+        detail = detail.strip()
+        log("WARNING: fbdev screen rotation failed: " + (detail or str(error)))
+        return False
 
 
 def rotated_touch_matrix(matrix, previous, requested):
@@ -222,6 +259,20 @@ def apply_screen_rotation(angle):
     requested = "normal" if angle == 0 else "inverted"
     changed = False
     try:
+        devices = rotation_touchscreens()
+        if not devices:
+            raise ValueError("no direct touchscreen found")
+        for device in devices:
+            state = rotation_command("xinput", "query-state", device)
+            if re.search(r"button\[\d+\]=down", state):
+                raise ValueError("touchscreen is active")
+
+        configured = configured_screen_rotation()
+        if configured is not None:
+            if configured == angle:
+                return True
+            return apply_fbdev_screen_rotation(angle)
+
         lines = rotation_command("xrandr", "--query").splitlines()
         active = [line for line in lines if re.search(
             r" connected (?:primary )?\d+x\d+\+\d+\+\d+", line)]
@@ -233,13 +284,7 @@ def apply_screen_rotation(angle):
         previous = match.group(1) if match else "normal"
         if previous not in ("normal", "inverted"):
             raise ValueError("display has an unsupported base orientation")
-        devices = rotation_touchscreens()
-        if not devices:
-            raise ValueError("no direct touchscreen found")
         for device in devices:
-            state = rotation_command("xinput", "query-state", device)
-            if re.search(r"button\[\d+\]=down", state):
-                raise ValueError("touchscreen is active")
             props = rotation_command("xinput", "list-props", device)
             match = re.search(r"Coordinate Transformation Matrix \(\d+\):\s*([^\n]+)", props)
             if not match:
@@ -734,7 +779,7 @@ def main():
     # Keep external commands away from the wake-touch and power-button loop.
     rotation_worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rotation")
     rotation_future = None
-    rotation_applied = None
+    rotation_applied = configured_screen_rotation()
     rotation_requested = None
     rotation_retry = 0
     requested_rotation = home_assistant_rotation()

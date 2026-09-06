@@ -152,6 +152,32 @@ class ScreenRotationTest(unittest.TestCase):
             matrix,
         )
 
+    def test_reads_managed_fbdev_orientation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "rotation.conf"
+            path.write_text(
+                "# Managed by t560-set-screen-rotation.\n"
+                "# T560 screen rotation: 180\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                POWER_BUTTON.configured_screen_rotation(str(path)), 180
+            )
+
+    def test_managed_fbdev_orientation_uses_privileged_helper(self):
+        with mock.patch.object(
+            POWER_BUTTON, "rotation_touchscreens", return_value=["7"]
+        ), mock.patch.object(
+            POWER_BUTTON, "rotation_command", return_value="button[1]=up\n"
+        ), mock.patch.object(
+            POWER_BUTTON, "configured_screen_rotation", return_value=0
+        ), mock.patch.object(
+            POWER_BUTTON, "apply_fbdev_screen_rotation", return_value=True
+        ) as apply_fbdev:
+            self.assertTrue(POWER_BUTTON.apply_screen_rotation(180))
+
+        apply_fbdev.assert_called_once_with(180)
+
     def test_display_and_touchscreen_are_changed_together(self):
         calls = []
 

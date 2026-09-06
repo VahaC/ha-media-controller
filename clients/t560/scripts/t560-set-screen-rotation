@@ -1,0 +1,78 @@
+#!/bin/sh
+
+# Configure the fbdev Xorg driver used by the T560. Its RandR output exposes
+# only the normal orientation, so a half-turn must be selected before X starts.
+
+set -eu
+
+target=/usr/local/sbin/t560-set-screen-rotation
+sudoers=/etc/sudoers.d/t560-screen-rotation
+config=/etc/X11/xorg.conf.d/90-t560-screen-rotation.conf
+
+install_helper() {
+    user=$1
+    case "$user" in
+        ''|*[!A-Za-z0-9_-]*)
+            echo "ERROR: Invalid T560 session user." >&2
+            exit 2
+            ;;
+    esac
+
+    install -d -o root -g root -m 755 /usr/local/sbin
+    install -d -o root -g root -m 755 /etc/sudoers.d
+    install -o root -g root -m 755 "$0" "$target"
+    temporary=$(mktemp "${sudoers}.XXXXXX")
+    trap 'rm -f "$temporary"' EXIT HUP INT TERM
+    printf '%s ALL=(root) NOPASSWD: %s 0, %s 180\n' \
+        "$user" "$target" "$target" >"$temporary"
+    chmod 440 "$temporary"
+    visudo -cf "$temporary" >/dev/null
+    mv "$temporary" "$sudoers"
+    trap - EXIT HUP INT TERM
+
+    if [ ! -e "$config" ]; then
+        printf '# Managed by t560-set-screen-rotation.\n# T560 screen rotation: 0\n' \
+            >"$config"
+        chmod 644 "$config"
+    fi
+}
+
+write_rotation() {
+    angle=$1
+    temporary=$(mktemp "${config}.XXXXXX")
+    trap 'rm -f "$temporary"' EXIT HUP INT TERM
+
+    if [ "$angle" = 0 ]; then
+        printf '# Managed by t560-set-screen-rotation.\n# T560 screen rotation: 0\n' \
+            >"$temporary"
+    else
+        cat >"$temporary" <<'EOF'
+# Managed by t560-set-screen-rotation.
+# T560 screen rotation: 180
+Section "Device"
+    Identifier "T560 framebuffer"
+    Driver "fbdev"
+    Option "Rotate" "UD"
+EndSection
+
+Section "InputClass"
+    Identifier "T560 touchscreen rotation"
+    MatchIsTouchscreen "on"
+    Option "TransformationMatrix" "-1 0 1 0 -1 1 0 0 1"
+EndSection
+EOF
+    fi
+
+    chmod 644 "$temporary"
+    mv "$temporary" "$config"
+    trap - EXIT HUP INT TERM
+}
+
+if [ "${1:-}" = --install ] && [ "$#" -eq 2 ]; then
+    install_helper "$2"
+elif { [ "${1:-}" = 0 ] || [ "${1:-}" = 180 ]; } && [ "$#" -eq 1 ]; then
+    write_rotation "$1"
+else
+    echo "Usage: $0 --install USER | 0 | 180" >&2
+    exit 2
+fi
