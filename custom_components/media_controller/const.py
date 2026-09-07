@@ -71,6 +71,13 @@ CONF_HA_URL = "ha_url"
 # value at a time, and must not reload the entry or restart the tablet.
 CONF_PANEL_SETTINGS = "panel_settings"
 
+# Where a new ESP32-S3 panel is installed from: a browser, a USB cable, and
+# no ESPHome. It is here rather than in strings.json because Home Assistant
+# refuses a literal URL in a translation — a translator would otherwise have to
+# carry it through every language, and an address that moved would have to be
+# found in all of them. Every string that names it takes it as a placeholder.
+INSTALLER_URL = "https://vahac.github.io/ha-media-controller/"
+
 # A panel announces itself on the local network with this service type. It is
 # deliberately not T560-specific: the profile travels as a TXT record, so a
 # second kind of panel needs no second service type.

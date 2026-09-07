@@ -67,6 +67,7 @@ from .const import (
     ENTRY_TYPE_CONTROLLER,
     ENTRY_TYPE_PANEL,
     ENTRY_VERSION,
+    INSTALLER_URL,
     ZEROCONF_PROP_NAME,
     ZEROCONF_PROP_PANEL_ID,
     ZEROCONF_PROP_PROFILE,
@@ -655,6 +656,9 @@ class MediaControllerConfigFlow(
                 }
             ),
             errors=errors,
+            # Somebody adding a panel by hand may not have one yet. This is
+            # where the way to make one belongs.
+            description_placeholders={"installer_url": INSTALLER_URL},
         )
 
     # ------------------------------------------------------------------- pairing

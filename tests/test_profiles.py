@@ -566,7 +566,16 @@ class UpdateKindTests(unittest.TestCase):
                     self.assertTrue(issues[key]["description"])
 
     def test_the_repair_texts_use_only_offered_placeholders(self) -> None:
-        offered = {"name", "panel_contract", "integration_contract"}
+        # Every one of these is passed by async_update_panel_issue in
+        # compatibility.py. `installer_url` is there because Home Assistant
+        # refuses a literal address in a translation value; see
+        # tests/test_translation_urls.py.
+        offered = {
+            "name",
+            "panel_contract",
+            "integration_contract",
+            "installer_url",
+        }
         for key, issue in self._strings().items():
             with self.subTest(key=key):
                 used = set(

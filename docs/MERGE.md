@@ -136,7 +136,10 @@ reason to — the published *URL* is the compatibility surface there, not the
 path in the tree, and it is the workflow that decides that.
 
 The one thing that must not change casually is the published address itself,
-<https://vahac.github.io/ha-media-controller/>. It is written into the Home
-Assistant repair issues and the config-flow text, so a move means updating
-`custom_components/media_controller/strings.json` and its translation in the
-same change.
+<https://vahac.github.io/ha-media-controller/>. It is named by the Home
+Assistant repair issues and by the config-flow text, so a move means changing
+it there too — in **one** place, `INSTALLER_URL` in
+`custom_components/media_controller/const.py`. It is not in `strings.json`
+because Home Assistant refuses a literal URL in a translation value: it
+travels into the strings as the `{installer_url}` placeholder. See
+`tests/test_translation_urls.py`, which applies hassfest's own rule locally.

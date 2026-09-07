@@ -33,7 +33,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr, issue_registry as ir
 
-from .const import CONF_PROFILE, DOMAIN
+from .const import CONF_PROFILE, DOMAIN, INSTALLER_URL
 from .contract import (
     CONTRACT_VERSION,
     PANEL_CONTRACT_OK,
@@ -127,6 +127,9 @@ def async_update_panel_issue(
             "name": entry.title,
             "panel_contract": str(reported),
             "integration_contract": str(CONTRACT_VERSION),
+            # Only the firmware wordings use it, and an unused placeholder
+            # costs nothing; passing it for both keeps this one dictionary.
+            "installer_url": INSTALLER_URL,
         },
         learn_more_url=DOCUMENTATION_URL.get(
             kind, DOCUMENTATION_URL[UPDATE_KIND_FIRMWARE]
