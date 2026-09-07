@@ -89,7 +89,12 @@ class TranslationUrlTests(unittest.TestCase):
                 if "{installer_url}" in value
             ]
             with self.subTest(file=path.name):
-                self.assertIn("config.step.panel.description", named)
+                # The step somebody holding a new board actually opens, and
+                # the two repair issues that tell an out-of-date panel where
+                # a new build comes from.
+                self.assertIn(
+                    "config.step.install_firmware.description", named
+                )
                 self.assertIn(
                     "issues.panel_contract_outdated_firmware.description",
                     named,

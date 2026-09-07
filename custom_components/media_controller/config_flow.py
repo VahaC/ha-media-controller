@@ -17,6 +17,14 @@ data, the shared runtime records and the panel's stored `controller_entry_id`
 would be a migration that buys nothing; the user-facing strings carry the
 name, and they are the ones that were confusing.
 
+No form asks for a panel ID. A panel that announces itself over mDNS carries
+one in its record, and a panel that cannot announce itself sends one every
+three seconds anyway, in the poll it has to make before it can hold a token —
+provision.py turns that poll into a discovered device. Both roads arrive at
+the same place with the identifier already known, which is the only honest
+arrangement: an ESP32 panel never shows its MAC on screen, so anybody typing
+one would have been guessing.
+
 A panel is paired first and configured afterwards. The tablet is the one part
 of the setup that can fail on its own — it may be off, on another network, or
 showing a code from an older attempt — so the flow settles that before asking
@@ -95,6 +103,7 @@ from .profiles import (
     PANEL_PROFILES,
     ClientProfile,
     panel_profile,
+    profile_from_panel_id,
 )
 from .registry import (
     GROUPS,
@@ -142,13 +151,57 @@ def _ha_url_schema(suggested: str) -> vol.Schema:
     )
 
 
-def _pairing_schema() -> vol.Schema:
-    """Ask for the code the panel is showing on its own screen."""
-    return vol.Schema(
-        {
-            vol.Required(CONF_PAIRING_CODE): selector.TextSelector(),
-        }
+def _profile_selector() -> selector.SelectSelector:
+    """List the kinds of panel there are, by what each one can draw."""
+    return selector.SelectSelector(
+        selector.SelectSelectorConfig(
+            options=[
+                selector.SelectOptionDict(
+                    value=profile.slug,
+                    label=(
+                        f"{profile.name} "
+                        f"(up to {profile.entity_limit} room entities)"
+                    ),
+                )
+                for profile in PANEL_PROFILES
+            ],
+            mode=selector.SelectSelectorMode.LIST,
+        )
     )
+
+
+def _unnamed_panel(panel_id: str) -> str:
+    """Name a panel that has not said what it is called.
+
+    Only a panel that arrived by polling gets here; one that announced itself
+    carried a name. Four characters are enough to tell two of them apart and
+    short enough to read, and they are the end of a MAC address, which is
+    what is printed on the back of most boards.
+
+    The kind of panel is deliberately not part of this. It is a guess until
+    the pairing form comes back, and a suggested name that changed under
+    somebody correcting that guess would be worse than a plain one.
+    """
+    return f"Panel {panel_id[-4:]}".strip()
+
+
+def _pairing_schema(profile: ClientProfile | None = None) -> vol.Schema:
+    """Ask for the code the panel is showing on its own screen.
+
+    A panel discovered over mDNS said what it is and what it is called. A
+    panel that only polled for a token said neither, so those two questions
+    are asked here, on the form that was going to be shown anyway, rather
+    than on a page of their own before it.
+    """
+    fields: dict[Any, Any] = {
+        vol.Required(CONF_PAIRING_CODE): selector.TextSelector(),
+    }
+    if profile is not None:
+        fields[vol.Required(CONF_PROFILE, default=profile.slug)] = (
+            _profile_selector()
+        )
+        fields[vol.Optional(CONF_NAME)] = selector.TextSelector()
+    return vol.Schema(fields)
 
 
 # Failures that are not about the six digits, so putting them on that field
@@ -486,6 +539,10 @@ class MediaControllerConfigFlow(
     _panel_port: int = 0
     # Set once the panel itself has confirmed the code over that endpoint.
     _panel_confirmed: bool = False
+    # False for a panel that arrived by polling rather than by announcing
+    # itself: its record said nothing about what kind of device it is, so the
+    # pairing form carries that question too.
+    _profile_known: bool = True
     # Only when Home Assistant could not work out its own address.
     _ha_url: str = ""
     _controller_entry_id: str = ""
@@ -512,14 +569,44 @@ class MediaControllerConfigFlow(
         directly, and the panel is added afterwards — normally by announcing
         itself, without anybody opening this flow at all.
 
-        Panels normally arrive through discovery; the manual path exists for a
-        panel that cannot announce itself.
+        There is no entry here for adding a panel. Every panel arrives as a
+        discovered device — by announcing itself over mDNS, or by polling for
+        a token, which provision.py offers the same way — and a form that
+        added one by hand could only do it by asking somebody to type an
+        identifier no panel displays. What belongs here instead is the step
+        before that: where a panel that does not exist yet comes from.
         """
         if not controller_entries(self.hass):
             return await self.async_step_controller()
         return self.async_show_menu(
             step_id="user",
-            menu_options=["controller", "panel"],
+            menu_options=["controller", "install_firmware"],
+        )
+
+    async def async_step_install_firmware(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> ConfigFlowResult:
+        """Say where a panel that does not exist yet comes from.
+
+        A device has to be installed before it can be discovered, and this is
+        where somebody goes looking for it: "Add device" is the first thing
+        opened by a person holding a new board. Nothing is configured here and
+        nothing is stored — the step exists to carry one address, and Submit
+        goes back to the menu.
+
+        It is a form rather than an abort because an abort would read as a
+        failure, and rather than a link buried in another step's description
+        because that is not where anybody looks for it.
+        """
+        if user_input is not None:
+            return await self.async_step_user()
+
+        return self.async_show_form(
+            step_id="install_firmware",
+            data_schema=vol.Schema({}),
+            description_placeholders={"installer_url": INSTALLER_URL},
+            last_step=False,
         )
 
     # ---------------------------------------------------------------- controller
@@ -560,7 +647,7 @@ class MediaControllerConfigFlow(
             errors=errors,
         )
 
-    # --------------------------------------------------------------------- panel
+    # ----------------------------------------------------------- discovery
 
     async def async_step_zeroconf(
         self,
@@ -603,63 +690,53 @@ class MediaControllerConfigFlow(
         }
         return await self.async_step_pair()
 
-    async def async_step_panel(
+    async def async_step_integration_discovery(
         self,
-        user_input: dict[str, Any] | None = None,
+        discovery_info: dict[str, Any],
     ) -> ConfigFlowResult:
-        """Add a panel by hand, for a device that cannot announce itself.
+        """Offer a panel that asked for a token instead of announcing itself.
 
-        A controller is not required to get this far: if none exists, the flow
-        offers to build one after pairing, in async_step_new_controller.
+        A panel with no token polls the provisioning endpoint every three
+        seconds and is answered `unknown_panel` until somebody adds it. That
+        poll is a discovery: it proves the panel exists, it proves it can
+        reach Home Assistant, and it carries the panel's identifier. So
+        provision.py starts this flow with it, and a panel that mDNS never
+        reached still turns up as a device to click on.
+
+        Two things the mDNS record would have said are missing: what kind of
+        panel it is, and what it is called. Both are asked on the pairing
+        form rather than here, so that this path is still one form long.
+
+        Nothing may abort except a panel that is already configured: an abort
+        is the result of the discovery, and it would take the card with it.
         """
-        errors: dict[str, str] = {}
-        if user_input is not None:
-            self._profile = panel_profile(user_input[CONF_PROFILE])
-            self._registry = []
-            self._retired = []
-            self._panel_id = user_input[CONF_PANEL_ID].strip().lower()
-            # A panel added by hand is not discovered, so nothing is known
-            # about where it is. It polls, exactly as it always did.
-            self._panel_host = ""
-            self._panel_port = 0
-            self._panel_name = (
-                str(user_input.get(CONF_NAME) or "").strip() or self._panel_id
-            )
-            await self.async_set_unique_id(panel_unique_id(self._panel_id))
-            self._abort_if_unique_id_configured()
-            return await self.async_step_pair()
+        panel_id = str(discovery_info.get(CONF_PANEL_ID) or "").strip().lower()
+        if not panel_id:
+            return self.async_abort(reason="no_panel_id")
 
-        return self.async_show_form(
-            step_id="panel",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(
-                        CONF_PROFILE, default=PANEL_PROFILES[0].slug
-                    ): selector.SelectSelector(
-                        selector.SelectSelectorConfig(
-                            options=[
-                                selector.SelectOptionDict(
-                                    value=profile.slug,
-                                    label=(
-                                        f"{profile.name} "
-                                        f"(up to {profile.entity_limit} "
-                                        f"room entities)"
-                                    ),
-                                )
-                                for profile in PANEL_PROFILES
-                            ],
-                            mode=selector.SelectSelectorMode.LIST,
-                        )
-                    ),
-                    vol.Required(CONF_PANEL_ID): selector.TextSelector(),
-                    vol.Optional(CONF_NAME): selector.TextSelector(),
-                }
-            ),
-            errors=errors,
-            # Somebody adding a panel by hand may not have one yet. This is
-            # where the way to make one belongs.
-            description_placeholders={"installer_url": INSTALLER_URL},
-        )
+        # Also what stops a second card while one is already up: a flow in
+        # progress for this panel ends the new one here.
+        await self.async_set_unique_id(panel_unique_id(panel_id))
+        self._abort_if_unique_id_configured()
+
+        self._panel_id = panel_id
+        self._registry = []
+        self._retired = []
+        # A guess, and only the default of a question that is still asked.
+        self._profile = profile_from_panel_id(panel_id)
+        self._profile_known = False
+        self._panel_name = ""
+        # It polled, so it is the polling kind: nothing is known about where
+        # it is, and nothing may be pushed to it.
+        self._panel_host = ""
+        self._panel_port = 0
+
+        # Shown on the discovery card, before anybody has named it.
+        self.context["title_placeholders"] = {
+            "name": _unnamed_panel(panel_id),
+            "profile": self._profile.name,
+        }
+        return await self.async_step_pair()
 
     # ------------------------------------------------------------------- pairing
 
@@ -677,15 +754,30 @@ class MediaControllerConfigFlow(
         sending anybody off to another flow: adding a panel is one sitting —
         the code, then what it plays from, then its room controls.
 
-        Nothing here may abort, either. This step is what `async_step_zeroconf`
-        returns, so an abort becomes the *result of the discovery* and Home
-        Assistant never offers the device at all. A panel that is announcing
-        itself correctly must always produce a card.
+        Nothing here may abort, either. This step is what both discovery
+        steps return, so an abort becomes the *result of the discovery* and
+        Home Assistant never offers the device at all. A panel that reached
+        Home Assistant at all must always produce a card.
+
+        It also carries the two questions the mDNS record answers and a poll
+        does not — what kind of panel this is, and what to call it — for the
+        panel that arrived the second way. They are asked here rather than
+        before the code because a panel that never answers makes both
+        pointless, and because one form is better than two.
         """
         if user_input is not None:
+            if not self._profile_known:
+                # Asked here rather than before the code, because a panel that
+                # never answers makes both answers pointless.
+                self._profile = panel_profile(user_input[CONF_PROFILE])
+                self._panel_name = str(
+                    user_input.get(CONF_NAME) or ""
+                ).strip()
             code = str(user_input[CONF_PAIRING_CODE]).strip()
             self._pair_error = await self._async_offer_code(code)
             if self._pair_error is None:
+                if not self._panel_name:
+                    self._panel_name = _unnamed_panel(self._panel_id)
                 if self._panel_confirmed:
                     # The panel answered directly, so there is nothing to wait
                     # for. Its token is minted at the end of the form and
@@ -693,12 +785,18 @@ class MediaControllerConfigFlow(
                     return await self.async_step_controller_link()
                 return await self.async_step_pair_wait()
 
+        shown = self._panel_name or _unnamed_panel(self._panel_id)
         return self.async_show_form(
             step_id="pair",
-            data_schema=_pairing_schema(),
+            data_schema=self.add_suggested_values_to_schema(
+                _pairing_schema(
+                    None if self._profile_known else self._profile
+                ),
+                {CONF_NAME: shown} if not self._profile_known else {},
+            ),
             errors=_pairing_errors(self._pair_error),
             description_placeholders={
-                "name": self._panel_name,
+                "name": shown,
                 "profile": self._profile.name,
                 "host": self._panel_host or "unknown",
             },

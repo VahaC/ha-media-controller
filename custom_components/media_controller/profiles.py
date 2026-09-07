@@ -299,6 +299,21 @@ def panel_profile(slug: str | None) -> ClientProfile:
     return PANEL_PROFILES[0]
 
 
+# What a panel ID says about the hardware behind it. A T560 derives its own
+# from a hash and writes this prefix in front of it; an ESP32 panel uses its
+# MAC address and nothing else does. That makes the prefix the whole rule, and
+# it only has to hold for a panel that arrived without a profile record —
+# everything discovered over mDNS carries one.
+T560_ID_PREFIX = "t560_"
+
+
+def profile_from_panel_id(panel_id: str) -> ClientProfile:
+    """Return the profile a panel ID implies, for a panel that named none."""
+    if panel_id.strip().lower().startswith(T560_ID_PREFIX):
+        return T560
+    return ESP32_S3_PANEL
+
+
 def order_controls(controls: Iterable[str]) -> tuple[str, ...]:
     """Return controls in canonical order, without duplicates."""
     present = set(controls)

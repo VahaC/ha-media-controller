@@ -83,10 +83,11 @@ handed the real entity and call its own services. See
 A panel is any client that is paired rather than configured by hand. Two kinds
 exist: a tablet running the T560 application, and an ESP32 running the
 [paired firmware](ESP32_PAIRED_CONTROLLER.md). They behave identically here —
-the device type is chosen from a list, and everything after that is the same
-form — so *the panel* below means either.
+the same form, and the device type either announced or picked from a list — so
+*the panel* below means either.
 
-A panel **announces itself on the local network**. Home Assistant shows it as a
+A panel **arrives by itself**, either by announcing itself over mDNS or by
+polling for a token it does not have yet. Home Assistant shows it as a
 discovered device: press *Configure* and the form asks, in this order:
 
 1. **the six-digit code the panel is showing.** This is the only part of the
@@ -136,14 +137,30 @@ A new ESP32-S3 panel is installed from
 ESPHome. It joins the network from that page and then appears here by itself.
 See [ESP32_PAIRED_CONTROLLER.md](ESP32_PAIRED_CONTROLLER.md).
 
-A panel that cannot announce itself is added with *Add device* → *Panel*, where
-the panel ID has to match the one the device uses. A panel added this way is
-always the polling kind: nothing is known about where it is, so Home Assistant
-waits to be asked. A tablet derives that ID from
-its own hardware on first run and writes it to
-`~/.config/t560-music-panel/panel-id`; a paired ESP32 uses its MAC address,
-without separators, which its log prints at boot. Either way two devices never
-claim the same Home Assistant device.
+That address is in Home Assistant too, where somebody holding a new board goes
+looking for it: *Add device* → **Install firmware on a new ESP32-S3 panel**. It
+configures nothing and stores nothing — the step carries the link and the three
+steps that follow it. The address itself lives in one place in the code,
+`INSTALLER_URL` in `const.py`, because Home Assistant does not allow a literal
+URL inside a translation.
+
+**No form asks for a panel ID.** A panel that cannot announce itself over mDNS
+still has to poll `/api/media_controller/provision` before it can hold a token,
+and that poll carries its identifier, so Home Assistant offers it as a
+discovered device from the poll itself — see `_async_offer` in `provision.py`.
+A panel offered this way is always the polling kind: nothing is known about
+where it is, so Home Assistant waits to be asked. It is offered again every
+five minutes while it stays unadded, which is what makes a dismissed card
+recoverable without a restart.
+
+The identifier itself is the device's, never a person's to know: a tablet
+derives it from its own hardware on first run and writes it to
+`~/.config/t560-music-panel/panel-id`, and a paired ESP32 uses its MAC address
+without separators — a value it never displays, which is why asking for it was
+never a question anybody could answer. The mDNS record carries two things the
+poll does not, the kind of panel and its name, so the pairing form asks for
+those two when the panel arrived by polling. The kind is defaulted from the
+identifier by `profile_from_panel_id`, and the name from the kind.
 
 Each panel is its own config entry and its own Home Assistant device, with its
 own config sensor, linked to the source it reads. *Configure* on a panel device

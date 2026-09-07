@@ -8,7 +8,7 @@
         "description": "What are you adding?",
         "menu_options": {
           "controller": "Media player source — a Music Assistant player for panels to play from",
-          "panel": "Panel — only if it did not appear as a discovered device"
+          "install_firmware": "Install firmware on a new ESP32-S3 panel — a browser and a USB cable"
         }
       },
       "controller": {
@@ -18,20 +18,17 @@
           "player_entity": "Music Assistant player"
         }
       },
-      "panel": {
-        "title": "Add a panel",
-        "description": "A panel normally appears on its own once it announces itself on the network. Add it by hand only when it cannot. The panel ID must match the one the device announces; a panel writes its own to panel-id on first run.\n\nA new ESP32-S3 panel is flashed from a browser at {installer_url} — no ESPHome and no YAML. It then appears here by itself.",
-        "data": {
-          "profile": "Device type",
-          "panel_id": "Panel ID",
-          "name": "Name"
-        }
+      "install_firmware": {
+        "title": "Install a new panel",
+        "description": "A new ESP32-S3 panel is installed from a web page, over USB. No ESPHome, no YAML and no configuration file.\n\n1. Open {installer_url} in desktop Chrome, Edge or Opera — the browser talks to the board directly, so the page has to be open on the computer the panel is plugged into.\n2. Connect the panel with a USB-C data cable, press **Connect**, then **Install**.\n3. Enter your Wi-Fi on the same page when the install finishes. The credentials go down the cable and are never sent anywhere.\n\nThe panel then shows a six-digit code and appears here as a discovered device by itself. Nothing else has to be added by hand."
       },
       "pair": {
         "title": "Pair the panel",
-        "description": "{name} is showing a six-digit code on its screen. Type it here first: Home Assistant hands the panel an access token of its own, and nothing else is asked until the panel has answered. Nothing has to be typed on the panel.",
+        "description": "{name} is showing a six-digit code on its screen. Type it here first: Home Assistant hands the panel an access token of its own, and nothing else is asked until the panel has answered. Nothing has to be typed on the panel, and no identifier has to be read off it — the panel already said which one it is. A panel that announced itself over the network also said what kind of device it is and what it is called; one that did not is asking for both here.",
         "data": {
-          "pairing_code": "Pairing code"
+          "pairing_code": "Pairing code",
+          "profile": "Device type",
+          "name": "Name"
         }
       },
       "controller_link": {
@@ -91,6 +88,7 @@
     },
     "abort": {
       "already_configured": "This device is already configured.",
+      "already_in_progress": "This panel is already waiting to be added. Finish the card that is open for it.",
       "reauth_successful": "The panel will pick up its new token within a few seconds.",
       "no_panel_id": "The panel did not announce an identifier and cannot be added automatically."
     },
