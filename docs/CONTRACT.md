@@ -745,6 +745,14 @@ edited in `config.ini` over SSH.
 Home Assistant clamps every value before it sends one; a client clamps again
 rather than trusting the payload. `screen_off_seconds` is 0 for never.
 
+Both intervals are the rate at which a payload is re-read *while the page that
+draws it is the page on screen*. `poll_interval_ms` still paces the config
+sensor whatever is showing, because that payload has no page of its own;
+`playlist_poll_interval_ms` applies only behind the playlists page, which also
+fetches once when it opens. A client that is showing the room page is not
+reading playlists at any interval. See **Request only what the active page
+draws** under **Refresh timing**.
+
 `player_skin` names which of its layouts a client draws. The vocabulary is
 **the client's own**, because the layouts are: the tablet has two and the
 ESP32 three, and neither would know what to do with the other's names. Home
@@ -1200,6 +1208,57 @@ the playlists payload.
   second; see **Room states** below.
 - Clients poll Home Assistant for entity state. They must request single
   entities (`/api/states/<entity_id>`), never the full `/api/states` list.
+- A client polls only for what the page on its screen draws; see **Request only
+  what the active page draws** below.
+
+### Request only what the active page draws
+
+Every client shows one page at a time, and asks Home Assistant only for what
+that page displays. A payload is polled while the page that draws it is the
+page on screen, and not otherwise. This is a rule about repeating polls, and
+it is not optional: a room page of a hundred cards cost eight requests a second
+behind a player page nobody had left, and every panel in the house was reading
+a playlist sensor no one was looking at.
+
+The rule has two halves, and a client that implements one without the other is
+not conformant:
+
+- the poll cycle asks for a payload only while its page is showing;
+- the page fetches that payload once, at the moment it opens, so it never opens
+  on data that stopped being read when the person navigated away.
+
+Where each half lives in this repository:
+
+```text
+clients/t560/src/application.c          poll_states, gated with page_is;
+                                        enter_page, the fetch on opening a page
+firmware/media-controller-ui.yaml       every page's on_load calls one of
+                                        refresh_player, refresh_queue,
+                                        refresh_playlists, refresh_room
+firmware/media-controller-paired.yaml   the poll cycle, gated on current_page,
+                                        and the four scripts it names
+firmware/media-controller.yaml          the same four names over the native
+                                        API, where most state is pushed and
+                                        two of them do nothing
+```
+
+Three things are deliberately outside the rule, and a fourth needs a reason
+written next to it:
+
+- **the config sensor.** It has no page of its own and is read every cycle
+  whatever is showing, because it carries the room states and is the channel
+  `commands` arrives through. A command that took a minute to arrive would read
+  as broken.
+- **the panel status report.** It is a push, not a request for something to
+  draw.
+- **one-shot cache fills** — the icon catalog and the card pictures. Each stops
+  of its own accord once what it wanted has arrived, and both clients serve a
+  layout editor that lists the catalog whatever page their screen is on.
+
+When adding a request, name the page that needs it, gate it on that page, and
+give that page a way to fetch it the moment it opens. When adding a page,
+decide what it draws before deciding what it looks like. A request no page
+needs does not belong in a client.
 
 ### Room states
 

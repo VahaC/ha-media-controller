@@ -46,30 +46,56 @@ api:
       - script.execute: apply_light2_style
       - script.execute: apply_fan_style
       - script.execute: apply_ac_style
-      - http_request.get:
-          url: "${ha_url}/api/states/${playlists_entity}"
-          request_headers:
-            Authorization: "Bearer ${ha_token}"
-          capture_response: true
-          max_response_buffer_size: 32768
-          on_response:
-            then:
-              - if:
-                  condition:
-                    lambda: return response->status_code == 200;
-                  then:
-                    - script.execute:
-                        id: rebuild_playlists
-                        payload: !lambda return body;
-                  else:
-                    - lambda: |-
-                        ESP_LOGW("playlists", "HTTP %d",
-                                 response->status_code);
+      # -- The playlists are read only behind the page that lists them, so a
+      # -- reconnect while another page is showing costs nothing: page_playlists
+      # -- asks for them again when it opens. --
+      - if:
+          condition:
+            lambda: return id(current_page) == "playlists";
+          then:
+            - script.execute: refresh_playlists
 
 # -------------------- PLAYLIST FETCH --------------------
 interval:
-  # -- Fetch playlists from HA REST API every 5 minutes --
+  # -- Re-read the playlists every five minutes for as long as the page that
+  # -- lists them is the one showing. Opening that page fetches them through
+  # -- refresh_playlists, so this is only for somebody parked on it. --
   - interval: 300s
+    then:
+      - if:
+          condition:
+            lambda: return id(current_page) == "playlists";
+          then:
+            - script.execute: refresh_playlists
+
+script:
+  # ════════════════════════════════════════════════════════════
+  # PAGE-SCOPED FETCHES
+  # ════════════════════════════════════════════════════════════
+  # The interface package calls one of these from the on_load of every page,
+  # so that a page asks for what it draws at the moment it opens and nothing
+  # is polled behind a page nobody is looking at. See "Request only what the
+  # active page draws" in docs/CONTRACT.md.
+  #
+  # This firmware subscribes to Home Assistant over the native API, so most of
+  # what it draws is pushed to it as it changes and costs no request at all.
+  # The two scripts below therefore have nothing to do, and say so rather than
+  # being left out: the interface package calls all four names whichever
+  # transport is underneath it.
+
+  - id: refresh_player
+    then:
+      # -- Player state is pushed by the homeassistant sensors below. --
+      - lambda: return;
+
+  - id: refresh_room
+    then:
+      # -- Room states are pushed the same way, and the slot names arrive
+      # -- through ui_load_room_config when Home Assistant connects. --
+      - lambda: return;
+
+  - id: refresh_playlists
+    mode: restart
     then:
       - http_request.get:
           url: "${ha_url}/api/states/${playlists_entity}"
@@ -91,7 +117,6 @@ interval:
                         ESP_LOGW("playlists", "HTTP %d",
                                  response->status_code);
 
-script:
   - id: ui_load_room_config
     then:
       - http_request.get:
@@ -403,9 +428,16 @@ text_sensor:
       then:
         - script.execute: ui_sync_title
         # The integration refreshes the queue three seconds after a title
-        # change. Fetch after that debounce so the ESP32 does not read stale data.
+        # change. Fetch after that debounce so the ESP32 does not read stale
+        # data — and only while the queue is the page being looked at. A track
+        # that changes behind another page is picked up by the fetch
+        # page_queue makes when it opens.
         - delay: 4s
-        - script.execute: refresh_queue
+        - if:
+            condition:
+              lambda: return id(current_page) == "queue";
+            then:
+              - script.execute: refresh_queue
 
   # -- Album art URL (relative path from HA) --
   # -- Prefixed with ha_url substitution to form full URL --

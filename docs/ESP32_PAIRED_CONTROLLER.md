@@ -169,10 +169,20 @@ and one being added is still responsive.
 
 ## What it does at runtime
 
-Once a second it asks Home Assistant for the config sensor and the player. The
-config sensor is what names all the others, which is why it is fetched every
-cycle and not merely when a layout changes: it is also the channel Home
-Assistant sends screen and page commands through.
+Once a second it asks Home Assistant for the config sensor, and for the player
+while a page that draws it is showing. The config sensor is what names all the
+others, which is why it is fetched every cycle and not merely when a layout
+changes: it is also the channel Home Assistant sends screen and page commands
+through.
+
+Everything else is asked for only behind the page that displays it. The player
+is read on the three home layouts, and on the queue page, where a title change
+is what says the queue has moved on; the playlists are read only on the
+playlists page; the forecast only on the room page. Each of those pages also
+fetches once at the moment it opens, through the `refresh_` script the
+interface package calls from its `on_load`, so it never opens on data that
+stopped being read when somebody navigated away. A device parked on the player
+page makes one request a second, not four.
 
 Room states arrive inside the same config poll, in the `room_states` block
 the integration renders beside the registry: one small array per element,
@@ -184,9 +194,11 @@ every card stayed blank. A lamp somebody switched elsewhere now catches up
 with the next one-second poll; a lamp switched *here* does not wait, because
 the card asks for a fresh read as soon as Home Assistant has had time to act.
 
-The queue is fetched when the track title changes rather than on every tick,
-because it is the one large payload. Playlists have an interval of their own.
-Both intervals are owned by Home Assistant and arrive with the rest.
+The queue is fetched when the queue page opens, and again when the track title
+changes while that page is the one showing, rather than on every tick: it is
+the one large payload. Playlists have an interval of their own, which runs
+only behind the playlists page. Both intervals are owned by Home Assistant and
+arrive with the rest.
 
 Everything it learned — the token, the config sensor, the player, the queue and
 playlist sensors — is kept in flash, so a device that boots while Home Assistant

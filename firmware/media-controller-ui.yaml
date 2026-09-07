@@ -19,8 +19,20 @@
 #                                 cmd_repeat_set(mode), cmd_play_playlist,
 #                                 cmd_slot_toggle(slot),
 #                                 cmd_slot_brightness(slot, pct)
-#   Fetches this file calls.      refresh_queue, ui_load_room_config,
-#                                 play_queue_item
+#   Fetches this file calls.      refresh_queue, refresh_player,
+#                                 refresh_playlists, refresh_room,
+#                                 ui_load_room_config, play_queue_item
+#
+#                                 The four refresh_ scripts are called from
+#                                 the on_load of the page that draws what
+#                                 they fetch, and are the only place a page's
+#                                 data is asked for at the moment it opens.
+#                                 A transport whose state arrives on its own
+#                                 — the classic firmware subscribes over the
+#                                 native API — still has to declare them, as
+#                                 scripts that do nothing. See "Request only
+#                                 what the active page draws" in
+#                                 docs/CONTRACT.md.
 #   Scripts this file offers.     ui_apply_skin(skin) — the layout named in
 #                                 the config sensor, in contract spelling
 #                                 ui_apply_rotation(angle) — clockwise degrees
@@ -1994,6 +2006,7 @@ lvgl:
     - id: page_player
       on_load:
         - lambda: id(current_page) = "player";
+        - script.execute: refresh_player
       on_swipe_left:
         - script.execute: nav_to_switches_move_left
       on_swipe_right:
@@ -2335,6 +2348,7 @@ lvgl:
       bg_opa: COVER
       on_load:
         - lambda: id(current_page) = "player";
+        - script.execute: refresh_player
       on_swipe_left:
         - script.execute: nav_to_switches_move_left
       on_swipe_right:
@@ -2740,6 +2754,7 @@ lvgl:
       bg_opa: COVER
       on_load:
         - lambda: id(current_page) = "player";
+        - script.execute: refresh_player
       on_swipe_left:
         - script.execute: nav_to_switches_move_left
       on_swipe_right:
@@ -3107,6 +3122,7 @@ lvgl:
     - id: page_playlists
       on_load:
         - lambda: id(current_page) = "playlists";
+        - script.execute: refresh_playlists
       widgets:
         - label:
             text: "Playlists"
@@ -3261,6 +3277,7 @@ lvgl:
       on_load:
         - lambda: id(current_page) = "room";
         - lambda: id(switches_swipe_active) = false;
+        - script.execute: refresh_room
       on_swipe_right:
         - lambda: id(switches_swipe_active) = true;
         - script.execute: nav_home_move_right

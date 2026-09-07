@@ -204,9 +204,15 @@ text_sensor:
         - script.execute: ui_sync_title
         # The integration refreshes the queue three seconds after a title
         # change. Fetch after that debounce so the device does not read stale
-        # data.
+        # data — and only while the queue is the page being looked at. A
+        # track that changes behind another page is picked up by the fetch
+        # page_queue makes when it opens.
         - delay: 4s
-        - script.execute: refresh_queue
+        - if:
+            condition:
+              lambda: return id(current_page) == "queue";
+            then:
+              - script.execute: refresh_queue
 
   - platform: template
     id: media_artist
@@ -1615,6 +1621,58 @@ script:
                               id: rebuild_queue
                               payload: !lambda return body;
 
+  # ════════════════════════════════════════════════════════════
+  # PAGE-SCOPED FETCHES
+  # ════════════════════════════════════════════════════════════
+  # The interface package calls one of these from the on_load of every page,
+  # and the poll cycle at the foot of this file asks for a payload only while
+  # the page that draws it is the one showing. The two halves belong together:
+  # without the on_load fetch a page would open on whatever was last seen —
+  # a queue from two tracks ago, or a lamp that has since been switched off —
+  # and without the gate the device would spend a request a second on a page
+  # nobody is looking at. See "Request only what the active page draws" in
+  # docs/CONTRACT.md before adding a request to either half.
+  #
+  # refresh_queue is above, and is already page-scoped this way: nothing in
+  # the poll cycle asks for the queue, so page_queue's on_load is the whole of
+  # it.
+  #
+  # The two that fetch a large payload move the poll cycle's clock forward as
+  # well. Without that, opening a page would make the same request twice —
+  # once here and once on the tick a moment later — and an http_request blocks
+  # the main loop, which is exactly what must not happen under a finger that
+  # has just changed page. refresh_player deliberately does not: its clock is
+  # the one the config sensor is read on, and the commands Home Assistant
+  # sends through that sensor must not be delayed by somebody swiping between
+  # pages. Its payload is the small one, and a duplicate costs little.
+
+  - id: refresh_player
+    then:
+      - script.execute: poll_player
+
+  - id: refresh_playlists
+    then:
+      - if:
+          condition:
+            # -- A device that has not been told which sensor to read has
+            # -- nothing to fetch, and must not start the clock as though it
+            # -- had: the tick fetches the moment the config sensor names
+            # -- one. --
+            lambda: return !id(playlists_entity).empty();
+          then:
+            - lambda: id(last_playlist_poll_ms) = millis();
+            - script.execute: poll_playlists
+
+  # -- The room card states cost no request of their own: they ride the config
+  # -- poll, in its room_states block, so opening the room page brings that
+  # -- poll forward instead of asking for anything new. The forecast keeps its
+  # -- own half-hourly clock and the next tick fetches it if it went stale
+  # -- behind another page. --
+  - id: refresh_room
+    then:
+      - lambda: id(last_poll_ms) = millis();
+      - script.execute: ui_load_room_config
+
   - id: poll_playlists
     mode: restart
     then:
@@ -2610,8 +2668,21 @@ interval:
 
           if (now - id(last_poll_ms) >= id(poll_interval_ms)) {
             id(last_poll_ms) = now;
+            // -- The config sensor is the one payload with no page of its
+            //    own. It is read every cycle whatever is showing, because it
+            //    is also the channel Home Assistant sends display,
+            //    brightness, page and restart commands through, and it
+            //    carries the room card states. --
             id(ui_load_room_config)->execute();
-            id(poll_player)->execute();
+            // -- The player is drawn by the three home layouts, and the
+            //    queue page follows it too: a title change is what tells
+            //    this device that the queue behind the page it is showing
+            //    has moved on. Nothing on the playlists page mentions the
+            //    player, and the room page mentions it even less. --
+            if (id(current_page) == "player" ||
+                id(current_page) == "queue") {
+              id(poll_player)->execute();
+            }
           }
 
           // -- Room states need no poll of their own: they ride the config
@@ -2619,11 +2690,14 @@ interval:
           //    endpoint they used to come through answers administrators
           //    only. --
 
-          // -- The forecast behind the weather blocks: at once when there
-          //    is something to ask for, then every half hour. The clock
-          //    does not start until the component names an entity, so a
-          //    page with no weather on it never pays for one. --
-          if (!id(ha_token).empty() &&
+          // -- The forecast behind the weather blocks: at once when the
+          //    room page is the one showing and there is something to ask
+          //    for, then every half hour for as long as it stays showing.
+          //    The clock does not start until the component names an
+          //    entity, so a page with no weather on it never pays for one,
+          //    and a clock that went stale behind another page is due the
+          //    moment the room page opens again. --
+          if (!id(ha_token).empty() && id(current_page) == "room" &&
               (id(last_forecast_poll_ms) == 0 ||
                now - id(last_forecast_poll_ms) >= 1800000)) {
             id(last_forecast_poll_ms) = now;
@@ -2633,7 +2707,11 @@ interval:
           // -- Which pictures exist: once after pairing and then every
           //    six hours. It changes when the integration is upgraded and
           //    never otherwise, so anything oftener would be a request
-          //    spent on an answer that is always the same. --
+          //    spent on an answer that is always the same. Not scoped to
+          //    the room page, and neither is the picture fetch below: both
+          //    are one-shot fills that stop of their own accord, and the
+          //    layout editor this device serves lists the catalog whatever
+          //    page the screen is on. --
           if (!id(ha_token).empty() &&
               (id(last_catalog_poll_ms) == 0 ||
                now - id(last_catalog_poll_ms) >=
@@ -2654,11 +2732,15 @@ interval:
             }
           }
 
-          // -- Fetch as soon as the config sensor has named the playlists
-          //    entity, then on its own interval. The clock does not start
-          //    until there is something to ask for, so a freshly paired
-          //    device does not show an empty playlist page for a minute. --
+          // -- Fetched only behind the page that lists them: as soon as
+          //    the config sensor has named the playlists entity, then on
+          //    its own interval. The clock does not start until there is
+          //    something to ask for, so a device that is paired while the
+          //    playlists page is open does not show it empty for a minute,
+          //    and refresh_playlists brings the first fetch forward to the
+          //    moment the page opens. --
           if (!id(playlists_entity).empty() &&
+              id(current_page) == "playlists" &&
               (id(last_playlist_poll_ms) == 0 ||
                now - id(last_playlist_poll_ms) >=
                    id(playlist_poll_interval_ms))) {
@@ -2740,6 +2822,7 @@ lvgl:
       on_load:
         - lambda: id(current_page) = "room";
         - lambda: id(switches_swipe_active) = false;
+        - script.execute: refresh_room
       on_swipe_right:
         - lambda: id(switches_swipe_active) = true;
         - script.execute: nav_home_move_right

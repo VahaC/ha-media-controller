@@ -95,6 +95,13 @@ is ever written by hand is an optional set of fallbacks.
 - The poll interval, the playlist refresh interval, and that timeout are
   number entities on the panel's Home Assistant device. A change is applied
   within a poll cycle and restarts nothing.
+- A poll cycle asks Home Assistant only for what the page on screen draws, and
+  a page reads what it needs the moment it is opened. The player entity is not
+  read behind the playlists, and a room page of a hundred cards costs nothing
+  while the player is showing. The config sensor is the exception and is read
+  every cycle whatever is showing: it carries the room card states and is how
+  Home Assistant reaches the panel to turn the display off, change the page or
+  restart it.
 - The backlight is a switch in Home Assistant, and its level a slider where
   the tablet grants write access to the kernel backlight. Pressing the Power
   button on the tablet is visible there, and the other way round.

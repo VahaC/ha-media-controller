@@ -64,7 +64,9 @@ Planned shape:
    problem does not exist; after the move it does.
 
 Clients must keep requesting single entities. Reading the whole `/api/states`
-list is forbidden on the tablet for performance reasons.
+list is forbidden on the tablet for performance reasons. They must also keep
+polling only for what the page on screen draws: see **Request only what the
+active page draws** in [the contract](CONTRACT.md).
 
 ## 2. Panel portability
 

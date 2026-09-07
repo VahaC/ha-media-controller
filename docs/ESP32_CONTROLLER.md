@@ -320,6 +320,25 @@ Give each layout an `online_image` whose `resize:` already matches the widget,
 and share one source between layouts that need the same size. `resize:`
 preserves aspect ratio, so non-square art is letterboxed rather than stretched.
 
+## What it asks Home Assistant for
+
+Almost nothing. State arrives over the ESPHome native API, pushed as Home
+Assistant publishes it, so the player, the room switches and the slot labels
+cost no request at all. Only three payloads go over REST, and each is asked
+for behind the page that draws it:
+
+- the **queue**, when the queue page opens, and again after a track change
+  while that page is the one showing;
+- the **playlists**, when the playlists page opens, and every five minutes for
+  as long as it stays open;
+- the **album art**, which follows the picture the player pushed.
+
+The interface package this firmware shares with the paired one calls a
+`refresh_` script from every page's `on_load`. Two of them — `refresh_player`
+and `refresh_room` — do nothing here, and say so: what they would fetch is
+already being pushed. See **Request only what the active page draws** in
+[the contract](CONTRACT.md).
+
 ## REST token limitation
 
 This firmware uses the Home Assistant REST transport for queue, playlist, and

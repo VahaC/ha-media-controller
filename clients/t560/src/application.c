@@ -267,6 +267,50 @@ static const gchar *page_title(const gchar *page)
     return NULL;
 }
 
+/* Whether the page on screen draws a given payload.
+ *
+ * A poll cycle asks Home Assistant only for what the page in front of the
+ * person needs. The room page used to cost eight requests a second while the
+ * player page was the one being looked at, and the player entity was read
+ * once a second behind a list of playlists that does not mention it.
+ *
+ * The config sensor is the one payload with no page of its own and is read
+ * every cycle whatever is shown: it is the channel Home Assistant sends
+ * display, brightness, page and restart commands through, and a button there
+ * that took a minute to do anything would read as broken.
+ *
+ * See "Request only what the active page draws" in docs/CONTRACT.md before
+ * adding a request to the poll cycle. */
+static gboolean page_is(const PanelApplication *application, const gchar *page)
+{
+    return g_strcmp0(application->current_page, page) == 0;
+}
+
+/* Records the page that is now on screen and reads what it draws at once.
+ *
+ * The immediate read is the other half of polling by page: the entities
+ * behind a page are not asked about while another page is showing, so
+ * without it a page would open on whatever was last seen — a queue from two
+ * tracks ago, or a lamp that has since been switched off — until the next
+ * tick. `page` must be one of PANEL_PAGES. */
+static void enter_page(PanelApplication *application, const gchar *page)
+{
+    if (application->current_page == page)
+        return;
+
+    application->current_page = page;
+    /* Home Assistant shows which page the panel is on, so a page change is
+     * worth telling it about at once. */
+    application->next_status_report_us = 0;
+    /* The round robin starts again at the first card, so the top of the page
+     * is filled in first rather than wherever the cursor happened to stand,
+     * and the playlists are due immediately rather than a minute after they
+     * were last read behind another page. */
+    application->room_poll_cursor = 0;
+    application->next_playlist_poll_us = 0;
+    poll_states(application);
+}
+
 static gchar *service_json(const gchar *entity, const gchar *key,
                            const gchar *string_value, gint boolean_value)
 {
@@ -424,7 +468,12 @@ static void play_selected_playlist(PanelApplication *application)
     call_service(application, "music_assistant", "play_media", json);
     g_free(json);
     g_object_unref(builder);
+    /* Playing a playlist ends on the player page. The interface is moved and
+     * the poll cycle is told, because a page reached without a navigation
+     * button emits no event of its own and the cycle would otherwise keep
+     * reading the playlists behind a player page. */
     panel_ui_show_page(application->ui, "player", "NOW PLAYING");
+    enter_page(application, canonical_page("player"));
 }
 
 static void handle_ui_event(PanelUiEvent event, const gchar *value, gint index,
@@ -540,10 +589,7 @@ static void handle_ui_event(PanelUiEvent event, const gchar *value, gint index,
     case PANEL_UI_SHOW_PAGE: {
         const gchar *page = canonical_page(value);
         if (page != NULL)
-            application->current_page = page;
-        /* Home Assistant shows which page the panel is on, so a tap on the
-         * tablet is worth telling it about at once. */
-        application->next_status_report_us = 0;
+            enter_page(application, page);
         if (g_str_equal(value, "queue"))
             call_service(application, "media_controller", "refresh", "{}");
         break;
@@ -940,9 +986,8 @@ static void apply_commands(PanelApplication *application,
          * showing the wrong one would be worse than showing none. */
         const gchar *page = canonical_page(commands->page);
         if (page != NULL && application->ui != NULL) {
-            application->current_page = page;
             panel_ui_show_page(application->ui, page, page_title(page));
-            application->next_status_report_us = 0;
+            enter_page(application, page);
         }
     }
 
@@ -1575,7 +1620,13 @@ static void icon_finished(guint status_code, GBytes *body,
 /* One picture at a time, and only what the catalog says exists. Each is a
  * couple of kilobytes and they are spread over the poll rather than fetched
  * in a burst, because the GTK main loop on this tablet is a release
- * requirement and a burst of downloads is exactly what it must not do. */
+ * requirement and a burst of downloads is exactly what it must not do.
+ *
+ * Deliberately not scoped to the room page, unlike everything else in the
+ * cycle. Both fetches are one-shot fills that stop of their own accord —
+ * the catalog moves when the integration is upgraded, a picture never does,
+ * and both are cached on disk — and the layout editor this panel serves
+ * lists the catalog whatever page the tablet is showing. */
 static void maybe_fetch_card_art(PanelApplication *application, gint64 now)
 {
     if (application->client == NULL)
@@ -1956,20 +2007,31 @@ static gboolean poll_states(gpointer user_data)
         return G_SOURCE_CONTINUE;
     }
 
-    start_state_request(application, application->config->layout.player_entity,
-                        POLL_REQUEST_PLAYER, 0);
-    start_state_request(application, application->config->layout.queue_entity,
-                        POLL_REQUEST_QUEUE, 0);
-    if (application->next_playlist_poll_us == 0 ||
-        now >= application->next_playlist_poll_us) {
+    /* Everything below belongs to one page, and is asked for only while that
+     * page is the one on screen. See page_is above. */
+    if (page_is(application, "player")) {
+        start_state_request(application,
+                            application->config->layout.player_entity,
+                            POLL_REQUEST_PLAYER, 0);
+    }
+    if (page_is(application, "queue")) {
+        start_state_request(application,
+                            application->config->layout.queue_entity,
+                            POLL_REQUEST_QUEUE, 0);
+    }
+    if (page_is(application, "playlists") &&
+        (application->next_playlist_poll_us == 0 ||
+         now >= application->next_playlist_poll_us)) {
         start_state_request(application,
                             application->config->layout.playlists_entity,
                             POLL_REQUEST_PLAYLISTS, 0);
         application->next_playlist_poll_us =
             now + (gint64)application->config->playlist_poll_interval_ms * 1000;
     }
-    poll_room_cards(application);
-    maybe_poll_forecast(application, now);
+    if (page_is(application, "room")) {
+        poll_room_cards(application);
+        maybe_poll_forecast(application, now);
+    }
     maybe_fetch_card_art(application, now);
 
     /* Every request was rejected before it started, so no callback will run
