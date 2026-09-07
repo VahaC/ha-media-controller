@@ -178,9 +178,11 @@ not use the recovery portal — reconfigure over USB instead.
 ### Which version you installed
 
 The page installs one named version, and the binary it names lives under a path
-carrying that version, so a link to a build keeps meaning the same build. Older
-images stay attached to their releases on the
-[releases page](https://github.com/VahaC/ha-media-controller/releases).
+carrying that version, so a link to a build keeps meaning the same build.
+
+The page carries **that one version only**: each deploy replaces the whole
+site. An older image is rebuilt from its tag, or attached to its release by
+hand at release time.
 
 ## The ESPHome package path
 

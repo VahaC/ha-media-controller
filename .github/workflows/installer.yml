@@ -6,10 +6,23 @@ name: Web installer
 # page, because ESP Web Tools needs a secure context and a device on a house
 # network has none.
 #
-# It runs on a firmware tag, so the page only ever offers a build somebody
+# It runs on a release tag, so the page only ever offers a build somebody
 # decided to release, and the binary lands under installer/firmware/<version>/
 # — a path that names the version rather than a fixed one whose contents
 # change underneath the people who linked to it.
+#
+# `v*` is what this repository actually tags: one tag per release, covering
+# every component at once. The per-component scheme in README's Versioning
+# section has never been used, and a workflow triggered on `firmware-v*` would
+# simply never have run.
+#
+# It creates no release. Releases here are written by hand, one per version;
+# a workflow that made its own would be a second release for the same change.
+# The binary is published by the page instead. A deploy replaces the whole
+# site, so to keep a copy of an older image, attach it to its release once:
+#
+#     gh run download <run-id> -n web-installer -D site
+#     gh release upload <tag> site/firmware/*/media-controller-factory.factory.bin
 #
 # ---------------------------------------------------------------------------
 # ONE MANUAL STEP, ONCE. GitHub Pages has to be set to build from Actions:
@@ -21,7 +34,7 @@ name: Web installer
 on:
   push:
     tags:
-      - "firmware-v*"
+      - "v*"
   workflow_dispatch:
 
 # Nothing by default; each job asks for what it needs.
@@ -38,8 +51,7 @@ jobs:
     name: Build the installer site
     runs-on: ubuntu-latest
     permissions:
-      # Attaching the image to the release the tag belongs to.
-      contents: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -64,15 +76,6 @@ jobs:
         run: python tools/make-web-installer.py --build-dir firmware/.esphome/build
       - name: Check every file the manifest names exists
         run: python tools/check-installer-manifest.py
-      - name: Attach the image to the release
-        # The page offers one version. The release page keeps every version,
-        # so a panel can be put back onto an older build without a checkout.
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            installer/firmware/*/media-controller-factory.factory.bin
-            installer/firmware/*/manifest.json
       - name: Package the site for Pages
         uses: actions/upload-pages-artifact@v3
         with:

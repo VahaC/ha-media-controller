@@ -121,9 +121,10 @@ shows on the device: `media_controller.esp32s3` for the classic one,
 `media_controller.esp32s3_paired` for the paired one, and
 `media_controller.esp32s3_factory` for the same firmware as a shipped image.
 
-A `firmware-vX.Y.Z` tag is also what publishes the web installer: pushing one
-compiles the factory image, checks it carries no credentials, and deploys the
-page with that version's binary under a path naming it. See
+Pushing a `vX.Y.Z` tag is also what publishes the web installer: it compiles
+the factory image, checks it carries no credentials, and deploys the page with
+that version's binary under a path naming it. It creates no release — releases
+here are written by hand. See
 [.github/workflows/installer.yml](.github/workflows/installer.yml).
 
 `version` in `custom_components/media_controller/manifest.json` is bumped only
