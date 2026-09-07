@@ -3,6 +3,12 @@ secrets.yaml
 *.local.yaml
 .esphome/
 
+# Web installer build output. The page is committed; the firmware image, its
+# manifest and the version index are produced by tools/make-web-installer.py
+# and published by .github/workflows/installer.yml.
+installer/firmware/
+installer/versions.json
+
 # Python tooling
 __pycache__/
 *.py[cod]
@@ -27,3 +33,4 @@ clients/t560/t560-panel
 clients/t560/build/
 /.vs
 /TestResults
+/r13-rollback-staging

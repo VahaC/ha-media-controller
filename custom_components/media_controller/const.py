@@ -56,6 +56,16 @@ CONF_PANEL_ID = "panel_id"
 CONF_CONTROLLER_ENTRY_ID = "controller_entry_id"
 CONF_HOST = "host"
 CONF_NAME = "name"
+# The port a panel serves its own provisioning endpoint on, from the discovery
+# record. Zero — which is what the T560 tablet advertises, because it serves
+# nothing — means Home Assistant waits to be polled instead of pushing.
+CONF_PANEL_PORT = "panel_port"
+DEFAULT_PANEL_PORT = 80
+# Where Home Assistant is, as it should be given to a panel. Stored only when
+# Home Assistant could not work one out itself and somebody typed it; normally
+# the answer comes from the network helpers on every delivery, so a Home
+# Assistant that moves does not strand a panel with a stale address.
+CONF_HA_URL = "ha_url"
 # The tablet-local settings Home Assistant owns, stored on the panel entry.
 # They are entry data rather than options: they are changed from entities, one
 # value at a time, and must not reload the entry or restart the tablet.

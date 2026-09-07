@@ -1,3 +1,11 @@
+# The ESPHome route to the paired firmware, for an installation that already
+# runs ESPHome and wants this device in that dashboard.
+#
+# If you do not run ESPHome, you do not need any of this: the same firmware is
+# published as one finished image at
+# https://vahac.github.io/ha-media-controller/ and installed from a browser
+# over USB. See docs/ESP32_PAIRED_CONTROLLER.md.
+
 substitutions:
   # Keep the existing ESPHome device name when updating an already adopted
   # device; changing it creates a different device identity in Home Assistant.

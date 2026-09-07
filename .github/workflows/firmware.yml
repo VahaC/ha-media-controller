@@ -5,10 +5,16 @@ on:
     branches: [main, dev]
     paths:
       - "firmware/**"
+      - "components/**"
+      - "installer/**"
+      - "tools/make-web-installer.py"
       - ".github/workflows/firmware.yml"
   pull_request:
     paths:
       - "firmware/**"
+      - "components/**"
+      - "installer/**"
+      - "tools/make-web-installer.py"
       - ".github/workflows/firmware.yml"
   workflow_dispatch:
 
@@ -28,6 +34,10 @@ jobs:
         # receives Wi-Fi from the importing device YAML, so validate it through
         # a complete local device wrapper instead of pretending the package is
         # a complete device configuration.
+        #
+        # The factory entrypoint needs no wrapper: it is a complete device
+        # configuration on purpose, because it is the thing that gets built
+        # and published.
         #
         # grid_component_source and asset_base_url are overridden to the
         # checkout. Their defaults are this repository on main, which is right
@@ -61,6 +71,7 @@ jobs:
             '    password: ci-validation-password' \
             > firmware/.ci-paired.yaml
           esphome config firmware/.ci-paired.yaml
+          esphome config firmware/media-controller-factory.yaml
 
       - name: Check the interface package names no transport
         # The two firmwares can only share an interface for as long as the
@@ -78,12 +89,59 @@ jobs:
             status=1
           fi
 
-          # ha_url and asset_base_url are the two the interface is allowed to
-          # expect from whichever firmware includes it.
+          # asset_base_url is the only one the interface is allowed to expect
+          # from whichever firmware includes it. ha_url used to be the second;
+          # it is gone because the paired firmware learns its address at
+          # runtime and the factory image has none at all, so an interface
+          # that named one could not be built into that image.
           if grep -o '\${[a-z_0-9]*}' "$ui" | sort -u \
-              | grep -vE '^\$\{(ha_url|asset_base_url)\}$'; then
-            echo "::error file=$ui::The interface package may only use the ha_url and asset_base_url substitutions."
+              | grep -vE '^\$\{asset_base_url\}$'; then
+            echo "::error file=$ui::The interface package may only use the asset_base_url substitution."
             status=1
           fi
 
           exit $status
+
+      - name: Check the shipped image stays universal
+        # These read firmware/, components/ and installer/ rather than
+        # custom_components/, so they belong to this workflow's path filter
+        # and not to the integration's. They are the cheap half of the rule
+        # the factory job enforces against the compiled binary.
+        run: python -m unittest tests.test_factory_firmware -v
+
+  factory:
+    name: Build the web installer
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Cache the ESPHome and PlatformIO toolchains
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            ~/.cache/pip
+            ~/.esphome
+          key: esphome-factory-${{ hashFiles('firmware/media-controller-factory.yaml') }}
+          restore-keys: esphome-factory-
+      - name: Install ESPHome
+        run: pip install esphome
+      - name: Compile the factory firmware
+        run: esphome compile firmware/media-controller-factory.yaml
+      - name: Assemble the installer, and refuse a personal image
+        # This is where the "no credentials in an artifact" rule is actually
+        # enforced: the script reads the merged image and fails the build if
+        # anything installation-specific is inside it, before it is ever
+        # published. See tools/make-web-installer.py.
+        run: python tools/make-web-installer.py --build-dir firmware/.esphome/build
+      - name: Check every file the manifest names exists
+        run: python tools/check-installer-manifest.py
+      - name: Upload the installer site
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-installer
+          path: installer/
+          if-no-files-found: error

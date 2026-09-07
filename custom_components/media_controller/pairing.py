@@ -191,6 +191,45 @@ class PairingStore:
         pairing.state = STATE_COLLECTED
         return token
 
+    def confirmed(
+        self,
+        panel_id: str,
+        code: str,
+        *,
+        now: float | None = None,
+    ) -> None:
+        """Open a pairing the panel has already confirmed out of band.
+
+        A panel that serves a provisioning endpoint is asked directly whether
+        the typed code is the one on its screen, so by the time this is called
+        the question the poll answers has already been answered. The record
+        still has to exist, because it is what carries the token from the
+        moment it is minted to the moment it is delivered.
+        """
+        self.arm(panel_id, code, now=now)
+        self.confirm(panel_id, code, now=now)
+
+    def pending(
+        self,
+        panel_id: str,
+        *,
+        now: float | None = None,
+    ) -> tuple[str, str] | None:
+        """Return the code and token of a pairing waiting to be delivered.
+
+        Unlike `collect`, this does not spend the pairing: a delivery that
+        fails halfway has to be able to try again, and only a delivery the
+        panel confirmed may consume it.
+        """
+        pairing = self._active(panel_id, now)
+        if (
+            pairing is None
+            or pairing.state != STATE_CONFIRMED
+            or not pairing.token
+        ):
+            return None
+        return pairing.code, pairing.token
+
     def claim(
         self,
         panel_id: str,

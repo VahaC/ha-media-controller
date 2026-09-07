@@ -1,0 +1,118 @@
+# Media Controller — factory ESP32-S3 firmware
+#
+# One binary for every ESP32-S3-4848S040. It is what the web installer flashes
+# and it is deliberately impersonal: no Wi-Fi credentials, no Home Assistant
+# address, no access token, no API encryption key and no OTA password are
+# compiled into it. Two identical panels flashed from the same file differ only
+# by their MAC address, and everything else arrives afterwards.
+#
+# Nothing is duplicated here. The whole device — display, touchscreen, LVGL
+# pages, room grid, polling, pairing — is media-controller-paired.yaml, which
+# is included as a package exactly as a user's own device YAML includes it.
+# This file adds only the four things a shipped image needs that a personal one
+# does not:
+#
+#   1. an empty ha_url, so the address is learned during pairing instead of
+#      being compiled in;
+#   2. Improv over the serial port, so the same browser tab that flashed the
+#      device can hand it Wi-Fi credentials without them ever leaving the
+#      machine;
+#   3. an access point and a captive portal, so a device whose network
+#      changed can be given new credentials without a cable;
+#   4. a per-device API encryption key, negotiated on the first connection
+#      rather than shared between every copy of this image.
+#
+# How a device gets from here to a working panel is in
+# docs/ESP32_PAIRED_CONTROLLER.md, under "The web installer".
+#
+# ---------------------------------------------------------------------------
+# There is no OTA in this image, and that is a decision, not an omission.
+# ESPHome's OTA needs a password, and a password compiled into a binary that
+# anybody can download is not a password. Until the firmware can authenticate
+# an update per device, an update is a USB flash from the same web installer,
+# which keeps Wi-Fi credentials and the pairing in flash. See "Updating" in
+# docs/ESP32_PAIRED_CONTROLLER.md.
+# ---------------------------------------------------------------------------
+
+substitutions:
+  # Every device from this image starts with the same name; name_add_mac_suffix
+  # below makes the hostname and the mDNS record unique, so a house can flash
+  # four panels in an afternoon without them colliding.
+  device_name: media-controller
+  friendly_name: Media Controller
+
+  # Empty on purpose. This is what makes the image universal: the paired
+  # firmware treats a non-empty value as the compile-time authority and an
+  # empty one as "ask pairing", and Home Assistant sends the address it
+  # advertises for itself when the six-digit code is confirmed.
+  ha_url: ""
+
+  # This image is built from a checkout and released as a file, so it takes
+  # both the room-grid component and the interface artwork from the tree it is
+  # built in rather than from whatever is on main at the time. A released
+  # binary that quietly re-fetched either would not be the thing that was
+  # tested. Both paths are relative to this directory.
+  grid_component_source: ../components
+  asset_base_url: assets
+
+packages:
+  paired: !include media-controller-paired.yaml
+
+esphome:
+  # media-controller.local is a name four panels cannot share. The suffix is
+  # the last three bytes of the MAC, which is also what panel_id is derived
+  # from, so a device's network name and its Home Assistant identity agree.
+  name_add_mac_suffix: true
+  project:
+    name: media_controller.esp32s3_factory
+    version: "${firmware_version}"
+  build_flags:
+    # captive_portal auto-loads the web_server OTA platform, which answers
+    # POST /update with no password at all. On the house network that is a
+    # firmware upload endpoint beside the layout editor, which is a great
+    # deal more than the editor's own missing password buys anybody. This
+    # define is what ESPHome sets for `web_server: ota: false`, and it
+    # narrows the route to "only while the captive portal is actually
+    # serving" — that is, only on the device's own recovery access point,
+    # which exists solely because the device could not reach a network.
+    #
+    # It is set as a build flag rather than through `web_server:` because
+    # declaring that component would add the entity dashboard this firmware
+    # deliberately does not serve.
+    - "-DUSE_WEBSERVER_OTA_DISABLED"
+
+# The board's USB-C port is behind a USB-to-serial bridge on UART0: GPIO19 and
+# GPIO20, which an ESP32-S3 would use for native USB, are the touchscreen's I²C
+# bus here. The ESP-IDF default of USB_SERIAL_JTAG therefore reaches nothing on
+# this hardware, and Improv — which is the whole point of the serial port in
+# this image — needs a port the browser can actually open.
+logger:
+  hardware_uart: UART0
+
+# No networks: the image ships with none. Wi-Fi arrives over Improv from the
+# installer page, or through the captive portal below, and is kept in flash
+# from then on.
+#
+# The access point is the recovery path. A device that cannot reach the network
+# it was given — because the router changed, or the house moved to another
+# SSID — raises its own after ap_timeout and serves the portal, so it can be
+# given new credentials without being taken off the wall.
+wifi:
+  ap:
+    ssid: "Media Controller Setup"
+    ap_timeout: 1min
+
+captive_portal:
+
+# Wi-Fi over the USB cable, from the same page that flashed the device. The
+# credentials go from the browser straight down the serial port: they are never
+# sent anywhere, never built into anything, and never appear in a log.
+improv_serial:
+
+# Encryption with no key. The device boots unprovisioned and the first client
+# to connect gives it a key of its own, which it keeps in flash. That is what
+# lets a shared binary still have a per-device secret — a key written here
+# would be the same on every panel flashed from this file, which is no secret
+# at all.
+api:
+  encryption:

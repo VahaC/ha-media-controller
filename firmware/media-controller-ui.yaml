@@ -54,8 +54,10 @@
 # talks to Home Assistant directly is what this split exists to prevent: give
 # it a cmd_ script instead.
 #
-# Two substitutions are expected from whichever file includes this one:
-# ha_url and asset_base_url.
+# One substitution is expected from whichever file includes this one:
+# asset_base_url. This package names no Home Assistant address, and there is
+# nothing left in it that would need one — the two online_image sources carry
+# an unroutable placeholder and are pointed at the real picture at runtime.
 #
 # This file is reached by a relative !include from a file devices fetch by raw
 # URL, so its path is frozen for the same reason media-controller.yaml is.
@@ -243,13 +245,20 @@ image:
     type: RGB
     transparency: alpha_channel
     
-# -- Initial URL is a placeholder; real URL is set dynamically via entity_picture sensor --
+# -- The URL below is a placeholder and is never fetched: online_image
+# -- requires one at compile time, and the real address is written by
+# -- ui_load_album_art from the entity_picture sensor. It is a literal rather
+# -- than a substitution because this package names no address — see the
+# -- header — and because a firmware that learns its address at runtime has
+# -- none to put here. 0.0.0.0 is unroutable, so a build in which the
+# -- placeholder was somehow fetched fails loudly instead of reaching a
+# -- stranger's server. --
 # -- Classic layout source, decoded straight to the size of the screen. Without
 # -- resize the buffer is whatever Home Assistant served (2 MB of PSRAM for a
 # -- 1000x1000 cover) and the 480x480 widget shows a centre crop of it; at this
 # -- size the whole cover is visible and the decode is cheaper. --
   - platform: online_image
-    url: "${ha_url}/"
+    url: "http://0.0.0.0/"
     id: album_art
     format: JPEG
     type: RGB565
@@ -273,7 +282,7 @@ image:
 # -- so non-square art is letterboxed in the disc instead of stretched. Only the
 # -- source belonging to the active layout is downloaded; see ui_load_album_art.
   - platform: online_image
-    url: "${ha_url}/"
+    url: "http://0.0.0.0/"
     id: album_art_small
     format: JPEG
     type: RGB565

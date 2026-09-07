@@ -125,6 +125,14 @@ What version 7 adds, precisely:
 `toggle` is **not** new and means on a thermostat what it has always meant:
 the element can be turned off and on again. See **Climate cards** below.
 
+**Discovery and pairing** was written down after version 7 and moves no
+version number either. Not one payload, entity or endpoint below it changed:
+what it does is record a rule that was already true — the port in a client's
+discovery record decides which way round pairing runs — and specify the three
+routes a client that advertises a port has to serve. The T560 panel advertises
+port 0, serves none of them, and is unaffected. See **Discovery and pairing**
+below.
+
 **Card appearance** was added after version 7 and moves no version number,
 for the same reason **Room states** below does not: nothing already in the
 payload changes shape, and a client that knows none of it behaves exactly as
@@ -857,6 +865,113 @@ entity directly to work around that; the slot mechanism is the only supported
 path for it. A panel addresses real entities by design and is not covered by
 this rule at all.
 
+## Discovery and pairing
+
+Nothing below changes a payload or an entity, and no client has to do anything
+differently than it did. It is written down because it is now a **two-sided**
+surface: which way round pairing runs is decided by what a client advertises,
+and a client that advertises the wrong thing is not merely undiscovered, it is
+waited for forever.
+
+### The discovery record
+
+Every panel announces `_media-controller._tcp.local.` with three TXT records:
+
+```text
+panel_id   the client's stable identity, unique per device and never reused
+profile    which kind of client it is: t560, esp32_s3_panel
+name       what to call it in the setup form
+```
+
+`panel_id` is a MAC address on the ESP32 firmwares and a value the tablet
+writes on its first run. It is the key of everything: the config entry's unique
+ID, the status endpoint's ownership check, and the layout backup are all keyed
+on it.
+
+### The port decides the direction
+
+The **port** in the service record is the whole of the mechanism. It is not a
+hint and there is no second service type and no fourth TXT key:
+
+| Advertised port | What it means | Who does this |
+| --- | --- | --- |
+| `0` | The client serves nothing. Home Assistant holds an approved pairing and answers when the client polls for it. | The T560 panel |
+| non-zero | The client serves a provisioning endpoint on that port. Home Assistant checks the code against the device and then posts the bootstrap to it. | The ESP32-S3 paired and factory firmware |
+
+A client that advertises a port and does not answer on it is not refused: Home
+Assistant falls back to waiting to be polled, because a device may simply still
+be booting.
+
+### What a client that advertises a port must serve
+
+Three routes, and no more. They are the client's side of the contract, so a
+client that offers a port offers exactly these.
+
+`GET /api/provision/info` — who this is. Answered always, paired or not, and it
+carries nothing secret:
+
+```json
+{
+  "panel_id": "aabbccddeeff",
+  "profile": "esp32_s3_panel",
+  "name": "Media Controller",
+  "version": "0.4.0",
+  "contract_version": 7,
+  "paired": false
+}
+```
+
+`POST /api/provision/verify` — is this the code on your screen. Body
+`{"code": "123456"}`. `200` for yes; `403` for no; `409` when the client is
+already paired; `429` when too many wrong codes have been offered; `503` when
+the client has no code on screen yet.
+
+`POST /api/provision` — here is everything you need. The same statuses, and the
+same code checked again:
+
+```json
+{
+  "code": "123456",
+  "ha_url": "http://192.168.1.10:8123",
+  "token": "<the panel's own long-lived access token>",
+  "config_entity": "sensor.kitchen_panel_config"
+}
+```
+
+`ha_url` is an **origin**: scheme and host, no path and no trailing slash. A
+client must refuse anything else, because it appends its own paths to this
+value. `config_entity` is the one entity ID a client is told; everything else
+is read out of it. Both, and the token, are what the client keeps in
+non-volatile storage, and all three must survive a reboot.
+
+Requirements on a client that serves these:
+
+- **answer only while unpaired.** Once a token is stored, both `POST` routes
+  refuse with `409`. Re-provisioning requires an explicit return to pairing
+  state, which is what a revoked token or a reset produces;
+- **count wrong codes.** Five closes the endpoint for at least five minutes;
+- **compare the code in constant time**, and bound the request body and every
+  field in it;
+- **log nothing a caller sent.** The token is never printed at any level;
+- **forget only the pairing** when a token stops being accepted. Network
+  credentials are not part of this and must not be cleared with it.
+
+### Where Home Assistant's own address comes from
+
+The configured internal URL, through Home Assistant's own network helpers —
+never a URL assembled from a listening address, which is wrong behind a proxy
+and wrong again in a container. An installation with no internal URL is asked
+for one during setup, as the last step rather than the first.
+
+### What Home Assistant guarantees
+
+- a token is minted only **after** the client has confirmed the code, so a
+  mistyped code creates no credential and no Home Assistant user;
+- a token that is minted and then cannot be delivered is **revoked**, and the
+  panel is asked for a code again through the ordinary reauthentication
+  prompt. Nothing orphaned is left behind;
+- removing a panel revokes its token and its user, exactly as before.
+
 ## Panel status endpoint
 
 `POST /api/media_controller/panel_status`
@@ -1355,7 +1470,15 @@ Tests that protect the contract:
 - `tests/test_card_appearance.py` — display names: trimming, the bound,
   Unicode, clearing, refusal of control characters, and setting the name and
   the icon of one element by `rid` without touching another;
-- `tests/test_pairing.py` — the rules that guard the provisioning endpoint;
+- `tests/test_pairing.py` — the rules that guard the provisioning endpoint
+  Home Assistant serves for a client that polls;
+- `tests/test_bootstrap.py` — the rules behind the other direction: what a
+  panel's answer means, what an address, a token and an entity ID have to look
+  like before they are sent, and what has to be true before a token leaves
+  Home Assistant at all;
+- `tests/test_factory_firmware.py` — that the shipped image stays universal:
+  no address, no credentials, no duplicated interface, and a discovery record
+  that names the port it serves;
 - `tests/test_panel_state.py` — the settings, the command channel, and the
   validation of a status report;
 - `tests/test_contract.py` — the rule that decides a panel is running a build

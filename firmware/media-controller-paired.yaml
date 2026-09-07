@@ -23,13 +23,19 @@ substitutions:
   device_name: media-controller
   friendly_name: Media Controller
 
-  # The only address in this file. Home Assistant advertises itself over mDNS,
-  # but ESPHome can publish records and not browse for them, so unlike the
-  # tablet this device cannot discover the URL for itself. Use an IP address
-  # if .local names are unreliable on your network.
+  # Where Home Assistant is, baked in at compile time. It is a *bootstrap*
+  # value, not the address the firmware uses: everything below reads the
+  # ha_base global, which this fills in at boot whenever it is not empty.
+  #
+  # A device YAML that names an address therefore behaves exactly as it always
+  # has — the compile-time value wins on every boot, so editing it and
+  # reflashing still moves the device to another Home Assistant. A device YAML
+  # that leaves it empty, which is what firmware/media-controller-factory.yaml
+  # does, learns the address during pairing instead and keeps it in flash. Use
+  # an IP address if .local names are unreliable on your network.
   ha_url: "http://homeassistant.local:8123"
 
-  firmware_version: "0.4.0"
+  firmware_version: "0.5.0"
 
   # The version of docs/CONTRACT.md this firmware implements. firmware_version
   # says when this build shipped; this says what it understands, and it is the
@@ -64,7 +70,7 @@ packages:
 # below, and lands in a cmd_ script here. See components/media_controller_grid/.
 external_components:
   - source: ${grid_component_source}
-    components: [media_controller_grid]
+    components: [media_controller_grid, media_controller_provision]
 
 esphome:
   name: ${device_name}
@@ -78,7 +84,18 @@ esphome:
     # -- pairing page from here instead. --
     priority: -200
     then:
-      - lambda: id(auth_header) = "Bearer " + id(ha_token);
+      # -- The compile-time address wins whenever there is one: a device YAML
+      # -- that names it is the authority on where Home Assistant is, and
+      # -- editing it and reflashing has always been how a device is moved.
+      # -- An empty substitution leaves whatever pairing stored. --
+      - lambda: |-
+          if (std::string("${ha_url}").size() > 0) {
+            id(ha_base) = "${ha_url}";
+          }
+          while (!id(ha_base).empty() && id(ha_base).back() == '/') {
+            id(ha_base).pop_back();
+          }
+          id(auth_header) = "Bearer " + id(ha_token);
       # -- The six things the grid component needs from this half of the
       # -- firmware. They are installed rather than compiled in so that the
       # -- component holds no URL, no token and no entity ID: the same seam
@@ -88,7 +105,8 @@ esphome:
       # -- decided it wants. Neither builds a URL in the component. --
       - lambda: |-
           id(room_page_index) = (int) id(page_room_grid)->index;
-          id(room_grid)->set_icon_preview_base("${ha_url}/api/media_controller/icon-preview/");
+          id(room_grid)->set_icon_preview_base(
+              id(ha_base) + "/api/media_controller/icon-preview/");
           id(room_grid)->set_redraw_listener([]() {
             id(rebuild_room_grid)->execute();
           });
@@ -107,6 +125,21 @@ esphome:
           id(room_grid)->set_icon_fetcher([](std::string icon) {
             id(fetch_room_icon)->execute(icon);
           });
+      # -- What the provisioning endpoint does with an accepted bootstrap.
+      # -- It holds no URL and no token of its own: it checks the code against
+      # -- what is on screen and hands the three values back here. See
+      # -- components/media_controller_provision/. --
+      # --
+      # -- The code and whether this device is paired are *pushed* into the
+      # -- component instead, in show_start_page and accept_bootstrap, because
+      # -- a request arrives on the HTTP task and those two live in globals
+      # -- this loop owns. --
+      - lambda: |-
+          id(panel_provision)->set_apply_handler(
+              [](media_controller_provision::ProvisionPayload payload) {
+                id(accept_bootstrap)->execute(payload.ha_url, payload.token,
+                                              payload.config_entity);
+              });
       - script.execute: sync_editor_skin
       - script.execute: rebuild_room_grid
       - script.execute: show_start_page
@@ -124,6 +157,27 @@ api:
 # docs/ESP32_PAIRED_CONTROLLER.md about not exposing this port outside the
 # house.
 web_server_base:
+
+# -------------------- PROVISIONING --------------------
+# The other direction of pairing. A device flashed with an address polls Home
+# Assistant for its token, in poll_pairing below; a device flashed from the
+# factory image knows no address and cannot, so Home Assistant posts the
+# bootstrap here instead once somebody has typed the six digits on screen.
+#
+# Both firmwares carry it, because both benefit: a paired device whose token
+# was revoked is re-paired the same way, without the poll having to guess
+# whether Home Assistant has moved.
+#
+# It shares the listener with the layout editor, so this adds no port. What
+# guards it — unpaired only, five attempts, a constant-time compare and hard
+# limits on every field — is in the component's own header.
+media_controller_provision:
+  id: panel_provision
+  port: 80
+  profile: esp32_s3_panel
+  panel_name: ${friendly_name}
+  contract_version: ${contract_version}
+  version: "${firmware_version}"
 
 media_controller_grid:
   id: room_grid
@@ -143,12 +197,15 @@ media_controller_grid:
 # the T560 panel on purpose: the profile travels as a record rather than as a
 # service type of its own.
 #
-# Port 0: this device serves nothing. The record exists to be discovered.
+# Port 80, unlike the T560 panel's record, which is port 0 because a tablet
+# serves nothing. This device does: the layout editor and the provisioning
+# endpoint are both on it, and a non-zero port is what tells Home Assistant it
+# can post the bootstrap here rather than wait to be polled.
 mdns:
   services:
     - service: _media-controller
       protocol: _tcp
-      port: 0
+      port: 80
       txt:
         panel_id: !lambda return get_mac_address();
         profile: esp32_s3_panel
@@ -234,7 +291,7 @@ text_sensor:
               ESP_LOGD("img", "No album art available, skipping");
               return;
             }
-            std::string full_url = "${ha_url}" + x;
+            std::string full_url = id(ha_base) + x;
             ESP_LOGD("img", "Loading art: %s", full_url.c_str());
             id(album_art).set_url(full_url.c_str());
             id(album_art_small).set_url(full_url.c_str());
@@ -329,6 +386,18 @@ globals:
   - id: fetching_icon
     type: std::string
     restore_value: false
+
+  # -- Where Home Assistant is. Filled in from the ha_url substitution at
+  # -- boot when that names an address, and otherwise by pairing: a factory
+  # -- image carries no address at all, and the integration hands this over
+  # -- together with the token. It survives a reboot for the same reason the
+  # -- token does — a device that starts while Home Assistant is down still
+  # -- knows where to ask once it comes back. Never ends in a slash; on_boot
+  # -- trims one, because every site below appends a path beginning with one.
+  - id: ha_base
+    type: std::string
+    restore_value: true
+    max_restore_data_length: 128
 
   # -- The access token, minted by the integration and handed over once. A
   # -- Home Assistant long-lived token is an HS256 JWT of about 180
@@ -700,7 +769,7 @@ script:
           else:
             - http_request.post:
                 url: !lambda |-
-                  return "${ha_url}/api/services/" + domain + "/" + service;
+                  return id(ha_base) + "/api/services/" + domain + "/" + service;
                 request_headers:
                   Authorization: !lambda return id(auth_header).c_str();
                   Content-Type: "application/json"
@@ -994,6 +1063,46 @@ script:
                 }
             - script.execute: ui_sync_pairing
             - lvgl.page.show: page_pairing
+      # -- Outside the branch above, because it has to run in both cases: this
+      # -- is the one place that tells the provisioning endpoint what state
+      # -- the device is in. Boot reaches it, and so does forget_token, which
+      # -- is what reopens the endpoint after a token is revoked. --
+      - lambda: |-
+          id(panel_provision)->set_state(!id(ha_token).empty(),
+                                         id(pairing_code));
+
+  # -- What Home Assistant posted to the provisioning endpoint, applied on
+  # -- the main loop. The component has already checked the code and the
+  # -- shape of all three values; this is where they become the device's. --
+  - id: accept_bootstrap
+    parameters:
+      base_url: string
+      token: string
+      entity: string
+    then:
+      - lambda: |-
+          id(ha_base) = base_url;
+          id(ha_token) = token;
+          id(config_entity) = entity;
+          id(auth_header) = "Bearer " + token;
+          id(pairing_code) = "";
+          id(pairing_hint) = "";
+          id(last_pairing_status) = 200;
+          // -- The grid component was handed this at boot, when a factory
+          //    device had no address to build it out of. It is the one thing
+          //    installed into that component that depends on where Home
+          //    Assistant is, so it is the one thing to install again. --
+          id(room_grid)->set_icon_preview_base(
+              id(ha_base) + "/api/media_controller/icon-preview/");
+          // -- Closes the provisioning endpoint. Every route but the
+          //    read-only identity one answers 409 from here on, until a
+          //    revoked token sends this device back through
+          //    show_start_page. --
+          id(panel_provision)->set_state(true, std::string());
+          ESP_LOGI("pair", "Paired by Home Assistant; reading %s",
+                   entity.c_str());
+      - script.execute: ui_load_room_config
+      - script.execute: show_home_page
 
   - id: ui_sync_pairing
     then:
@@ -1011,7 +1120,8 @@ script:
     mode: restart
     then:
       - http_request.post:
-          url: "${ha_url}/api/media_controller/provision"
+          url: !lambda |-
+            return id(ha_base) + "/api/media_controller/provision";
           request_headers:
             Content-Type: "application/json"
           body: !lambda |-
@@ -1055,6 +1165,12 @@ script:
                   id(config_entity) = entity;
                   id(auth_header) = "Bearer " + token;
                   id(pairing_code) = "";
+                  // -- Closes the provisioning endpoint, exactly as pairing
+                  //    the other way round does. Both directions end in a
+                  //    stored token, so both have to say so: an endpoint left
+                  //    open on a paired device would accept a second
+                  //    bootstrap from anybody who could read the screen. --
+                  id(panel_provision)->set_state(true, std::string());
                   ESP_LOGI("pair", "Paired; reading %s", entity.c_str());
               - if:
                   condition:
@@ -1092,7 +1208,7 @@ script:
           then:
             - http_request.get:
                 url: !lambda |-
-                  return "${ha_url}/api/states/" + id(player_entity);
+                  return id(ha_base) + "/api/states/" + id(player_entity);
                 request_headers:
                   Authorization: !lambda return id(auth_header).c_str();
                 capture_response: true
@@ -1206,7 +1322,9 @@ script:
                 # -- With the response asked for: without ?return_response
                 # -- Home Assistant answers a bare empty list, however much
                 # -- forecast it holds. --
-                url: "${ha_url}/api/services/weather/get_forecasts?return_response"
+                url: !lambda |-
+                  return id(ha_base) +
+                         "/api/services/weather/get_forecasts?return_response";
                 request_headers:
                   Authorization: !lambda return id(auth_header).c_str();
                   Content-Type: "application/json"
@@ -1256,7 +1374,8 @@ script:
             lambda: return !id(ha_token).empty();
           then:
             - http_request.get:
-                url: "${ha_url}/api/media_controller/icons"
+                url: !lambda |-
+                  return id(ha_base) + "/api/media_controller/icons";
                 request_headers:
                   Authorization: !lambda return id(auth_header).c_str();
                 capture_response: true
@@ -1303,7 +1422,7 @@ script:
                 # -- the catalog it published. Nothing a caller typed reaches
                 # -- this line. --
                 url: !lambda |-
-                  return "${ha_url}/api/media_controller/icon/" +
+                  return id(ha_base) + "/api/media_controller/icon/" +
                          id(fetching_icon) + "/40";
                 request_headers:
                   Authorization: !lambda return id(auth_header).c_str();
@@ -1371,7 +1490,7 @@ script:
                 # -- backs its layout up under: the MAC, which is what the
                 # -- integration knows it as. --
                 url: !lambda |-
-                  return "${ha_url}/api/media_controller/panel_card/" +
+                  return id(ha_base) + "/api/media_controller/panel_card/" +
                          get_mac_address();
                 request_headers:
                   Authorization: !lambda return id(auth_header).c_str();
@@ -1419,7 +1538,7 @@ script:
           then:
             - http_request.get:
                 url: !lambda |-
-                  return "${ha_url}/api/states/" + id(config_entity);
+                  return id(ha_base) + "/api/states/" + id(config_entity);
                 request_headers:
                   Authorization: !lambda return id(auth_header).c_str();
                 capture_response: true
@@ -1606,7 +1725,7 @@ script:
           then:
             - http_request.get:
                 url: !lambda |-
-                  return "${ha_url}/api/states/" + id(queue_entity);
+                  return id(ha_base) + "/api/states/" + id(queue_entity);
                 request_headers:
                   Authorization: !lambda return id(auth_header).c_str();
                 capture_response: true
@@ -1684,7 +1803,7 @@ script:
           then:
             - http_request.get:
                 url: !lambda |-
-                  return "${ha_url}/api/states/" + id(playlists_entity);
+                  return id(ha_base) + "/api/states/" + id(playlists_entity);
                 request_headers:
                   Authorization: !lambda return id(auth_header).c_str();
                 capture_response: true
@@ -2515,7 +2634,7 @@ script:
             - http_request.send:
                 method: PUT
                 url: !lambda |-
-                  return "${ha_url}/api/media_controller/panel_layout/" +
+                  return id(ha_base) + "/api/media_controller/panel_layout/" +
                          get_mac_address();
                 request_headers:
                   Authorization: !lambda return id(auth_header).c_str();
@@ -2536,7 +2655,7 @@ script:
           then:
             - http_request.get:
                 url: !lambda |-
-                  return "${ha_url}/api/media_controller/panel_layout/" +
+                  return id(ha_base) + "/api/media_controller/panel_layout/" +
                          get_mac_address();
                 request_headers:
                   Authorization: !lambda return id(auth_header).c_str();
@@ -2580,7 +2699,8 @@ script:
             lambda: return !id(ha_token).empty();
           then:
             - http_request.post:
-                url: "${ha_url}/api/media_controller/panel_status"
+                url: !lambda |-
+                  return id(ha_base) + "/api/media_controller/panel_status";
                 request_headers:
                   Authorization: !lambda return id(auth_header).c_str();
                   Content-Type: "application/json"
@@ -2646,6 +2766,13 @@ interval:
           uint32_t now = millis();
 
           if (id(ha_token).empty()) {
+            // -- A device that was never told where Home Assistant is cannot
+            //    ask it for anything. That is the factory image: it waits on
+            //    the provisioning endpoint instead, and Home Assistant finds
+            //    it over mDNS. --
+            if (id(ha_base).empty()) {
+              return;
+            }
             // -- 404 means Home Assistant has never heard of this device, and
             //    that can last for days: an unopened box on a shelf must not
             //    poll every three seconds, because each request blocks the

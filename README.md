@@ -20,6 +20,7 @@ For the build story, photos, and setup walkthrough, see the write-up:
 | Media Controller integration | [custom_components/media_controller/](custom_components/media_controller) | HACS custom integration. Queue and playlist sensors, room proxy entities, two services. Required by every client. |
 | ESP32-S3 controller | [firmware/media-controller.yaml](firmware/media-controller.yaml) | ESPHome package for the 480x480 ST7701S + GT911 board sold as `ESP32-S3-4848S040`. Three LVGL screen styles. Configured by flashing: entity IDs and a token live in the YAML. |
 | ESP32-S3 controller, paired | [firmware/media-controller-paired.yaml](firmware/media-controller-paired.yaml) | The same board and the same screens, paired from Home Assistant with a six-digit code. No entity IDs and no token in the build; room controls and the home layout are chosen in the Home Assistant UI and changed without reflashing. |
+| ESP32-S3 web installer | [https://vahac.github.io/ha-media-controller/](https://vahac.github.io/ha-media-controller/) | The paired firmware as one finished image for every board, installed from a browser over USB. No ESPHome, no YAML, no `secrets.yaml`. Wi-Fi is typed into the same page and never leaves the machine. |
 | T560 panel | [clients/t560/](clients/t560) | Native GTK3 application for a Samsung Galaxy Tab E SM-T560 (ARMv7) running postmarketOS and Openbox. No browser, no WebKit. Two interface skins, chosen from Home Assistant. |
 
 Choose any one client, or run all of them against one Home Assistant.
@@ -31,6 +32,11 @@ about the classic one changed when the paired one arrived, so a device already
 in the field needs no attention; the
 [comparison table](docs/ESP32_PAIRED_CONTROLLER.md#which-firmware-to-use) is
 there when you want to move.
+
+The web installer is not a third firmware. It publishes the paired firmware as
+a finished image with nothing personal compiled into it, so that installing a
+panel needs a browser and a cable rather than a toolchain. ESPHome still builds
+that image — in this repository's continuous integration, not on your machine.
 
 ## Documentation
 
@@ -55,8 +61,14 @@ there when you want to move.
    Full steps: [docs/INTEGRATION.md](docs/INTEGRATION.md).
 2. Set up a client. Each one becomes a **panel** device of its own, attached to
    the source from step 1:
-   - ESP32-S3, paired — [docs/ESP32_PAIRED_CONTROLLER.md](docs/ESP32_PAIRED_CONTROLLER.md).
-     Flash, type the six digits it shows, choose the rooms in Home Assistant.
+   - ESP32-S3, from the browser — open <https://vahac.github.io/ha-media-controller/> in desktop Chrome or
+     Edge, plug the board into that computer with a USB cable, press Install,
+     and give it your Wi-Fi on the same page. Type the six digits it then shows
+     into Home Assistant. This is the shortest path and needs no ESPHome:
+     [docs/ESP32_PAIRED_CONTROLLER.md](docs/ESP32_PAIRED_CONTROLLER.md).
+   - ESP32-S3, paired, from an ESPHome package — the same firmware, for an
+     installation that already runs ESPHome:
+     [docs/ESP32_PAIRED_CONTROLLER.md](docs/ESP32_PAIRED_CONTROLLER.md).
    - ESP32-S3, classic — [docs/ESP32_CONTROLLER.md](docs/ESP32_CONTROLLER.md).
      Copy the entity IDs Home Assistant assigned to the new source into the
      YAML first.
@@ -69,16 +81,19 @@ custom_components/media_controller/   Home Assistant integration (HACS)
 firmware/media-controller-ui.yaml     Shared ESPHome interface: display, LVGL, theme
 firmware/media-controller.yaml        Classic transport: native API, flashed config
 firmware/media-controller-paired.yaml Paired transport: REST, config from Home Assistant
+firmware/media-controller-factory.yaml The paired transport as one shipped image, with nothing personal in it
 firmware/assets/                      Image assets, fetched at compile time
 custom_components/media_controller/icons/  Card artwork the integration serves to panels
 components/media_controller_grid/     ESPHome external component: the paired room grid and its editor
+components/media_controller_provision/ ESPHome external component: the endpoint Home Assistant hands a panel its bootstrap over
+installer/                            The web installer page, published to GitHub Pages
 clients/t560/                         GTK3 tablet panel (C, Python helpers)
 docs/                                 Cross-component documentation
 tests/                                Integration transformation tests
 ```
 
 `custom_components/media_controller/`, every path under `firmware/`, and
-`components/media_controller_grid/` are frozen. Device configurations in the
+`components/` are frozen. Device configurations in the
 field name a firmware file and `firmware/assets/` by raw URL, HACS downloads
 the integration from its path, and a paired device pulls the external component
 from `components/` as an ESPHome Git source. `media-controller-ui.yaml` is
@@ -99,11 +114,17 @@ panel-vX.Y.Z          clients/t560/**
 ```
 
 One `firmware-` tag covers both ESP32 firmwares, the interface package they
-share and the external component the paired one loads, because a change to the
-shared package ships to both at once and the component is pinned to `main`. Each firmware
-also carries its own `project.version`, which is what ESPHome shows on the
-device: `media_controller.esp32s3` for the classic one and
-`media_controller.esp32s3_paired` for the paired one.
+share and the external components the paired one loads, because a change to the
+shared package ships to both at once and the components are pinned to `main`.
+Each firmware also carries its own `project.version`, which is what ESPHome
+shows on the device: `media_controller.esp32s3` for the classic one,
+`media_controller.esp32s3_paired` for the paired one, and
+`media_controller.esp32s3_factory` for the same firmware as a shipped image.
+
+A `firmware-vX.Y.Z` tag is also what publishes the web installer: pushing one
+compiles the factory image, checks it carries no credentials, and deploys the
+page with that version's binary under a path naming it. See
+[.github/workflows/installer.yml](.github/workflows/installer.yml).
 
 `version` in `custom_components/media_controller/manifest.json` is bumped only
 when the integration itself changes; it drives the HACS update prompt and must

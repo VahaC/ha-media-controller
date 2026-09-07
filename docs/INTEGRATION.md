@@ -89,27 +89,57 @@ form — so *the panel* below means either.
 A panel **announces itself on the local network**. Home Assistant shows it as a
 discovered device: press *Configure* and the form asks, in this order:
 
-1. **the six-digit code the panel is showing.** Home Assistant then waits for
-   the panel to answer with the same code, which is the only part of the setup
-   that can fail on its own: the device may be off, on another network, or
-   showing a code from an earlier attempt. Nothing is stored and nothing else
-   is asked until it has answered, and a wrong code can simply be retyped.
+1. **the six-digit code the panel is showing.** This is the only part of the
+   setup that can fail on its own: the device may be off, on another network,
+   or showing a code from an earlier attempt. Nothing is stored and nothing
+   else is asked until the code is settled, and a wrong code can simply be
+   retyped.
 2. **which media player source it plays from**;
 3. **its room entities**, on one page: a list per group — Weather, Lights,
    Switches, Climate devices, Covers — that it can add to and remove from
    freely.
+4. **where Home Assistant is**, but only in the installation that has no
+   internal URL configured and only for a panel Home Assistant has to reach
+   directly. Setting one under *Settings → System → Network* removes this step
+   for good.
 
-Finishing the form is what releases the access token: the panel collects it on
-its next poll, a few seconds later, and switches into normal operation. Nothing
-is typed on the panel, and nothing but the token is configured there.
+Finishing the form is what releases the access token, and it travels one of two
+ways depending on the panel. Either way nothing is typed on the panel, and
+nothing but the token is configured there.
+
+**A panel Home Assistant can reach** — the ESP32 firmware, which serves a small
+web server anyway — is asked directly whether the typed code is the one on its
+screen, before anything at all is created. Home Assistant then posts the token,
+its own address and the panel's config sensor to the device once the entry
+exists. This is the only way a panel installed from the web installer can be
+set up: it was never told where Home Assistant is, so it has nowhere to ask.
+
+**A panel that serves nothing** — the T560 tablet — collects the token on its
+next poll, a few seconds later, and switches into normal operation.
+
+Which one it is comes from the panel's own discovery record and needs no
+setting; see **Discovery and pairing** in [CONTRACT.md](CONTRACT.md).
+
+A mistyped code costs nothing in either case: no token is minted until the
+panel has agreed. If a token is minted and then cannot be delivered — the
+panel went off the network while the form was open — Home Assistant revokes it
+rather than leaving an unused credential and its user behind, and asks for a
+code again.
 
 Step 2 has nothing to offer in an installation with no source yet, so it asks
 for the Music Assistant player instead and creates one. Adding the first panel
 is therefore still one sitting: the code, then what it plays from, then its
 room entities.
 
+A new ESP32-S3 panel is installed from
+<https://vahac.github.io/ha-media-controller/> — a browser, a USB cable, and no
+ESPHome. It joins the network from that page and then appears here by itself.
+See [ESP32_PAIRED_CONTROLLER.md](ESP32_PAIRED_CONTROLLER.md).
+
 A panel that cannot announce itself is added with *Add device* → *Panel*, where
-the panel ID has to match the one the device uses. A tablet derives that ID from
+the panel ID has to match the one the device uses. A panel added this way is
+always the polling kind: nothing is known about where it is, so Home Assistant
+waits to be asked. A tablet derives that ID from
 its own hardware on first run and writes it to
 `~/.config/t560-music-panel/panel-id`; a paired ESP32 uses its MAC address,
 without separators, which its log prints at boot. Either way two devices never

@@ -2,11 +2,16 @@
 
 The same hardware and the same screens as the
 [classic firmware](ESP32_CONTROLLER.md), configured from Home Assistant instead
-of from a YAML file. You flash it once with no entity IDs and no token; the
+of from a YAML file. You install it once with no entity IDs and no token; the
 device shows a six-digit code, Home Assistant discovers it and asks you to type
 that code, and you then choose the player and the room controls in the Home
 Assistant UI. Changing which lamp a button drives is a Home Assistant action,
-not a reflash.
+not a reinstall.
+
+**The recommended way to install it is a browser.** Open
+<https://vahac.github.io/ha-media-controller/>, plug the board into the same computer with a USB cable, and
+press Install. No ESPHome, no YAML, no `secrets.yaml`, and no account anywhere.
+See [The web installer](#the-web-installer) below.
 
 It is the same idea the [T560 panel](../clients/t560/README.md) already uses,
 and the same mechanism: both are paired, both hold a token Home Assistant
@@ -14,57 +19,175 @@ minted for them, and both read the [contract](CONTRACT.md) over the REST API.
 
 ## Which firmware to use
 
-Both are maintained, both work against one Home Assistant at the same time, and
-they share every pixel of their interface. Pick on setup and latency.
+All three are maintained, all three work against one Home Assistant at the same
+time, and they share every pixel of their interface. **Start with the factory
+image**; the two package builds are for people who already run ESPHome and want
+the device in their dashboard.
 
-| | [`media-controller.yaml`](../firmware/media-controller.yaml) | [`media-controller-paired.yaml`](../firmware/media-controller-paired.yaml) |
-| --- | --- | --- |
-| Setup | nine entity IDs and a token, typed into YAML | a six-digit code shown on the screen |
-| Changing a room control | reflash | Home Assistant UI |
-| What a slot may hold | slots 1–2 a light, 3–4 a switch, fixed at compile time | any light or switch, in any of the four |
-| Token | in `secrets.yaml`, permanent, yours to manage | minted at pairing, revoked when you remove the device |
-| Transport | ESPHome native API, pushed | REST, polled about once a second |
-| State latency | immediate | up to one poll interval |
-| In Home Assistant | an ESPHome device and a controller entry | an ESPHome device and a panel entry |
-| Theme, opacities, diagnostics | on the ESPHome device | on the ESPHome device, unchanged |
-| Home layout | *Screen Style* on the ESPHome device | also *Player skin* on the panel entry, which writes to it |
-| Screen and page control from Home Assistant | no | yes |
-| Interface | [`media-controller-ui.yaml`](../firmware/media-controller-ui.yaml) | the same file |
+| | Factory image | [`media-controller-paired.yaml`](../firmware/media-controller-paired.yaml) | [`media-controller.yaml`](../firmware/media-controller.yaml) |
+| --- | --- | --- | --- |
+| How you install it | a web page and a USB cable | ESPHome, from a package | ESPHome, from a package |
+| What you configure first | nothing | Wi-Fi and an address, in YAML | Wi-Fi, an address, nine entity IDs and a token, in YAML |
+| Wi-Fi | typed into the installer page, over USB | `secrets.yaml` | `secrets.yaml` |
+| Where Home Assistant is | sent during pairing | `ha_url` in YAML | `ha_url` in YAML |
+| Setup in Home Assistant | a six-digit code shown on the screen | the same | copy the entity IDs into the YAML |
+| Changing a room control | Home Assistant UI | Home Assistant UI | reflash |
+| What a slot may hold | any light or switch | any light or switch | slots 1–2 a light, 3–4 a switch, fixed at compile time |
+| Token | minted at pairing, revoked when you remove the device | the same | in `secrets.yaml`, permanent, yours to manage |
+| Transport | REST, polled about once a second | the same | ESPHome native API, pushed |
+| State latency | up to one poll interval | up to one poll interval | immediate |
+| Updates | USB, from the same page | ESPHome, over the air | ESPHome, over the air |
+| In the ESPHome dashboard | after adoption, with a key of its own | yes | yes |
+| Interface | [`media-controller-ui.yaml`](../firmware/media-controller-ui.yaml) | the same file | the same file |
 
-The honest trade is latency. The classic firmware is told about a change; this
-one asks. Volume and the track position step rather than glide, exactly as they
-do on the tablet.
+The honest trade against the classic firmware is latency. It is told about a
+change; the paired firmware asks. Volume and the track position step rather
+than glide, exactly as they do on the tablet.
 
-Nothing about the classic firmware changed, and an already flashed device needs
-no attention.
+The factory image and the paired package are the **same firmware**. The factory
+image is that firmware plus four things a shipped binary needs and a personal
+one does not: an empty address, Wi-Fi over USB, a recovery access point, and an
+encryption key negotiated per device instead of written into the file. See
+[firmware/media-controller-factory.yaml](../firmware/media-controller-factory.yaml).
+
+Nothing about either package changed, and an already flashed device needs no
+attention.
+
+### ESPHome, and who needs it
+
+**You do not need ESPHome to install or run this firmware.** The factory image
+is a finished file; the web installer writes it to the board and hands it your
+Wi-Fi, and Home Assistant does the rest.
+
+ESPHome is still how the firmware is *built*. The image published by the
+installer is compiled by ESPHome in this repository's continuous integration,
+from [`media-controller-factory.yaml`](../firmware/media-controller-factory.yaml)
+and the two packages beside it. That is a maintainer's tool, in the same sense
+that a compiler is: it is not something a person installing a panel has to
+have, know about, or keep in step.
 
 ## Validation status
 
-Firmware 0.4.0 passes `esphome config` on ESPHome 2026.8.0. A full compile of
-this revision was not completed in the current development environment; the
-last recorded full pass was firmware 0.3.1 on ESPHome 2026.8.2, using 39.0% RAM
-and 22.5% flash. The firmware retries the icon catalog after startup and
-HTTP failures. The difference from the classic firmware is the
-room grid: the external component, its gzipped editor page, ArduinoJson, the
-HTTP server, and four more image assets. **This firmware has not yet run on the
-physical device.** Work through the
-[hardware checklist](#hardware-verification) before treating it as done. Three
-things cannot be judged from a build: the one-second poll and its effect on
-`Loop Time`, the cost of building a full grid of 64 cards in one go, and
-whether a 60 px card is legible and hittable in the hand.
+Firmware 0.4.0 passes `esphome config` on ESPHome 2026.8.0, in all three
+shapes: the classic package, the paired package through a device wrapper, and
+the factory entrypoint. The **factory image compiles**, at 39.5% RAM and 24.5%
+of an 8 MB application partition, and the merged 2.0 MB image was scanned for
+addresses, tokens and placeholder credentials and carries none.
+
+**None of it has run on the physical device.** Work through the
+[hardware checklist](#hardware-verification) before treating any of it as done.
+Nothing below has been observed on hardware: not the first USB install, not
+Improv, not the captive portal, not discovery, not pairing in either direction.
+Three things in particular cannot be judged from a build: the one-second poll
+and its effect on `Loop Time`, the cost of building a full grid of 64 cards in
+one go, and whether a 60 px card is legible and hittable in the hand.
+
+One board-specific choice in the factory image is also unverified. Its
+`logger:` is moved to `UART0`, because GPIO19 and GPIO20 — which an ESP32-S3
+uses for native USB — are the touchscreen's I²C bus on this board, so the
+ESP-IDF default of `USB_SERIAL_JTAG` can reach nothing over the USB-C socket.
+That is what Improv needs a working port for. If the serial step does not
+appear in the installer, this is the first thing to check.
 
 ## Prerequisites
 
 1. The Media Controller integration, installed and configured against a Music
    Assistant player ([INTEGRATION.md](INTEGRATION.md)). The paired device
    attaches to a controller; it does not replace one.
-2. ESPHome for compiling and flashing.
+2. Either a browser that can talk to a USB serial port, or ESPHome. See below.
 
 You do **not** need a long-lived access token. Home Assistant creates one for
 this device, gives it a dedicated non-administrator user, and revokes it when
 you remove the device.
 
-## Configure and flash
+## The web installer
+
+<{INSTALLER_URL}>
+
+One image, the same for every board. It contains no Wi-Fi credentials, no Home
+Assistant address, no access token, no API encryption key and no update
+password, so it is not personal to anybody and nothing about publishing it
+leaks anything.
+
+### What you need
+
+* an **ESP32-S3-4848S040** — the 4-inch 480×480 board with an ST7701S display
+  and a GT911 touchscreen. It is the only board this image is built for;
+* a **USB-C data cable**, plugged into the computer the browser is running on.
+  The panel has to be attached to that machine, not to a server elsewhere in
+  the house: the browser talks to the serial port directly;
+* desktop **Chrome**, **Edge** or **Opera**. Web Serial does not exist in
+  Safari or Firefox, and does not exist in any browser on iOS or Android. The
+  page checks and says so rather than failing at the flash step;
+* the page over **HTTPS**. Web Serial is refused in an insecure context, which
+  is why the installer is published on GitHub Pages and cannot be served from
+  `http://homeassistant.local:8123`.
+
+### Connect → Install → Configure Wi-Fi
+
+1. Plug the panel in and press **Connect**. Pick the serial port.
+2. Press **Install**, and confirm erasing the device on a first install.
+3. When the flash finishes, the same dialog offers **Wi-Fi**. Enter the network
+   and the password.
+
+The credentials travel down the USB cable and nowhere else. They are not sent
+to the page, to GitHub, or to any build server — there is no per-user build:
+everybody installs the same file, and nothing about the network reaches
+anything but the board in front of you.
+
+If the port does not appear, or the install refuses to start, put the board
+into download mode by hand: hold **BOOT**, tap **RESET**, release **BOOT**,
+then press **Connect** again.
+
+### Recovering a panel whose Wi-Fi changed
+
+A panel that cannot reach the network it was given raises its own access point,
+**Media Controller Setup**, about a minute after it gives up. Join it from a
+phone; a page opens where you enter the new network, and the panel restarts
+onto it. It keeps its Home Assistant pairing throughout — only the network
+changed.
+
+The access point is open, because a password shared by every copy of a public
+binary would not be one. It exists only while the panel cannot reach a network,
+and it can be avoided entirely by plugging the panel into a computer and using
+the installer's **Connect** button, which offers the Wi-Fi step again without
+reinstalling anything.
+
+### Updating
+
+Connect the panel over USB and press **Install** again with the same page.
+Installing over an existing panel keeps its Wi-Fi credentials and its Home
+Assistant pairing, so it comes back on its own; choosing **erase device**
+clears both and the panel shows a new pairing code.
+
+**There is no over-the-air update in the factory image, deliberately.**
+ESPHome's OTA needs a password, and a password compiled into a file anybody can
+download protects nothing; a shared one would let anyone on the network replace
+the firmware on every panel installed from this page. Until the firmware can
+authenticate an update per device, an update is a USB install. The two package
+builds keep their ordinary ESPHome OTA, because each of those has a password of
+its own that its owner chose.
+
+The one exception is narrow and worth knowing about: while the recovery access
+point is up, ESPHome's captive portal also serves a firmware upload at
+`/update`, and it has no password either. It is reachable only from that access
+point, only while the panel cannot reach a network, and the same build disables
+that route on the ordinary house network. If that is not a trade you want, do
+not use the recovery portal — reconfigure over USB instead.
+
+### Which version you installed
+
+The page installs one named version, and the binary it names lives under a path
+carrying that version, so a link to a build keeps meaning the same build. Older
+images stay attached to their releases on the
+[releases page](https://github.com/VahaC/ha-media-controller/releases).
+
+## The ESPHome package path
+
+For an installation that already runs ESPHome and wants this device in that
+dashboard, with over-the-air updates and an encryption key it manages itself.
+Everything about the running firmware is identical to the factory image; only
+the way it is built and installed differs.
 
 Paste this into the device configuration in ESPHome Device Builder. It is the
 whole thing; `packages:` downloads the maintained firmware, the shared
@@ -103,9 +226,16 @@ ota:
     password: !secret media_controller_ota_password
 ```
 
-`ha_url` is the one address the device needs. Home Assistant advertises itself
-over mDNS, but ESPHome can publish records and not browse for them, so unlike
-the tablet this device cannot find the URL for itself.
+`ha_url` is the one address a package-built device needs. Home Assistant
+advertises itself over mDNS, but ESPHome can publish records and not browse for
+them, so unlike the tablet this device cannot find the URL for itself.
+
+It is a **bootstrap** value rather than the address the firmware uses. At every
+boot a non-empty `ha_url` is copied into the `ha_base` global, so a device
+built this way behaves exactly as it always did: editing the address and
+reflashing still moves the device to another Home Assistant. The factory image
+leaves the substitution empty, which is what makes it universal — there the
+address arrives during pairing and is kept in flash.
 
 The API encryption key stays here too, and it is not the same kind of secret as
 the token. The token is a credential for Home Assistant's API, which Home
@@ -120,11 +250,13 @@ A ready-made copy of the block above is in
 
 ## Pairing
 
-1. Flash and let the device boot. It shows six digits and
+1. Let the device boot onto your network. It shows six digits and
    *Add this device in Home Assistant*.
-2. Home Assistant discovers it. **Settings → Devices & Services** shows a new
-   *ESP32-S3 panel* card; if it does not appear, add **Media Controller** by
-   hand and choose that device type.
+2. Home Assistant discovers it over mDNS — the device advertises
+   `_media-controller._tcp.local.` with its MAC as the panel ID.
+   **Settings → Devices & Services** shows a new *ESP32-S3 panel* card; if it
+   does not appear, add **Media Controller** by hand and choose that device
+   type.
 
    If this is the first device in a fresh installation and no media player
    source exists yet, step 4 asks for the Music Assistant player and creates
@@ -136,9 +268,58 @@ A ready-made copy of the block above is in
 5. The screen switches to the player by itself. Nothing else is typed.
 
 The code is generated once and kept in flash, so a reboot in the middle of the
-process does not change the digits you are reading. An approval lasts five
-minutes and survives being polled; a wrong code five times cancels it and the
-device shows a fresh one after a restart.
+process does not change the digits you are reading.
+
+### Which way round it runs
+
+The exchange goes in one of two directions, and Home Assistant picks by
+reading the discovery record. It needs no setting and no second service type.
+
+**Home Assistant posts to the device**, when the record advertises a port —
+which the ESP32 firmware does, because it serves a web server anyway. Home
+Assistant asks the device whether the typed code is the one on its screen, and
+only then mints a token; a mistyped code therefore costs nothing and leaves no
+credential and no Home Assistant user behind. Once the panel's entry exists,
+Home Assistant posts the three things it needs — its own address, the token,
+and the entity ID of the config sensor — to the device's provisioning
+endpoint. **This is the only way a factory-image device can be paired**, since
+it has no address to ask at.
+
+**The device polls Home Assistant**, when the record advertises port 0, which
+is what a T560 tablet does because it serves nothing. Home Assistant holds the
+approval and answers the poll that carries the right code. A package-built
+ESP32 with an `ha_url` can be paired either way, and falls back to this one if
+its own endpoint does not answer.
+
+Where Home Assistant gets its own address from, in the first case, is its
+configured internal URL — **Settings → System → Network**. If it has none the
+setup asks you to type one, as the last step rather than the first, so the
+installation that has an internal URL is never asked at all.
+
+### What guards the endpoint
+
+The provisioning endpoint on the device is unauthenticated, because the caller
+has no credentials yet. What stands in the way of anything else using it:
+
+* it answers only while the device is **unpaired**. The moment a token is
+  stored, every route but the read-only identity one refuses with `409`;
+* the code is six digits shown on the device's own screen and nowhere else;
+* five wrong codes close it for five minutes, which turns a million-guess
+  search into about a year of them;
+* the code is compared in constant time, the request body is capped at a
+  kilobyte, and every field inside it has a limit of its own;
+* the address it accepts must be an origin — scheme and host, no path — so a
+  payload cannot redirect the requests the device makes afterwards;
+* nothing a caller sends is ever logged. The token is not printed at any log
+  level.
+
+An approval on the Home Assistant side lasts five minutes and survives being
+polled; five wrong codes cancel it there too.
+
+If a token is minted and then cannot be delivered — the panel went off the
+network between typing the code and finishing the form — Home Assistant revokes
+it rather than leaving it behind, and asks for a code again through the
+ordinary reauthentication prompt.
 
 ### If pairing does not finish
 
@@ -149,9 +330,15 @@ device shows a fresh one after a restart.
 | *Accepted — finish the setup form* | The code was right. The token follows once you finish choosing the source and the room slots. |
 | *Home Assistant returned an error* | `ha_url` is wrong, or Home Assistant is unreachable. |
 
+A factory-image device shows only the first of those, because it never polls:
+it has no address to poll. It waits, and the code stays on screen until Home
+Assistant posts to it.
+
 If the token is ever rejected — you removed the device in Home Assistant, or
 revoked its user — the firmware notices the first refused request, forgets the
-token and returns to a pairing code on its own.
+token and returns to a pairing code on its own. **It forgets only the Home
+Assistant pairing.** Wi-Fi credentials are untouched, so the device stays on
+the network and can be paired again without a cable.
 
 ### `HTTP Request failed ... Code: 404` in the log
 
@@ -527,11 +714,50 @@ Assistant still succeeds locally and says so.
 
 None of this has run on the physical device yet.
 
-1. Flash with no entity substitutions. The pairing code appears within a few
-   seconds of boot.
-2. Home Assistant discovers the device without being told its address.
+### Installing and getting onto the network
+
+Only the factory image needs these; a package-built device is flashed by
+ESPHome as it always was.
+
+- **First install.** Install the factory image from the web installer onto a
+  board that has never run this firmware. The flash completes and the device
+  restarts on its own.
+- **Improv.** The installer offers the Wi-Fi step after the install. Enter a
+  network and confirm the panel joins it. This is the step that depends on
+  `logger:` being on `UART0`; if the step never appears, that is where to look.
+- **On its own power.** Unplug the panel from USB and power it from a supply.
+  It rejoins the network after a cold boot.
+- **Captive portal.** Take the network away — change the router's password, or
+  switch the SSID off. About a minute later the panel raises **Media Controller
+  Setup**. Join it from a phone, enter a different network, and confirm the
+  panel moves to it and keeps its Home Assistant pairing.
+- **Reinstalling.** Install again over a working panel without erasing: it
+  keeps its Wi-Fi and its pairing and comes back to the player screen. Then
+  install with **erase device** and confirm it shows a new pairing code.
+- **Two panels at once.** Install the same image on a second board and confirm
+  the two do not collide: different hostnames, different mDNS records, two
+  separate cards in Home Assistant.
+
+### Pairing, and the panel itself
+
+1. The pairing code appears within a few seconds of boot, and is the same code
+   after a reboot in the middle of pairing.
+2. Home Assistant discovers the device without being told its address, and the
+   card names it as an *ESP32-S3 panel*.
+2a. Type a wrong code. The form says so, no Home Assistant user appears under
+    **Settings → People**, and no token is created. Do it five times and
+    confirm the device refuses for five minutes and says so, then accepts the
+    right code afterwards.
+2b. On a Home Assistant with no internal URL configured, confirm the setup asks
+    for the address as its last step, and that the panel reaches Home Assistant
+    at what was typed.
 3. The typed code is accepted, and the screen leaves the pairing page by itself
-   once the setup form is finished.
+   once the setup form is finished. The address and the token survive a reboot:
+   power-cycle the panel and confirm it goes straight to the player.
+3a. Pull the panel's power between typing the code and finishing the form. Home
+    Assistant must revoke the token it minted — no leftover *Media Controller*
+    user under **Settings → People** — and ask for a code again when the panel
+    comes back.
 4. Title, artist, album art, volume, position, play/pause, next, previous,
    shuffle and repeat all follow the player. Judge how the one-second poll
    feels; the volume and the progress ring are where it shows.
@@ -573,7 +799,8 @@ None of this has run on the physical device yet.
     its last known arrangement from flash, and recover on its own when Home
     Assistant returns.
 14. Delete the panel in Home Assistant. The device must return to a pairing
-    code by itself.
+    code by itself, keep its Wi-Fi, and be pairable again without a cable.
+    Confirm the panel's Home Assistant user and token are gone.
 15. The screen switch, brightness number, page selector and restart button on
     the panel device all work, and the restart does **not** repeat on the next
     boot.

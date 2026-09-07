@@ -117,6 +117,42 @@ compile but has not run on the physical device. The payload-size, memory,
 reconnect and album-art testing this item always called for is now the hardware
 checklist at the end of its document.
 
+## 3a. Installing a panel without a toolchain
+
+**Answered.** The paired firmware is published as one universal image and
+installed from a browser over USB: see **The web installer** in
+[ESP32_PAIRED_CONTROLLER.md](ESP32_PAIRED_CONTROLLER.md). Nothing personal is
+compiled into it — no Wi-Fi credentials, no Home Assistant address, no token,
+no API key, no update password — so one file serves everybody and publishing
+it leaks nothing.
+
+Three things had to move for that to be possible, and they are worth knowing
+about because each one is a small contract of its own:
+
+1. **`ha_url` became a runtime value.** It is still a substitution, and a
+   package-built device still wins with it at every boot, but the firmware
+   reads a `ha_base` global that pairing can fill in instead.
+2. **Pairing gained a direction.** A client that advertises a non-zero port
+   serves a provisioning endpoint and Home Assistant posts to it; a client
+   that advertises port 0 polls, which is what the tablet does. See
+   **Discovery and pairing** in [CONTRACT.md](CONTRACT.md).
+3. **Wi-Fi comes over the USB cable**, through Improv in the installer page,
+   with a captive portal as the recovery path.
+
+Still outstanding, and honestly outstanding:
+
+- **none of it has run on hardware.** The image compiles and is scanned for
+  credentials in continuous integration; the first USB install, Improv, the
+  captive portal and pairing in the pushed direction are all unverified. The
+  checklist at the end of
+  [ESP32_PAIRED_CONTROLLER.md](ESP32_PAIRED_CONTROLLER.md) covers them.
+- **there is no over-the-air update in the shipped image**, deliberately: a
+  password compiled into a public binary is not a password. Updates are a USB
+  install. Doing better needs per-device update authentication, which is its
+  own piece of work and is not one the shared image can fake.
+- **GitHub Pages has to be switched on once, by hand.** Settings → Pages →
+  Source: GitHub Actions. The workflow is written and cannot set it.
+
 ## 4. One interface, two transports — and now two capability sets
 
 The two firmwares share
@@ -130,7 +166,9 @@ A widget that reaches for `homeassistant.service` directly, or a substitution
 that creeps into the interface package, would compile happily under the classic
 firmware and break the paired one. `.github/workflows/firmware.yml` now checks
 both: the interface package may contain no `homeassistant.` call and no
-substitution other than `ha_url` and `asset_base_url`.
+substitution other than `asset_base_url`. `ha_url` used to be allowed there and
+no longer is — the interface names no address at all now, which is what let the
+same file be built into an image that has none.
 
 What is still only a convention is the rest of the seam — the `cmd_` names, the
 three payload-to-widget scripts, and the thirteen state ids. Renaming one of

@@ -1,0 +1,94 @@
+name: Web installer
+
+# Publishing the installer, which is a different question from validating the
+# firmware. `firmware.yml` builds the same image on every change and keeps it
+# as a workflow artifact; this one puts a *release* of it on a public HTTPS
+# page, because ESP Web Tools needs a secure context and a device on a house
+# network has none.
+#
+# It runs on a firmware tag, so the page only ever offers a build somebody
+# decided to release, and the binary lands under installer/firmware/<version>/
+# — a path that names the version rather than a fixed one whose contents
+# change underneath the people who linked to it.
+#
+# ---------------------------------------------------------------------------
+# ONE MANUAL STEP, ONCE. GitHub Pages has to be set to build from Actions:
+# Settings -> Pages -> Build and deployment -> Source: "GitHub Actions".
+# It cannot be set from a workflow file, and until it is set this job fails at
+# the deploy step with "Pages site not found". Nothing else has to be done.
+# ---------------------------------------------------------------------------
+
+on:
+  push:
+    tags:
+      - "firmware-v*"
+  workflow_dispatch:
+
+# Nothing by default; each job asks for what it needs.
+permissions: {}
+
+# One deployment at a time, and never cancel one halfway: an interrupted
+# deployment leaves the site serving a manifest whose binary is not there yet.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build the installer site
+    runs-on: ubuntu-latest
+    permissions:
+      # Attaching the image to the release the tag belongs to.
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Cache the ESPHome and PlatformIO toolchains
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            ~/.cache/pip
+            ~/.esphome
+          key: esphome-factory-${{ hashFiles('firmware/media-controller-factory.yaml') }}
+          restore-keys: esphome-factory-
+      - name: Install ESPHome
+        run: pip install esphome
+      - name: Validate the factory firmware
+        run: esphome config firmware/media-controller-factory.yaml
+      - name: Compile the factory firmware
+        run: esphome compile firmware/media-controller-factory.yaml
+      - name: Assemble the installer, and refuse a personal image
+        run: python tools/make-web-installer.py --build-dir firmware/.esphome/build
+      - name: Check every file the manifest names exists
+        run: python tools/check-installer-manifest.py
+      - name: Attach the image to the release
+        # The page offers one version. The release page keeps every version,
+        # so a panel can be put back onto an older build without a checkout.
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            installer/firmware/*/media-controller-factory.factory.bin
+            installer/firmware/*/manifest.json
+      - name: Package the site for Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: installer/
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -45,6 +45,7 @@ from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import entity_registry as er, selector
 from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 
+from .bootstrap import normalise_url
 from .const import (
     CONF_CONTROLLER_ENTRY_ID,
     CONF_ENTITIES,
@@ -54,9 +55,11 @@ from .const import (
     CONF_USER_ID,
     DATA_PROVISIONING,
     CONF_ENTRY_TYPE,
+    CONF_HA_URL,
     CONF_HOST,
     CONF_NAME,
     CONF_PANEL_ID,
+    CONF_PANEL_PORT,
     CONF_PLAYER_ENTITY,
     CONF_PROFILE,
     CONF_SLOTS,
@@ -80,6 +83,11 @@ from .pairing import (
     STATE_REJECTED,
     PairingStore,
     is_valid_code,
+)
+from .panel_provision import (
+    async_internal_url,
+    async_panel_accepts_push,
+    async_verify_code,
 )
 from .profiles import (
     CONTROLLER_PROFILE,
@@ -122,6 +130,17 @@ def _pairings(hass: Any) -> PairingStore:
     )
 
 
+def _ha_url_schema(suggested: str) -> vol.Schema:
+    """Ask where Home Assistant is, for a panel that has to be told."""
+    return vol.Schema(
+        {
+            vol.Required(CONF_HA_URL, default=suggested): selector.TextSelector(
+                selector.TextSelectorConfig(type=selector.TextSelectorType.URL)
+            ),
+        }
+    )
+
+
 def _pairing_schema() -> vol.Schema:
     """Ask for the code the panel is showing on its own screen."""
     return vol.Schema(
@@ -131,11 +150,16 @@ def _pairing_schema() -> vol.Schema:
     )
 
 
+# Failures that are not about the six digits, so putting them on that field
+# would be telling somebody to retype a code that was fine.
+_PAIRING_BASE_ERRORS = frozenset({"token_failed", "panel_refused"})
+
+
 def _pairing_errors(error: str | None) -> dict[str, str]:
     """Place a pairing failure on the field the person can act on."""
     if error is None:
         return {}
-    if error == "token_failed":
+    if error in _PAIRING_BASE_ERRORS:
         return {"base": error}
     return {CONF_PAIRING_CODE: error}
 
@@ -455,6 +479,14 @@ class MediaControllerConfigFlow(
     _panel_id: str = ""
     _panel_name: str = ""
     _panel_host: str = ""
+    # Non-zero when the panel serves a provisioning endpoint, which is what
+    # decides the direction of pairing: Home Assistant pushes to a panel that
+    # can be reached and waits to be polled by one that cannot.
+    _panel_port: int = 0
+    # Set once the panel itself has confirmed the code over that endpoint.
+    _panel_confirmed: bool = False
+    # Only when Home Assistant could not work out its own address.
+    _ha_url: str = ""
     _controller_entry_id: str = ""
 
     # A panel is created with an empty registry and fills it in the editor.
@@ -557,6 +589,11 @@ class MediaControllerConfigFlow(
             _text_property(properties, ZEROCONF_PROP_NAME) or panel_id
         )
         self._panel_host = discovery_info.host
+        # A tablet advertises port 0 because it serves nothing; the ESP32
+        # firmware advertises the port its provisioning endpoint is on. The
+        # record therefore says which way round pairing runs, with no second
+        # service type and no new TXT key.
+        self._panel_port = int(discovery_info.port or 0)
 
         # Shown on the discovery card in the UI.
         self.context["title_placeholders"] = {
@@ -580,6 +617,10 @@ class MediaControllerConfigFlow(
             self._registry = []
             self._retired = []
             self._panel_id = user_input[CONF_PANEL_ID].strip().lower()
+            # A panel added by hand is not discovered, so nothing is known
+            # about where it is. It polls, exactly as it always did.
+            self._panel_host = ""
+            self._panel_port = 0
             self._panel_name = (
                 str(user_input.get(CONF_NAME) or "").strip() or self._panel_id
             )
@@ -638,10 +679,14 @@ class MediaControllerConfigFlow(
         itself correctly must always produce a card.
         """
         if user_input is not None:
-            self._pair_error = self._arm_pairing(
-                str(user_input[CONF_PAIRING_CODE]).strip()
-            )
+            code = str(user_input[CONF_PAIRING_CODE]).strip()
+            self._pair_error = await self._async_offer_code(code)
             if self._pair_error is None:
+                if self._panel_confirmed:
+                    # The panel answered directly, so there is nothing to wait
+                    # for. Its token is minted at the end of the form and
+                    # delivered once the entities it names exist.
+                    return await self.async_step_controller_link()
                 return await self.async_step_pair_wait()
 
         return self.async_show_form(
@@ -653,6 +698,39 @@ class MediaControllerConfigFlow(
                 "profile": self._profile.name,
                 "host": self._panel_host or "unknown",
             },
+        )
+
+    async def async_step_ha_url(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> ConfigFlowResult:
+        """Ask where Home Assistant is, when it cannot say itself.
+
+        Only reached for a panel Home Assistant has to push to — a panel that
+        polls already knows the address — and only when the network helpers
+        have nothing to offer. That is rare enough that asking every time
+        would be a step nobody needs, and possible enough that not asking
+        would strand the setup with no way forward.
+        """
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            # Checked against the same rule the panel applies, so a value it
+            # would refuse is caught while somebody is still looking at a form
+            # rather than three steps later in a log line.
+            candidate = normalise_url(user_input.get(CONF_HA_URL))
+            if not candidate:
+                errors[CONF_HA_URL] = "invalid_url"
+            else:
+                self._ha_url = candidate
+                if self.source == config_entries.SOURCE_REAUTH:
+                    return await self._async_finish_reauth()
+                return await self._async_registry_done({})
+
+        return self.async_show_form(
+            step_id="ha_url",
+            data_schema=_ha_url_schema(self._ha_url),
+            errors=errors,
+            description_placeholders={"name": self._panel_name},
         )
 
     async def async_step_pair_wait(
@@ -701,18 +779,52 @@ class MediaControllerConfigFlow(
             return await self.async_step_reauth_confirm()
         return await self.async_step_pair()
 
-    @callback
-    def _arm_pairing(self, code: str) -> str | None:
-        """Open the pairing window for the code that was typed.
+    async def _async_offer_code(self, code: str) -> str | None:
+        """Settle the code, whichever way round this panel pairs.
 
-        No token is minted here. One is created when the entry that owns it is
-        about to exist, so a setup that is closed halfway through leaves
-        nothing usable in Home Assistant.
+        A panel that serves a provisioning endpoint is asked outright, and
+        answers in one request: no token has been minted at this point, so a
+        wrong code costs nothing and leaves nothing behind. A panel that
+        serves nothing has the code held for it instead, and confirms it on
+        its next poll.
+
+        A panel that was discovered on a port but does not answer on it falls
+        back to the poll: an ESP32 still booting, or a device whose web server
+        is busy, must not be told its code was wrong.
         """
+        self._panel_confirmed = False
         if not is_valid_code(code):
             return "invalid_code"
+
+        if self._panel_port and await self._async_panel_answers():
+            error = await async_verify_code(
+                self.hass, self._panel_host, self._panel_port, code
+            )
+            if error is not None:
+                return error
+            self._panel_confirmed = True
+            # The record still has to exist: it is what carries the token from
+            # the moment it is minted to the moment it is delivered.
+            _pairings(self.hass).confirmed(self._panel_id, code)
+            return None
+
         _pairings(self.hass).arm(self._panel_id, code)
         return None
+
+    async def _async_panel_answers(self) -> bool:
+        """Return whether the discovered address really is this panel.
+
+        A no is remembered rather than only returned: the port is what the
+        entry stores to decide the direction of every later delivery, and a
+        device that turned out not to be there must not be pushed to after
+        it was paired the long way round.
+        """
+        if await async_panel_accepts_push(
+            self.hass, self._panel_host, self._panel_port, self._panel_id
+        ):
+            return True
+        self._panel_port = 0
+        return False
 
     async def _async_wait_for_panel(self) -> str | None:
         """Return None once the panel has shown it holds the same code.
@@ -914,6 +1026,16 @@ class MediaControllerConfigFlow(
             )
             return await self.async_step_pair()
 
+        # A panel that has to be told where Home Assistant is cannot be
+        # finished until somebody has said. Asked last, so the one setup in a
+        # hundred that needs it does not slow down the other ninety-nine.
+        if (
+            self._panel_confirmed
+            and not self._ha_url
+            and async_internal_url(self.hass) is None
+        ):
+            return await self.async_step_ha_url()
+
         entities = self._stored_registry()
         error = await self._async_mint_token(
             self._panel_name or self._panel_id
@@ -930,6 +1052,8 @@ class MediaControllerConfigFlow(
                 CONF_PANEL_ID: self._panel_id,
                 CONF_NAME: self._panel_name,
                 CONF_HOST: self._panel_host,
+                CONF_PANEL_PORT: self._panel_port,
+                CONF_HA_URL: self._ha_url,
                 CONF_CONTROLLER_ENTRY_ID: self._controller_entry_id,
                 CONF_REFRESH_TOKEN_ID: self._refresh_token_id,
                 CONF_USER_ID: self._user_id,
@@ -948,6 +1072,9 @@ class MediaControllerConfigFlow(
         entry = self._get_reauth_entry()
         self._panel_id = entry.data.get(CONF_PANEL_ID, "")
         self._panel_name = entry.title or self._panel_id
+        self._panel_host = entry.data.get(CONF_HOST, "")
+        self._panel_port = int(entry.data.get(CONF_PANEL_PORT) or 0)
+        self._ha_url = entry.data.get(CONF_HA_URL, "")
         return await self.async_step_reauth_confirm()
 
     async def async_step_reauth_confirm(
@@ -961,10 +1088,12 @@ class MediaControllerConfigFlow(
         entity ID stay exactly as they were.
         """
         if user_input is not None:
-            self._pair_error = self._arm_pairing(
+            self._pair_error = await self._async_offer_code(
                 str(user_input[CONF_PAIRING_CODE]).strip()
             )
             if self._pair_error is None:
+                if self._panel_confirmed:
+                    return await self._async_finish_reauth()
                 return await self.async_step_pair_wait()
 
         return self.async_show_form(
@@ -977,6 +1106,16 @@ class MediaControllerConfigFlow(
     async def _async_finish_reauth(self) -> ConfigFlowResult:
         """Mint and store the new token of a panel that has answered."""
         entry = self._get_reauth_entry()
+        # Same question as when the panel was added, and it can be a different
+        # answer now: Home Assistant may have been given an internal URL since,
+        # or lost the one it had.
+        if (
+            self._panel_confirmed
+            and not self._ha_url
+            and async_internal_url(self.hass) is None
+        ):
+            return await self.async_step_ha_url()
+
         error = await self._async_mint_token(self._panel_name)
         if error is not None:
             self._pair_error = error
@@ -989,11 +1128,17 @@ class MediaControllerConfigFlow(
             entry.data.get(CONF_USER_ID),
             entry.data.get(CONF_REFRESH_TOKEN_ID),
         )
+        # Reloading is what delivers the new token to a panel that is pushed
+        # to: async_setup_entry finds the pairing waiting with a token
+        # attached and posts it once the config sensor exists again. A panel
+        # that polls collects it the same way it always did.
         return self.async_update_reload_and_abort(
             entry,
             data_updates={
                 CONF_REFRESH_TOKEN_ID: self._refresh_token_id,
                 CONF_USER_ID: self._user_id,
+                CONF_PANEL_PORT: self._panel_port,
+                CONF_HA_URL: self._ha_url,
             },
         )
 

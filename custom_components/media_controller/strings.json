@@ -20,7 +20,7 @@
       },
       "panel": {
         "title": "Add a panel",
-        "description": "A panel normally appears on its own once it announces itself on the network. Add it by hand only when it cannot. The panel ID must match the one the device announces; a panel writes its own to panel-id on first run.",
+        "description": "A panel normally appears on its own once it announces itself on the network. Add it by hand only when it cannot. The panel ID must match the one the device announces; a panel writes its own to panel-id on first run.\n\nA new ESP32-S3 panel is flashed from a browser at https://vahac.github.io/ha-media-controller/ — no ESPHome and no YAML. It then appears here by itself.",
         "data": {
           "profile": "Device type",
           "panel_id": "Panel ID",
@@ -66,6 +66,13 @@
           "climate": "Climate devices",
           "covers": "Covers"
         }
+      },
+      "ha_url": {
+        "title": "Where is Home Assistant?",
+        "description": "Home Assistant could not work out an address to give {name}. Enter the one the panel should use on your network, for example `http://192.168.1.10:8123`. Set an internal URL under Settings → System → Network to skip this next time.",
+        "data": {
+          "ha_url": "Home Assistant address"
+        }
       }
     },
     "error": {
@@ -75,7 +82,12 @@
       "code_mismatch": "The panel is showing a different code. Read the six digits off the panel's screen again.",
       "pairing_timeout": "The panel did not answer. Check that it is on, on the same network, and still showing a pairing code.",
       "controller_failed": "Home Assistant could not create the media player source. Check the log, or add one from Add device → Media player source.",
-      "too_many_entities": "That is more room entities than this panel can drive. Remove some before adding others."
+      "too_many_entities": "That is more room entities than this panel can drive. Remove some before adding others.",
+      "invalid_url": "Enter the address Home Assistant is reachable at on your network, starting with http:// or https://.",
+      "panel_already_paired": "This panel already holds an access token. Remove it from Home Assistant, or reset the panel, before pairing it again.",
+      "panel_not_ready": "The panel is still starting and has no code on screen yet. Wait for the six digits to appear and try again.",
+      "too_many_attempts": "The panel has refused too many codes and has stopped accepting them for five minutes. Read the six digits off its screen and try again after that, or restart the panel.",
+      "panel_refused": "The panel refused the request. Check the Home Assistant log and the panel's own log."
     },
     "abort": {
       "already_configured": "This device is already configured.",
@@ -270,7 +282,7 @@
     },
     "panel_contract_outdated_firmware": {
       "title": "{name} is running an old build",
-      "description": "This panel reports client contract {panel_contract}, and this version of Media Controller speaks contract {integration_contract}. The two no longer agree on what the config sensor carries, so the device ignores part of what Home Assistant sends it: the settings and the buttons on its device change nothing.\n\nInstall the device again from ESPHome Device Builder. Its `packages:` block re-downloads the maintained firmware from this repository, so no configuration of yours has to change.\n\nThis message clears itself once the panel reports the current contract."
+      "description": "This panel reports client contract {panel_contract}, and this version of Media Controller speaks contract {integration_contract}. The two no longer agree on what the config sensor carries, so the device ignores part of what Home Assistant sends it: the settings and the buttons on its device change nothing.\n\nInstall the current firmware over USB with the web installer at https://vahac.github.io/ha-media-controller/ , then pair the panel again if it asks. The panel keeps its Wi-Fi credentials across an install. If this device was set up from an ESPHome package instead, installing it again from ESPHome Device Builder re-downloads the maintained firmware and changes nothing else.\n\nThis message clears itself once the panel reports the current contract."
     },
     "panel_never_reported_tablet": {
       "title": "{name} has never reported to Home Assistant",
@@ -278,7 +290,7 @@
     },
     "panel_never_reported_firmware": {
       "title": "{name} has never reported to Home Assistant",
-      "description": "This panel has not sent a single status report since it was set up, so its Battery, Screen, Page and settings entities stay unavailable and nothing Home Assistant sends it is applied. That is what a build from before the status endpoint existed does: it cannot report, and it does not read the settings and commands sent to it. This version of Media Controller speaks contract {integration_contract}.\n\nInstall the device again from ESPHome Device Builder. Its `packages:` block re-downloads the maintained firmware from this repository, so no configuration of yours has to change.\n\nIf the device is simply switched off, ignore this: it clears itself the next time the panel reports."
+      "description": "This panel has not sent a single status report since it was set up, so its Battery, Screen, Page and settings entities stay unavailable and nothing Home Assistant sends it is applied. That is what a build from before the status endpoint existed does: it cannot report, and it does not read the settings and commands sent to it. This version of Media Controller speaks contract {integration_contract}.\n\nInstall the current firmware over USB with the web installer at https://vahac.github.io/ha-media-controller/ , then pair the panel again if it asks. The panel keeps its Wi-Fi credentials across an install. If this device was set up from an ESPHome package instead, installing it again from ESPHome Device Builder re-downloads the maintained firmware and changes nothing else.\n\nIf the device is simply switched off, ignore this: it clears itself the next time the panel reports."
     }
   }
 }

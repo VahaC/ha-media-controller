@@ -64,6 +64,7 @@ from .pairing import PairingStore
 from .icons import async_setup_icon_endpoints
 from .panel_card import async_setup_card_endpoint
 from .panel_layout import async_setup_layout_endpoint
+from .panel_provision import async_deliver_bootstrap
 from .panel_state import PanelSettings, PanelState
 from .provision import PanelProvisionView
 from .proxy import controller_device_info, panel_device_info
@@ -566,6 +567,20 @@ async def _async_setup_panel(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     entry.runtime_data = runtime
     await hass.config_entries.async_forward_entry_setups(entry, PANEL_PLATFORMS)
+
+    # A panel that was just paired over its own provisioning endpoint is still
+    # waiting for the three things it needs, and one of them is the entity ID
+    # of the config sensor the line above has only now created. Delivering it
+    # is therefore the last thing setup does, and it is a background task: a
+    # device that has gone quiet must not hold up the entry it belongs to.
+    #
+    # It returns immediately unless a pairing is waiting with a token
+    # attached, so every ordinary reload passes straight through.
+    entry.async_create_background_task(
+        hass,
+        async_deliver_bootstrap(hass, entry),
+        f"media_controller provision {entry.entry_id}",
+    )
     return True
 
 

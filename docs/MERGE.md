@@ -31,6 +31,7 @@ them, and do not "tidy" them into `clients/`:**
 | `firmware/media-controller-ui.yaml` | Reached by a **relative `!include`** from both files above. A device fetches only the file it names; the include is resolved inside the clone ESPHome makes of this repository, so renaming or moving this file breaks devices that never mention it. |
 | `firmware/assets/` | Fetched at compile time through `asset_base_url`, a raw GitHub URL. |
 | `components/media_controller_grid/` | Fetched at compile time by every paired device, as an ESPHome `external_components` Git source pinned to this repository. ESPHome looks for `components/` or `esphome/components/` at the repository root, which is why it is not under `firmware/`. |
+| `components/media_controller_provision/` | The same source, in the same `external_components:` block. A paired device names both components in one list, so this one cannot move either. |
 | `hacs.json` | Must stay at the repository root. |
 
 The tablet panel had no such constraint — it is installed over SSH from a local
@@ -123,3 +124,19 @@ directories were deliberately left out of the copy and must stay out.
   above.
 - **The two test suites were not merged.** `tests/` is the integration's;
   `clients/t560/tests/` is the panel's. They run on different toolchains.
+
+## The web installer is not a frozen path
+
+`installer/` and `firmware/media-controller-factory.yaml` are new and
+deliberately outside the table above. Nothing in the field names them: a
+device flashed from the installer holds a finished binary and never fetches
+anything from this repository again, and the page is served from GitHub Pages
+rather than pulled by a device. They can be reorganised whenever there is a
+reason to — the published *URL* is the compatibility surface there, not the
+path in the tree, and it is the workflow that decides that.
+
+The one thing that must not change casually is the published address itself,
+<https://vahac.github.io/ha-media-controller/>. It is written into the Home
+Assistant repair issues and the config-flow text, so a move means updating
+`custom_components/media_controller/strings.json` and its translation in the
+same change.

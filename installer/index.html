@@ -1,0 +1,384 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Media Controller — ESP32 panel installer</title>
+    <meta
+      name="description"
+      content="Install the Media Controller firmware on an ESP32-S3-4848S040 touch panel from your browser, over USB."
+    />
+    <link rel="icon" href="data:," />
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #f6f7fb;
+        --panel: #ffffff;
+        --ink: #16181d;
+        --muted: #5b6270;
+        --line: #dfe3ec;
+        --accent: #0a7ea4;
+        --warn-bg: #fff6e5;
+        --warn-line: #e8c37a;
+        --warn-ink: #6b4a06;
+        --code-bg: #eef1f7;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #14161b;
+          --panel: #1c1f26;
+          --ink: #e9ecf2;
+          --muted: #a3abbb;
+          --line: #2c313b;
+          --accent: #4cc2e0;
+          --warn-bg: #2e2612;
+          --warn-line: #6d5a26;
+          --warn-ink: #f0d9a4;
+          --code-bg: #23272f;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        padding: 0 1rem 4rem;
+        background: var(--bg);
+        color: var(--ink);
+        font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          Helvetica, Arial, sans-serif;
+      }
+      main {
+        max-width: 46rem;
+        margin: 0 auto;
+      }
+      header {
+        padding: 3rem 0 1.5rem;
+      }
+      h1 {
+        margin: 0 0 0.35rem;
+        font-size: 1.9rem;
+        line-height: 1.2;
+      }
+      h2 {
+        margin: 2.5rem 0 0.75rem;
+        font-size: 1.2rem;
+      }
+      h3 {
+        margin: 1.5rem 0 0.4rem;
+        font-size: 1rem;
+      }
+      p,
+      li {
+        color: var(--ink);
+      }
+      .lede {
+        color: var(--muted);
+        font-size: 1.05rem;
+        margin: 0;
+      }
+      section {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 1.25rem 1.5rem;
+        margin: 1rem 0;
+      }
+      code,
+      kbd {
+        background: var(--code-bg);
+        border-radius: 4px;
+        padding: 0.1em 0.35em;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 0.9em;
+      }
+      a {
+        color: var(--accent);
+      }
+      ol,
+      ul {
+        padding-left: 1.3rem;
+      }
+      ol li,
+      ul li {
+        margin: 0.3rem 0;
+      }
+      .install {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 1rem;
+        margin: 1.25rem 0 0.25rem;
+      }
+      .version {
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+      .notice {
+        background: var(--warn-bg);
+        border: 1px solid var(--warn-line);
+        color: var(--warn-ink);
+        border-radius: 10px;
+        padding: 1rem 1.25rem;
+        margin: 1rem 0;
+      }
+      .notice p:first-child {
+        margin-top: 0;
+      }
+      .notice p:last-child {
+        margin-bottom: 0;
+      }
+      .notice a {
+        color: inherit;
+      }
+      [hidden] {
+        display: none !important;
+      }
+      footer {
+        color: var(--muted);
+        font-size: 0.85rem;
+        margin-top: 3rem;
+        text-align: center;
+      }
+      button.plain {
+        font: inherit;
+        color: var(--accent);
+        background: none;
+        border: 0;
+        padding: 0;
+        cursor: pointer;
+        text-decoration: underline;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Media Controller panel installer</h1>
+        <p class="lede">
+          Install the touch-panel firmware on an ESP32-S3 board from this page,
+          over a USB cable. No ESPHome, no YAML and no configuration file.
+        </p>
+      </header>
+
+      <section>
+        <h2>What this installs</h2>
+        <p>
+          One firmware image for the <strong>ESP32-S3-4848S040</strong> — the
+          4-inch 480×480 board with an ST7701S display and a GT911 touchscreen.
+          It is the only board this image is built for. Flashing it onto
+          anything else will not damage the board, but nothing will be drawn on
+          the screen.
+        </p>
+        <p>
+          The image is identical for every panel. It contains no Wi-Fi
+          password, no Home Assistant address and no access token: those are
+          added afterwards, on your own machine and on your own network.
+        </p>
+      </section>
+
+      <section>
+        <h2>Install</h2>
+
+        <div id="unsupported" class="notice" hidden>
+          <p><strong>This browser cannot flash a device.</strong></p>
+          <p>
+            Installing needs Web Serial, which today means desktop
+            <strong>Google Chrome</strong>, <strong>Microsoft Edge</strong> or
+            <strong>Opera</strong>. Safari, Firefox and every browser on iOS
+            and Android do not have it. Open this page in one of the three and
+            the button below will appear.
+          </p>
+        </div>
+
+        <div id="insecure" class="notice" hidden>
+          <p><strong>This page is not on a secure connection.</strong></p>
+          <p>
+            Web Serial is only available over <code>https://</code> (or on
+            <code>localhost</code>). Open the published copy of this page
+            instead of a local file or a plain <code>http://</code> address.
+          </p>
+        </div>
+
+        <ol>
+          <li>
+            Connect the panel to
+            <strong>the computer you are reading this on</strong> with a USB-C
+            data cable. The cable has to carry data — a charge-only cable will
+            power the panel and show up as nothing.
+          </li>
+          <li>Press <strong>Connect</strong> and pick the serial port.</li>
+          <li>
+            Choose <strong>Install Media Controller</strong> and confirm
+            erasing the device. The first install takes about a minute.
+          </li>
+          <li>
+            When it finishes, the same dialog offers
+            <strong>Wi-Fi</strong>. Enter your network and password there.
+          </li>
+        </ol>
+
+        <div class="install">
+          <esp-web-install-button id="install"></esp-web-install-button>
+          <span class="version" id="version-line">Loading the firmware manifest…</span>
+        </div>
+        <p class="version" id="manifest-error" hidden>
+          The firmware manifest could not be loaded, so there is nothing to
+          install from this page. Please open an issue.
+        </p>
+      </section>
+
+      <section>
+        <h2>Wi-Fi</h2>
+        <p>
+          The credentials you type into the Wi-Fi step travel down the USB
+          cable to the panel and nowhere else. They are not sent to this site,
+          to GitHub, or to any build server: this page never uploads anything,
+          and the firmware it installs was built without them.
+        </p>
+        <p>
+          The panel stores them itself and reconnects on its own after a power
+          cut.
+        </p>
+
+        <h3>If the network changes later</h3>
+        <p>
+          A panel that cannot reach its network raises its own access point,
+          <strong>Media Controller Setup</strong>, after about a minute. Join
+          it from a phone and a page opens where you can enter the new network.
+          You can also plug the panel back into a computer and use the
+          <strong>Connect</strong> button above, which offers the Wi-Fi step
+          again without reinstalling anything.
+        </p>
+      </section>
+
+      <section>
+        <h2>Home Assistant</h2>
+        <ol>
+          <li>
+            Once the panel joins your network it shows a
+            <strong>six-digit code</strong> on its screen and announces itself.
+          </li>
+          <li>
+            Home Assistant offers it under
+            <strong>Settings → Devices &amp; services</strong>. Open it and
+            type the six digits.
+          </li>
+          <li>
+            Home Assistant then sends the panel its own address, an access
+            token created for that panel alone, and the entity it should read.
+            Nothing is typed on the panel itself.
+          </li>
+        </ol>
+        <p>
+          The <strong>Media Controller</strong> integration has to be installed
+          in Home Assistant first — through HACS — and a media player source
+          configured. See the
+          <a
+            href="https://github.com/VahaC/ha-media-controller#readme"
+            rel="noreferrer"
+            >repository README</a
+          >.
+        </p>
+      </section>
+
+      <section>
+        <h2>If the panel is not offered</h2>
+        <h3>No serial port in the list</h3>
+        <ul>
+          <li>Try another USB-C cable. Charge-only cables are common.</li>
+          <li>
+            On Windows, install the driver for the board's USB-to-serial chip
+            (CH340 or CP210x) and unplug and replug the panel.
+          </li>
+          <li>
+            Close anything else holding the port — an ESPHome dashboard, a
+            serial monitor, the Arduino IDE.
+          </li>
+        </ul>
+
+        <h3>The port is there but the install fails to start</h3>
+        <p>Put the board into its download mode by hand:</p>
+        <ol>
+          <li>Hold <kbd>BOOT</kbd> down.</li>
+          <li>Press and release <kbd>RESET</kbd>.</li>
+          <li>Release <kbd>BOOT</kbd>.</li>
+          <li>Press <strong>Connect</strong> again.</li>
+        </ol>
+        <p>
+          Both buttons are on the back of the board. After a successful install
+          the panel restarts on its own; if it does not, press
+          <kbd>RESET</kbd> once.
+        </p>
+
+        <h3>Nothing on the screen after installing</h3>
+        <p>
+          Give it fifteen seconds — the display initialises after the rest of
+          the firmware. If it stays dark, the board is probably not an
+          ESP32-S3-4848S040.
+        </p>
+      </section>
+
+      <section>
+        <h2>Updating</h2>
+        <p>
+          Updates are installed the same way: connect the panel over USB and
+          press <strong>Install</strong> again. There is deliberately no
+          over-the-air update in this image — an update password compiled into
+          a file anybody can download would protect nothing.
+        </p>
+        <p>
+          Installing over an existing panel keeps its Wi-Fi credentials and its
+          Home Assistant pairing, so it comes back on its own. Choosing
+          <strong>erase device</strong> clears both, and the panel then shows a
+          new pairing code.
+        </p>
+      </section>
+
+      <footer>
+        <p>
+          <a
+            href="https://github.com/VahaC/ha-media-controller"
+            rel="noreferrer"
+            >VahaC/ha-media-controller</a
+          >
+          · This page runs entirely in your browser.
+        </p>
+      </footer>
+    </main>
+
+    <script
+      type="module"
+      src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"
+    ></script>
+    <script>
+      // Which build this page installs. Written by the release workflow, so a
+      // published page always names one specific version rather than whatever
+      // happens to be at a fixed path.
+      const versionLine = document.getElementById("version-line");
+      const button = document.getElementById("install");
+
+      if (!window.isSecureContext) {
+        document.getElementById("insecure").hidden = false;
+      } else if (!("serial" in navigator)) {
+        document.getElementById("unsupported").hidden = false;
+      }
+
+      fetch("versions.json", { cache: "no-store" })
+        .then((response) => {
+          if (!response.ok) throw new Error(String(response.status));
+          return response.json();
+        })
+        .then((data) => {
+          const build = (data.builds || [])[0];
+          if (!build) throw new Error("no builds");
+          button.setAttribute("manifest", build.manifest);
+          versionLine.textContent = `Firmware ${build.version}`;
+        })
+        .catch(() => {
+          versionLine.hidden = true;
+          document.getElementById("manifest-error").hidden = false;
+        });
+    </script>
+  </body>
+</html>
