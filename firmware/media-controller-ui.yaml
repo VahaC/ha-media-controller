@@ -131,9 +131,10 @@ logger:
 # every internal heap inside a critical section — interrupts off for as long as
 # the walk takes. The RGB panel above cannot survive that: its bounce buffer
 # holds 480x10 px, which at a 12 MHz pixel clock drains in about 400 us, so a
-# longer walk starves the refill and the frame shifts sideways until
-# esp_lcd_rgb_panel_restart() squares it up on the next VSYNC. On a five second
-# poll that is a visible twitch on the screen every five seconds.
+# longer walk starves the refill. The panel recovers on its own -- the VSYNC
+# interrupt counts the bounce-buffer EOFs it should have seen and resets the
+# DMA channel when they are short -- but that reset is a shifted frame, which
+# on a five second poll is a visible twitch every five seconds.
 #
 # Nothing reads these oftener than once a minute in any case: the diagnostics
 # block rides report_status, which goes out every 60 s or on a page change. So
@@ -388,9 +389,18 @@ select:
 # -------------------- ALBUM ART TRANSPORT --------------------
 # online_image needs an HTTP client, so it is configured here rather than in
 # the transport half: the two album-art images are drawn here.
+# -- The timeout is the ceiling on how long the main loop can be held by one
+# -- request, because there is no asynchronous form: the request is performed
+# -- and parsed inside the action that started it. That matters more than
+# -- patience does here. Everything this device asks for is a few hundred
+# -- bytes to thirteen kilobytes from a Home Assistant on the same network,
+# -- and a request that has not answered in three seconds is not slow, it is
+# -- lost -- waiting out the other seven would only hold a frozen picture on
+# -- the wall for longer. The jobs behind it all keep their own clocks and
+# -- come round again by themselves.
 http_request:
   verify_ssl: false
-  timeout: 10s
+  timeout: 3s
 
 # -------------------- PLAYBACK PROGRESS (updates arc every second) --------------------
 interval:

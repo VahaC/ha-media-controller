@@ -328,9 +328,42 @@ class PairedFirmwareTests(unittest.TestCase):
     def test_the_provisioning_endpoint_is_declared(self) -> None:
         text = _read(PAIRED)
         self.assertIn("media_controller_provision:", text)
-        self.assertIn("components: [media_controller_grid, "
-                      "media_controller_provision]", text)
+        # Each external component on its own line since the push endpoint
+        # joined the two that were there, so this asserts membership rather
+        # than one spelling of the list.
+        for component in (
+            "media_controller_grid",
+            "media_controller_provision",
+            "media_controller_push",
+        ):
+            self.assertIn(f"      - {component}", text)
         self.assertIn("set_apply_handler", text)
+
+    def test_the_push_endpoint_is_declared_and_wired(self) -> None:
+        # The other direction: the two payloads the panel used to poll for are
+        # posted to it. Both handlers have to be installed, because a route
+        # with no handler behind it answers 503 and the panel would fall back
+        # to polling forever without saying why.
+        text = _read(PAIRED)
+        self.assertIn("media_controller_push:", text)
+        self.assertIn("set_player_handler", text)
+        self.assertIn("set_config_handler", text)
+
+    def test_a_push_reaches_the_same_parser_as_a_poll(self) -> None:
+        # The point of extracting the two parsers: a field honoured when it
+        # was polled must be honoured when it is pushed. Each script is
+        # referenced twice -- once by the poll's on_response and once by the
+        # handler the push component calls -- plus its own definition.
+        text = _read(PAIRED)
+        for script in ("apply_player_payload", "apply_config_payload"):
+            self.assertEqual(text.count(script), 3, script)
+
+    def test_the_push_key_is_minted_and_reported(self) -> None:
+        # Without a key the routes refuse everything, and without the report
+        # Home Assistant never learns the key. Both halves or neither.
+        text = _read(PAIRED)
+        self.assertIn("id(panel_push)->set_key(", text)
+        self.assertIn('json += ",\\"push_key\\":\\"" + id(push_key)', text)
 
     def test_the_endpoint_is_told_every_time_the_state_changes(self) -> None:
         # It answers only while the device is unpaired, and it learns which it

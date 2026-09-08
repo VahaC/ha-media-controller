@@ -1056,8 +1056,13 @@ be booting.
 
 ### What a client that advertises a port must serve
 
-Three routes, and no more. They are the client's side of the contract, so a
-client that offers a port offers exactly these.
+Three routes. They are the client's side of pairing, so a client that offers a
+port offers all three and no variation on them.
+
+A client **may** serve two more, described under **Panel push endpoint** below.
+Those are optional, they are not part of pairing, and a client that serves none
+of them is complete: it polls, which is what every client did before they
+existed. Nothing else may be served on this port.
 
 `GET /api/provision/info` — who this is. Answered always, paired or not, and it
 carries nothing secret:
@@ -1147,6 +1152,7 @@ another's battery level.
   "wifi_dbm": -53,
   "temperature_c": 31.5,
   "editor_url": "http://192.168.1.105:8730/",
+  "push_key": "9f2c41ab7de05613c8a4021ff37bd9e5",
   "battery": {"available": true, "percent": 82, "charging": false},
   "display": {"available": true, "on": true, "brightness": 57},
   "diagnostics": {
@@ -1167,6 +1173,15 @@ another's battery level.
 - `percent` and `brightness` are 0 – 100; anything else is discarded. Use -1
   for a backlight that exists but cannot be written by this session.
 - Booleans must be real JSON booleans; `1` is not `true`.
+- `push_key` says that this client serves the push routes and what it wants
+  on them. It is the client's own secret, minted by the client, and it is the
+  only thing that makes Home Assistant push rather than leave the client
+  polling — there is no version test for the capability. A client that serves
+  no push routes omits it. It must be hex, at most 64 characters, and it must
+  be repeated in **every** report: that is the only channel it travels on, so
+  a Home Assistant restored from an older backup has no other way back to the
+  current one. It must survive a reboot, and it must be replaced when the
+  client is paired again.
 - `version` sets the software version on the panel's Home Assistant device.
   It is a release number and answers a different question from
   `contract_version`: it says when the build shipped, not what it
@@ -1222,6 +1237,70 @@ another's battery level.
 
 Answers: `200` with `{"status": "ok"}`; `400` for an unusable body; `403` when
 the token belongs to another account; `404` when no loaded panel has that ID.
+
+## Panel push endpoint
+
+Two routes a client **may** serve, on the port its discovery record advertises.
+They exist because polling costs a client more than the payload is worth.
+
+A client reads the player and its own config sensor to draw anything at all,
+and the only way to read them over the REST API is to ask, on a clock, whether
+they moved. For a client with a thread to spare that is a background cost. For
+one whose HTTP client is synchronous it is not: the request stops everything
+else the client is doing, twice a second, for a player that is usually paused
+and a configuration that usually has not changed. On the ESP32-S3 panel that
+shows up on the glass — its display is refreshed by the processor itself, and a
+stalled main loop is a picture that jumps.
+
+So Home Assistant delivers the two payloads instead, and the client's polls
+stay behind them as the thing that notices delivery stopped.
+
+`POST /api/push/player` — the state of the player this client draws.
+`POST /api/push/config` — the state of this client's own config sensor.
+
+Both carry the same document, and it is deliberately the same shape
+`GET /api/states/<entity>` answers with, so that a client hands a push to the
+parser it already has:
+
+```json
+{
+  "state": "playing",
+  "attributes": {"media_title": "...", "media_position": 41.0}
+}
+```
+
+Both are authenticated with the `X-Panel-Push-Key` header, carrying the key the
+client reported. `202` for accepted, `400` for an empty body, `403` for a
+missing or wrong key, `413` for a body over the client's ceiling, `503` when
+the client is not ready to apply one.
+
+Requirements on a client that serves these:
+
+- **report a `push_key`, or serve neither route.** The key is what Home
+  Assistant tests for the capability, so a client that serves the routes and
+  reports no key is a client nothing will ever be sent to;
+- **mint the key locally.** It is not the access token and must not be derived
+  from it: that token stays on the client and is readable through no route;
+- **refuse every push while unpaired**, and mint a new key when paired again;
+- **compare the key in constant time**, and bound the body;
+- **go on polling.** A push is an optimisation and never an obligation on Home
+  Assistant, which sends nothing while it is restarting, reloading the
+  integration, or unable to reach the client. A client must fall back to
+  asking when pushes stop, and the fallback must be slow enough to be worth
+  having and quick enough to be noticed — the ESP32-S3 panel treats a push as
+  fresh for thirty seconds and polls at that rate while they arrive;
+- **apply a push through the same code as a poll.** Two parsers for one
+  document drift, and the drift shows as a setting honoured one way and
+  ignored the other.
+
+What Home Assistant guarantees:
+
+- it pushes only to a client that reported a key, and it sends that key;
+- it pushes on change, not on a clock, and it coalesces a burst of changes to
+  one delivery;
+- it does not retry. A delivery that fails is left to the client's fallback,
+  because a queue of retries aimed at a client that is rebooting arrives as
+  exactly the burst these routes exist to avoid.
 
 ## Card artwork
 

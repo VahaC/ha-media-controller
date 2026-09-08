@@ -70,6 +70,7 @@ from .panel_firmware import (
 )
 from .panel_layout import async_setup_layout_endpoint
 from .panel_provision import async_deliver_bootstrap
+from .panel_push import async_start_push
 from .panel_state import (
     THEME_COLOR_DEFAULTS,
     THEME_OPACITY_DEFAULTS,
@@ -121,6 +122,10 @@ class PanelRuntime:
     loaded_at: float = 0.0
     cancel_presence: Callable[[], None] | None = None
     cancel_registry: Callable[[], None] | None = None
+    # Stops watching the two states this panel is sent rather than asked for.
+    # None for a panel whose config sensor did not exist when setup ran, which
+    # is a panel that polls -- see panel_push.py.
+    cancel_push: Callable[[], None] | None = None
 
     async def async_shutdown(self) -> None:
         """Stop the timers and listeners a panel owns."""
@@ -130,6 +135,9 @@ class PanelRuntime:
         if self.cancel_registry is not None:
             self.cancel_registry()
             self.cancel_registry = None
+        if self.cancel_push is not None:
+            self.cancel_push()
+            self.cancel_push = None
 
 
 @dataclass(slots=True)
@@ -609,6 +617,17 @@ async def _async_setup_panel(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         async_deliver_bootstrap(hass, entry),
         f"media_controller provision {entry.entry_id}",
     )
+
+    # Watching the two states this panel would otherwise poll for. After the
+    # platforms, for the same reason the delivery above is: the config sensor
+    # it follows is created by them, and there is nothing to subscribe to
+    # until it exists. A panel whose sensor is not there yet gets None and
+    # goes on polling; the next reload finds it.
+    #
+    # Nothing is pushed until the panel has reported a key, so this being
+    # started here says only that Home Assistant is watching -- whether it
+    # speaks is the panel's answer to give.
+    runtime.cancel_push = async_start_push(hass, entry, runtime.state)
     return True
 
 

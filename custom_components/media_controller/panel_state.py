@@ -162,6 +162,10 @@ DISPLAY_OFF = "off"
 # value would turn one malformed report into a failed report instead of an
 # ignored field.
 EDITOR_URL_MAX_LENGTH = 255
+# Thirty-two hex characters is what the firmware mints. The ceiling is
+# generous rather than exact so that a longer key from a later build is
+# carried rather than silently dropped, and it is still a bound.
+PUSH_KEY_MAX_LENGTH = 64
 EDITOR_URL_SCHEMES = ("http", "https")
 
 # The pages a panel can be sent to. They are the names the T560 application
@@ -232,6 +236,24 @@ def _player_skin(value: Any) -> str:
     if not all(character.isalnum() or character in "_-" for character in skin):
         return PLAYER_SKIN_UNSET
     return skin
+
+
+def _push_key(value: Any) -> str:
+    """Read the key a panel wants on a push, using "" for none.
+
+    The panel mints it, keeps it in flash and repeats it in every report, so
+    what arrives here is hex from its own generator. Only the shape is
+    checked, and narrowly: this value is written into an outgoing request
+    header, and a header is not a place a stray newline may reach.
+    """
+    if not isinstance(value, str):
+        return ""
+    key = value.strip()
+    if not key or len(key) > PUSH_KEY_MAX_LENGTH:
+        return ""
+    if not all(character in "0123456789abcdefABCDEF" for character in key):
+        return ""
+    return key
 
 
 def _editor_url(value: Any) -> str:
@@ -533,6 +555,12 @@ class PanelStatus:
     # Where the editor this panel serves answers, and "" for a panel that
     # serves none. It becomes the link on the panel's device page.
     editor_url: str = ""
+    # What this panel wants on the `X-Panel-Push-Key` header of a push, and
+    # "" for a panel that accepts none -- an older build, or one that is no
+    # longer paired. It is the whole of what decides whether this integration
+    # pushes to a panel or leaves it polling, so it is never assumed and only
+    # ever read from a report.
+    push_key: str = ""
     # The protocol the client says it speaks, and 0 for one that says
     # nothing. `app_version` is a release number and answers a different
     # question: it says when this build shipped, not what it understands.
@@ -588,6 +616,7 @@ class PanelStatus:
             brightness=_percent(display.get("brightness")),
             app_version=str(report.get("version") or "")[:32],
             editor_url=_editor_url(report.get("editor_url")),
+            push_key=_push_key(report.get("push_key")),
             contract_version=_contract_version(report.get("contract_version")),
             page=page if page in PAGES else "",
             uptime_seconds=None if uptime is None else float(uptime),

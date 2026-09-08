@@ -42,6 +42,14 @@ packages:
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
+  # ESPHome leaves Wi-Fi power saving on by default, which parks the radio
+  # between the access point's beacons and makes every round trip wait for the
+  # next one. This panel is drawn by an RGB display that the processor refreshes
+  # itself, and it reads Home Assistant over blocking HTTP requests: a request
+  # that waits on beacons holds the main loop, and a held main loop is a picture
+  # that visibly jumps. The device is mains powered and has nothing to save, so
+  # turn it off.
+  power_save_mode: NONE
 
 api:
   encryption:
