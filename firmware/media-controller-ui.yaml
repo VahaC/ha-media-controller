@@ -388,10 +388,19 @@ interval:
             # -- publish_state fires media_position.on_value, which redraws the
             # -- progress ring on every home layout via ui_sync_progress. --
             - lambda: |-
-                float pos = id(media_position).state + 1.0f;
+                float cur = id(media_position).state;
                 float dur = id(media_duration).state;
-                if (dur > 0) {
-                  if (pos > dur) pos = dur;
+                // -- There is nothing to advance from until the poll has
+                // -- reported a position: NaN + 1 is NaN, and every tick
+                // -- after this one would be NaN too. --
+                if (isnan(cur) || !(dur > 0)) return;
+                float pos = cur + 1.0f;
+                if (pos > dur) pos = dur;
+                // -- A track already sitting at its end holds there until
+                // -- the poll reports the next one. Republishing the same
+                // -- second would redraw all three home layouts once a
+                // -- second for nothing. --
+                if (pos != cur) {
                   id(media_position).publish_state(pos);
                 }
       - if:

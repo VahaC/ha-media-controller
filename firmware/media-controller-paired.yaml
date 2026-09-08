@@ -40,7 +40,7 @@ substitutions:
   # an IP address if .local names are unreliable on your network.
   ha_url: "http://homeassistant.local:8123"
 
-  firmware_version: "0.6.6"
+  firmware_version: "0.6.7"
 
   # The version of docs/CONTRACT.md this firmware implements. firmware_version
   # says when this build shipped; this says what it understands, and it is the
@@ -898,6 +898,15 @@ globals:
     restore_value: false
     initial_value: "-1"
 
+  # -- The stamp Home Assistant puts on that position
+  # -- (media_position_updated_at). It is rewritten on every seek, resume and
+  # -- track change, and it is the one signal that says the locally advanced
+  # -- position is stale and has to be taken from Home Assistant again. --
+  - id: last_position_stamp
+    type: std::string
+    restore_value: false
+    initial_value: '""'
+
   # ════════════════════════════════════════════════════════════
   # PARSERS
   # ════════════════════════════════════════════════════════════
@@ -1530,7 +1539,8 @@ script:
                         std::string title = id(json_field)(attrs,
                                                            "media_title");
                         if (title.empty()) title = "No track";
-                        if (title != id(media_title).state) {
+                        bool track_changed = title != id(media_title).state;
+                        if (track_changed) {
                           id(media_title).publish_state(title);
                         }
 
@@ -1580,7 +1590,34 @@ script:
                         std::string pos = id(json_field)(attrs,
                                                          "media_position");
                         float p = pos.empty() ? 0.0f : atof(pos.c_str());
-                        if (fabsf(p - id(last_polled_position)) > 0.5f) {
+                        // -- The number alone is not enough to tell a stale
+                        // -- local advance from a still-accurate one. A new
+                        // -- track starts at the same 0 the last one was
+                        // -- last polled at, so the difference is nothing
+                        // -- and the interface would go on counting from
+                        // -- wherever the previous track had got to,
+                        // -- clamped to the new duration, which reads as a
+                        // -- finished track: a full bar and an elapsed time
+                        // -- equal to the total. The stamp Home Assistant
+                        // -- writes beside the position is rewritten on
+                        // -- every seek, resume and track change, so that is
+                        // -- what a re-sync follows. Players that report no
+                        // -- stamp fall back to the number changing, as
+                        // -- before. --
+                        std::string stamp = id(json_field)(
+                            attrs, "media_position_updated_at");
+                        bool resync = track_changed ||
+                                      isnan(id(media_position).state);
+                        if (!stamp.empty()) {
+                          if (stamp != id(last_position_stamp)) {
+                            id(last_position_stamp) = stamp;
+                            resync = true;
+                          }
+                        } else if (fabsf(p - id(last_polled_position)) >
+                                   0.5f) {
+                          resync = true;
+                        }
+                        if (resync) {
                           id(last_polled_position) = p;
                           id(media_position).publish_state(p);
                         }
