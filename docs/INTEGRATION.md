@@ -280,6 +280,7 @@ They exist so that nothing on a wall-mounted panel has to be reached over SSH.
 | **Uptime** | When the panel application last started. | yes |
 | **Last report** | When the device was last heard from. | yes |
 | **Wi-Fi signal**, **Temperature** | Diagnostics from the device. | no |
+| **Firmware** | The build the panel is on, and the one it could be on. | yes — the T560 has none |
 
 A panel reports only what it has, and Home Assistant leaves the rest unknown.
 An ESP32 has no battery to report, and its screen timeout is owned by a *Screen
@@ -522,6 +523,41 @@ Update the integration through HACS. When the `version` field in
 [manifest.json](../custom_components/media_controller/manifest.json) changes,
 HACS offers the update; the clients are unaffected until their own release is
 adopted.
+
+### Updating a paired ESP32 panel
+
+A paired ESP32 panel has a **Firmware** entity and appears under **Settings →
+Updates**. Pressing Install downloads the released image *in Home Assistant*,
+checks it against the SHA-256 the installer site publishes, and then tells the
+panel over its own authenticated channel that a version is waiting. The panel
+fetches it from Home Assistant over the local network — it never talks to the
+internet — and keeps its Wi-Fi, its pairing, its token and its room layout,
+because an update writes the application partition and nothing else.
+
+Three things about that entity are worth knowing, because each of them looks
+like a bug from the outside:
+
+- **it can show a newer build on the installer page and offer nothing.** A
+  firmware built against a newer client contract than this integration speaks
+  would install and then ignore half of what it is sent, so it is held back
+  until the integration is upgraded first. The entity says so in its
+  `held_back_version` attribute;
+- **a panel on firmware 0.5.0 is never offered one.** That build has no update
+  client in it at all, so there is nothing to tell — it has to be moved
+  forward once over USB from the installer page, and the repair issue says so.
+  After that one install it never needs a cable again;
+- **an installation with no route to the internet is offered nothing**, and
+  the entity reports its version as unknown rather than up to date. Home
+  Assistant is the thing that downloads the image, so a Home Assistant that
+  cannot reach the release genuinely has no update to give.
+
+The **T560 tablet has no Firmware entity**: it is deployed over SSH, and a
+button that could not install anything would be worse than none. It keeps the
+repair issue that names it when it is behind.
+
+The update procedure, the rollback, and the USB recovery path are in
+[ESP32_PAIRED_CONTROLLER.md](ESP32_PAIRED_CONTROLLER.md) under *Updating*; the
+protocol is **Panel firmware endpoint** in [CONTRACT.md](CONTRACT.md).
 
 Read [CONTRACT.md](CONTRACT.md) before changing the payload shape of the queue
 or playlists sensors, the proxy entity behavior, or a service signature. Those

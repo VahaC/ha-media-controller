@@ -66,6 +66,9 @@ that image — in this repository's continuous integration, not on your machine.
      and give it your Wi-Fi on the same page. Type the six digits it then shows
      into Home Assistant. This is the shortest path and needs no ESPHome:
      [docs/ESP32_PAIRED_CONTROLLER.md](docs/ESP32_PAIRED_CONTROLLER.md).
+     That is the only time the cable is needed: a paired panel is updated from
+     **Settings → Updates** afterwards, authenticated by the token it was
+     given when it paired.
    - ESP32-S3, paired, from an ESPHome package — the same firmware, for an
      installation that already runs ESPHome:
      [docs/ESP32_PAIRED_CONTROLLER.md](docs/ESP32_PAIRED_CONTROLLER.md).
@@ -83,10 +86,12 @@ firmware/media-controller.yaml        Classic transport: native API, flashed con
 firmware/media-controller-paired.yaml Paired transport: REST, config from Home Assistant
 firmware/media-controller-factory.yaml The paired transport as one shipped image, with nothing personal in it
 firmware/assets/                      Image assets, fetched at compile time
+firmware/requirements.txt             The pinned ESPHome that builds the published image
 custom_components/media_controller/icons/  Card artwork the integration serves to panels
 components/media_controller_grid/     ESPHome external component: the paired room grid and its editor
 components/media_controller_provision/ ESPHome external component: the endpoint Home Assistant hands a panel its bootstrap over
 installer/                            The web installer page, published to GitHub Pages
+tools/make-web-installer.py           Publishes both images and the release index the update entity reads
 clients/t560/                         GTK3 tablet panel (C, Python helpers)
 docs/                                 Cross-component documentation
 tests/                                Integration transformation tests

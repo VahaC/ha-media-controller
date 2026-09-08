@@ -207,6 +207,81 @@ class PageCommandTests(unittest.TestCase):
             self.assertTrue(state.request_page(page, at=1))
 
 
+class UpdateCommandTests(unittest.TestCase):
+    """Verify the command that installs a firmware, and what it leaves behind.
+
+    This is the state machine the update entity draws its four faces from —
+    up to date, available, installing, failed — so it is tested here, where
+    no Home Assistant runtime is needed to reach it.
+    """
+
+    def test_the_command_carries_a_version_and_a_moment_only(self) -> None:
+        # No address, no digest, no nonce. The config sensor is an entity:
+        # its attributes are readable by every account in the installation.
+        state = panel_state.PanelState()
+        self.assertTrue(state.request_update("0.6.0", at=1700))
+        self.assertEqual(
+            state.commands.as_payload()["update"],
+            {"version": "0.6.0", "at": 1700},
+        )
+
+    def test_no_update_command_is_sent_before_one_is_asked_for(self) -> None:
+        state = panel_state.PanelState()
+        self.assertNotIn("update", state.commands.as_payload())
+
+    def test_a_version_that_could_not_be_one_is_refused(self) -> None:
+        state = panel_state.PanelState()
+        for version in ("", "   ", "0" * 33):
+            with self.subTest(version=version):
+                self.assertFalse(state.request_update(version, at=1700))
+                self.assertNotIn("update", state.commands.as_payload())
+
+    def test_a_later_request_replaces_the_earlier_one(self) -> None:
+        state = panel_state.PanelState()
+        state.request_update("0.6.0", at=1700)
+        state.request_update("0.7.0", at=1800)
+        self.assertEqual(
+            state.commands.as_payload()["update"],
+            {"version": "0.7.0", "at": 1800},
+        )
+
+    def test_nothing_is_installing_until_something_is_asked_for(self) -> None:
+        state = panel_state.PanelState()
+        self.assertFalse(state.update_in_progress(now=0.0))
+
+    def test_a_request_reads_as_installing(self) -> None:
+        state = panel_state.PanelState()
+        state.request_update("0.6.0", at=1700, now=0.0)
+        self.assertTrue(state.update_in_progress(now=60.0))
+
+    def test_the_panel_reporting_the_new_build_ends_it(self) -> None:
+        # The only thing that can say an update finished: the device is
+        # unreachable for the whole of one and says nothing about it after.
+        state = panel_state.PanelState()
+        state.request_update("0.6.0", at=1700, now=0.0)
+        state.apply_report({"version": "0.6.0"}, now=30.0, wall=30.0)
+        self.assertFalse(state.update_in_progress(now=31.0))
+
+    def test_the_panel_reporting_the_old_build_does_not(self) -> None:
+        # A report arrives every minute, and one from before the device even
+        # started the download must not be read as an install that finished.
+        state = panel_state.PanelState()
+        state.request_update("0.6.0", at=1700, now=0.0)
+        state.apply_report({"version": "0.5.1"}, now=30.0, wall=30.0)
+        self.assertTrue(state.update_in_progress(now=31.0))
+
+    def test_an_install_that_never_finishes_stops_being_one(self) -> None:
+        # What the update entity shows as a failure: the window closes, the
+        # panel is on the build it was on, and the update is pending again.
+        state = panel_state.PanelState()
+        state.request_update("0.6.0", at=1700, now=0.0)
+        self.assertFalse(
+            state.update_in_progress(
+                now=panel_state.UPDATE_TIMEOUT_SECONDS + 1.0
+            )
+        )
+
+
 class UptimeTests(unittest.TestCase):
     """Verify that the start time stays still while the panel does."""
 

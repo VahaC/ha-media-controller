@@ -8,7 +8,7 @@ Treat this file as the change-control surface: a change to anything below
 affects released devices in the field. A change to code that is not described
 here affects one component only.
 
-Contract version: **7** (matches integration `1.4.x`).
+Contract version: **8** (matches integration `1.4.x`).
 
 Every version so far has been purely additive. Version 2 added the config
 sensor and let proxy lights forward colour temperature. Version 3 added two
@@ -152,6 +152,33 @@ it did before any of it existed. It is three things:
 that something can now set it: the field has been in the registry since
 version 6 and no flow wrote it, so every tile has been named after its Home
 Assistant entity. See **Display names** below.
+
+Version 8 is additive and is about one thing: a panel on a wall can be moved
+to a newer firmware without being taken off the wall. Until now it could not
+be, and the consequence was not that panels were updated late — it was that
+they were never updated at all, so no firmware fix, including a security one,
+could reach an installed device.
+
+It adds one command and one endpoint:
+
+- **`update`** in `commands`, naming a firmware version and nothing else. See
+  **Panel commands**;
+- **the firmware endpoint**, where a client that has been sent that command
+  asks for the rest and then fetches the image. See **Panel firmware
+  endpoint**, which also says what a client has to do to be updatable at all.
+
+Both are optional in the sense every earlier addition was: a client that
+cannot install a firmware ignores the command, exactly as the rules for
+commands already require, and never calls the endpoint. That is what the T560
+panel does — it is deployed over SSH and is unchanged by this version in
+every respect except the number it reports. The classic ESP32 controller
+reads neither `commands` nor `contract_version` and is untouched.
+
+The one thing version 8 cannot be additive about is the past. A client built
+before it has no update client in it at all, so there is nothing to send the
+command to, and Home Assistant does not send one: it offers an update only to
+a client reporting contract 8 or later. Such a panel is moved forward once
+over USB, and then never again.
 
 ## Producer
 
@@ -818,6 +845,7 @@ again on every boot.
 | `brightness` | `value` (1 – 100), `at` | Set the backlight level |
 | `restart` | `at` | Restart the client application |
 | `page` | `value`, `at` | Show one of the client's pages |
+| `update` | `version`, `at` | Install that firmware over the air |
 
 Rules:
 
@@ -833,6 +861,16 @@ Rules:
   so a client ignores a name it does not have rather than guessing at one.
   The pages of the T560 panel are `player`, `queue`, `playlists`, and `room`;
   Home Assistant offers exactly those and refuses any other before sending.
+- `update` names a firmware version and **nothing else**. It carries no
+  address, no digest and no credential, because the config sensor is an
+  entity: its attributes are readable by every account in the installation
+  and would be written to the recorder database. A client that acts on this
+  command asks the firmware endpoint below for the rest, over a request that
+  carries its own token. A client with no way to install a firmware — the
+  T560 tablet, which is deployed over SSH — ignores it, exactly as it ignores
+  any other command it does not implement. Home Assistant sends it only to
+  clients whose profile says otherwise, so in practice a tablet never sees
+  one.
 
 How much of the payload a client uses depends on what it can change at
 runtime. The T560 panel builds its whole room page from `entities`. The
@@ -1231,6 +1269,106 @@ is over the ceiling.
 A client uses it twice: once after every local save, so the copy is current,
 and once when a person asks for the layout to be restored. Nothing polls it.
 
+## Panel firmware endpoint
+
+```text
+GET /api/media_controller/panel_firmware/<panel_id>
+GET /api/media_controller/panel_firmware/<panel_id>/<nonce>
+```
+
+Added in version 8, and it exists because a panel on a wall could otherwise
+only be updated by taking it off the wall. Which in practice meant it was
+never updated, and no firmware fix — including a security one — could reach an
+installed device.
+
+**Home Assistant fetches the image; the client does not.** A panel on an
+isolated VLAN has no route to the internet, and putting a certificate bundle
+and TLS on a device so it could reach a public host costs flash and adds an
+attack surface for nothing. Home Assistant downloads the released image,
+verifies its published SHA-256, and serves the bytes it verified over the
+local network. Nothing is downloaded because a device asked: the image is
+fetched when a person presses Install, and only then is the client told a
+version is waiting.
+
+**Two routes, because the download cannot carry a token.** ESPHome's HTTP
+update client sends no `Authorization` header at all — its flash action takes
+a URL, an MD5 and HTTP Basic credentials, and nothing else. So:
+
+- the **manifest** is authenticated exactly like the status and layout
+  endpoints: the client's own token, and only the Home Assistant user created
+  for that panel. It answers only about that panel's own pending build;
+- the **image** route is unauthenticated by necessity, and guarded by the
+  single-use nonce the manifest handed out. The nonce is not the token and
+  grants nothing else: it names one panel and one version, it is spent the
+  first time it is presented, and it expires five minutes after it is issued.
+  A client that has to retry asks for the manifest again, which it can,
+  because that call carries its token.
+
+The manifest answers `200` with:
+
+| Field | Meaning |
+| --- | --- |
+| `status` | `ok`, `up_to_date`, or `not_ready` |
+| `version` | The build being offered |
+| `contract_version` | The revision of this document it speaks |
+| `size` | The image in bytes |
+| `md5` | Of the bytes Home Assistant holds, for the client's own check |
+| `sha256` | What Home Assistant verified the download against |
+| `path` | Where to fetch it, **as a path and not a URL** |
+
+`path` is a path on purpose. The client already knows where Home Assistant is
+— it just asked it something — and Home Assistant guessing at its own external
+address is how a device ends up fetching from somewhere it cannot reach. A
+client joins it to the address it already uses, and refuses a path that is not
+on this route.
+
+It answers `403` when the token belongs to another account, `404` when no
+loaded panel has that ID, and `503` with `not_ready` when the image is no
+longer held — which is what an unrelated Home Assistant restart looks like
+from the device.
+
+The image route answers `200` with `application/octet-stream`, and `404` for a
+nonce that is spent, expired, or belongs to another panel. A panel whose entry
+has been unloaded — removed, or its token revoked — is refused here too.
+
+Two things this cannot become:
+
+- **it is not a proxy.** No request names what is fetched. The route serves
+  one image, chosen when the nonce was issued, from what Home Assistant has
+  already downloaded and verified;
+- **it is not a way in.** Nothing in the published firmware authorises an
+  update on its own. The authority is the per-device token minted at pairing
+  and revoked when the panel is removed, so an attacker holding the public
+  binary cannot flash a panel with it.
+
+### What a client has to do to be updatable
+
+A client that cannot install a firmware simply ignores the `update` command,
+and this endpoint is never called. A client that can must:
+
+- **verify the image before it is booted.** The digest Home Assistant serves
+  is of the bytes it holds, so a transfer that went wrong is caught on the
+  device rather than discovered on the wall;
+- **keep the previous image until the new one has proved itself**, and prove
+  it by more than starting. A build that boots and can never reach Home
+  Assistant again is exactly the failure this mechanism exists to undo, and
+  nothing resets on its own to reveal it. The ESP32 panel confirms an image
+  only after it has re-read its config sensor and had a status report
+  accepted, and restarts deliberately if it has not managed both within ten
+  minutes — the restart is what hands the decision to its bootloader;
+- **leave everything that is not the application alone.** Wi-Fi credentials,
+  the Home Assistant address, the token, the config entity and the room
+  layout all survive an update, because an application update writes the
+  application and nothing else.
+
+**A client from before version 8 cannot be updated this way and must not be
+offered it.** There is nothing in such a build to tell: it has no update
+client at all. Home Assistant asks the reported contract version and offers
+nothing below 8, and the repair issue below is what sends its owner to the
+USB installer instead. This is the one case no code on either side can work
+around, and it is why the reported contract version rather than the release
+version decides.
+
 ## Version compatibility
 
 The number above is not decoration: both halves of the contract carry it in
@@ -1256,6 +1394,16 @@ refuse a payload or a report over it.
 Home Assistant raises a repair issue naming the panel when that panel's
 contract version is lower than its own, and clears it once the panel reports
 the current one.
+
+Since version 8 it also steps aside for a client that has a firmware update
+entity holding out a build it can install. Two mechanisms saying the same
+thing in different words would be worse than either, and the entity says it
+better: it names the version and it has a button. It steps aside only while a
+build is actually on offer — a panel that is behind with nothing published for
+it, or with a build held back because the integration is the older half, is
+still reported here, because otherwise nothing would report it. A panel that
+has **never reported at all** is never suppressed: it has no version to
+compare, so the entity has nothing to say about it.
 
 **Every panel is checked the same way**, because every panel behaves the same
 way: the tablet and the paired ESP32 firmware both pair, both poll the config
@@ -1483,5 +1631,8 @@ Tests that protect the contract:
   validation of a status report;
 - `tests/test_contract.py` — the rule that decides a panel is running a build
   older than the contract, including the never-reported case;
+- `tests/test_firmware_release.py` — which published build a panel is offered:
+  the release index read as untrusted input, the contract and version rules
+  that hold a build back, and what a download nonce permits;
 - `clients/t560/tests/test_power_button.py` — the tablet side of the settings
   and of the display request.

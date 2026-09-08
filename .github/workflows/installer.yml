@@ -64,10 +64,14 @@ jobs:
             ~/.platformio
             ~/.cache/pip
             ~/.esphome
-          key: esphome-factory-${{ hashFiles('firmware/media-controller-factory.yaml') }}
+          key: esphome-factory-${{ hashFiles('firmware/requirements.txt', 'firmware/media-controller-factory.yaml') }}
           restore-keys: esphome-factory-
       - name: Install ESPHome
-        run: pip install esphome
+        # Pinned. See firmware/requirements.txt: the toolchain decides
+        # whether the published image has a bootloader that can roll an
+        # update back, and an application OTA cannot replace a bootloader
+        # afterwards.
+        run: pip install -r firmware/requirements.txt
       - name: Validate the factory firmware
         run: esphome config firmware/media-controller-factory.yaml
       - name: Compile the factory firmware

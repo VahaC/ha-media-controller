@@ -15,6 +15,11 @@
 # updates, and the theme and diagnostic entities. It carries no Home Assistant
 # state any more.
 #
+# It also updates itself from Home Assistant, over the same token it uses for
+# everything else. See "OVER-THE-AIR UPDATES" below: that is what lets a panel
+# on a wall move to a newer build without a cable, and it is why the factory
+# image no longer has to say it cannot.
+#
 # The interface is shared with the classic firmware and lives in
 # media-controller-ui.yaml. This file supplies the other half of the seam its
 # header describes.
@@ -44,7 +49,7 @@ substitutions:
   # sensor, so each half can tell that the other is behind. Raise it in the
   # same change that raises the number in that document; it is not a knob to
   # turn per device.
-  contract_version: "7"
+  contract_version: "8"
   asset_base_url: "https://raw.githubusercontent.com/VahaC/ha-media-controller/main/firmware/assets"
 
   # Where the room-grid external component is fetched from. It is a
@@ -140,11 +145,108 @@ esphome:
                 id(accept_bootstrap)->execute(payload.ha_url, payload.token,
                                               payload.config_entity);
               });
+      # -- Which of three boots this is, and it is decided from one value
+      # -- in flash because nothing else survives an update.
+      # --
+      # -- update_target_version is written by install_firmware immediately
+      # -- before the write starts. If this image is the one that was asked
+      # -- for, the update worked and this build now has to prove itself
+      # -- before the bootloader is told to keep it -- see verify_new_image
+      # -- and confirm_boot. If it names some other version, this is the
+      # -- *old* image running again: the bootloader rolled back, which is
+      # -- the whole point of the mechanism, and the only thing left to do is
+      # -- say so where somebody debugging a wall panel will find it. --
+      - lambda: |-
+          if (!id(update_target_version).empty()) {
+            if (id(update_target_version) == "${firmware_version}") {
+              id(update_proving) = true;
+              id(update_proving_since_ms) = millis();
+              ESP_LOGW("ota",
+                       "Firmware ${firmware_version} is running for the first "
+                       "time and has to reach Home Assistant before the "
+                       "bootloader is told to keep it");
+            } else {
+              ESP_LOGE("ota",
+                       "Firmware %s did not come back; the bootloader rolled "
+                       "this device back to ${firmware_version}",
+                       id(update_target_version).c_str());
+              id(update_target_version) = "";
+            }
+          }
       - script.execute: sync_editor_skin
       - script.execute: rebuild_room_grid
       - script.execute: show_start_page
 
 api:
+
+# -------------------- OVER-THE-AIR UPDATES --------------------
+# The factory image used to ship with no OTA at all, and that was a decision
+# rather than an omission: ESPHome's own OTA needs a password, and a password
+# compiled into a binary anybody can download from a public page is not a
+# password. A shared one would let anyone on the network replace the firmware
+# on every panel installed from that page.
+#
+# `platform: http_request` is a different thing entirely and needs no password,
+# because it opens no port. It listens for nothing. It is a client: it fetches
+# a URL when this firmware decides to, and this firmware decides to only when
+# Home Assistant has put an `update` command in the config sensor -- a channel
+# that already carries this device's own token. `platform: esphome`, which is
+# the one with the password and the listening socket, stays out of this image.
+#
+# The image itself comes from Home Assistant and not from the internet. A
+# panel on an isolated VLAN cannot reach GitHub, and a certificate bundle and
+# TLS on the device to reach a public host would cost flash and add an attack
+# surface for nothing. Home Assistant has both already: it downloads the
+# release, checks its SHA-256, and serves the bytes it verified over the local
+# network. What this device verifies is the MD5 of what it received, which is
+# what ESPHome's update client checks and is the right question at this end --
+# "did these bytes arrive intact", not "is this the right release".
+#
+# See start_firmware_update and install_firmware below for the two halves, and
+# custom_components/media_controller/panel_firmware.py for the endpoints.
+ota:
+  - platform: http_request
+    id: panel_ota
+    on_error:
+      then:
+        - lambda: |-
+            // -- Nothing was booted, so nothing is pending verification. The
+            //    device is still on the build it was on, which is exactly
+            //    what an update that failed its MD5 check should leave. --
+            id(update_target_version) = "";
+            id(update_url) = "";
+            ESP_LOGE("ota", "Firmware update failed (code 0x%02X); this "
+                            "device is unchanged", x);
+            id(screen_keep_awake) = false;
+        - script.execute: show_home_page
+
+# -------------------- ROLLBACK --------------------
+# A bad build on a panel screwed to a wall with no cable path is strictly
+# worse than never updating it, so the bootloader is asked to keep the old
+# image until this one has proved itself. That is `enable_ota_rollback`, which
+# ESPHome turns on by default for esp-idf and which needs safe_mode to be
+# enabled -- it is, because the `ota` component above auto-loads it. It is
+# declared explicitly here anyway, because the two values that matter are
+# **not** the defaults:
+#
+#   * boot_is_good_on_shutdown: false. An orderly restart is not evidence.
+#     With the default, a panel that came up on a new image and was restarted
+#     from Home Assistant before it had reached anything would mark that image
+#     valid on the way down, and the rollback would be gone;
+#   * boot_is_good_after: 15min, which is only a backstop. What actually
+#     confirms an image is confirm_boot below, and it asks for more than
+#     "the loop is still running": the device has to have re-read its config
+#     sensor and had a status report accepted. The backstop is longer than the
+#     proof window in verify_new_image so that it cannot confirm an image that
+#     window is about to roll back.
+#
+# The one failure the bootloader cannot see on its own is a build that boots
+# and runs but can never reach Home Assistant again: nothing resets, so
+# nothing rolls back. verify_new_image is that half -- it reboots deliberately,
+# and the reboot is what hands the decision back to the bootloader.
+safe_mode:
+  boot_is_good_after: 15min
+  boot_is_good_on_shutdown: false
 
 # -------------------- THE LAYOUT EDITOR --------------------
 # One TCP listen socket and no UI on top of it: the only thing served here is
@@ -562,6 +664,88 @@ globals:
   - id: want_page
     type: std::string
     restore_value: false
+
+  # ════════════════════════════════════════════════════════════
+  # FIRMWARE UPDATES
+  # ════════════════════════════════════════════════════════════
+  # The version Home Assistant last asked for, from the `update` command. It
+  # is a *request*, not a fact: nothing is downloaded until the manifest call
+  # in start_firmware_update has confirmed the same version over a request
+  # that carried this device's token.
+  - id: last_update_at
+    type: double
+    restore_value: true
+    initial_value: "0"
+
+  - id: want_update_version
+    type: std::string
+    restore_value: false
+
+  # -- What the manifest answered. The URL is built here, from this device's
+  # -- own ha_base and a path Home Assistant returned, so no address ever
+  # -- arrives from anywhere else. --
+  - id: update_url
+    type: std::string
+    restore_value: false
+
+  - id: update_md5
+    type: std::string
+    restore_value: false
+
+  # -- A manifest call that answers "not yet" must not become a request per
+  # -- second for as long as the request stands. Home Assistant fetches and
+  # -- verifies the image before it asks for anything, so the usual answer is
+  # -- the first one; these two exist for the case where it is not. --
+  - id: update_next_try_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+
+  - id: update_attempts
+    type: int
+    restore_value: false
+    initial_value: "0"
+
+  # -- The version this device is being moved to, written to flash before the
+  # -- write starts so that the *next* boot can tell which of two things
+  # -- happened. It survives the update because an application OTA writes the
+  # -- app partition only and leaves NVS alone -- the same reason Wi-Fi, the
+  # -- token and the room layout survive.
+  # --
+  # -- Empty on an ordinary boot. Equal to this build's own version means the
+  # -- update worked and this image now has to prove itself. Anything else
+  # -- means the bootloader rolled back and we are the old image again. --
+  - id: update_target_version
+    type: std::string
+    restore_value: true
+    max_restore_data_length: 32
+
+  # -- Set on the first boot after an update, cleared the moment the image is
+  # -- confirmed. While it is set, verify_new_image is counting. --
+  - id: update_proving
+    type: bool
+    restore_value: false
+    initial_value: "false"
+
+  - id: update_proving_since_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+
+  # -- Whether this boot has read a usable config sensor, and whether a status
+  # -- report has been accepted. Both together are what confirm_boot calls
+  # -- "this build works", and neither alone would do: a device can poll a
+  # -- config sensor it cannot report to, and a report can be accepted before
+  # -- the payload that drives the whole interface has ever parsed. --
+  - id: config_seen
+    type: bool
+    restore_value: false
+    initial_value: "false"
+
+  - id: boot_confirmed
+    type: bool
+    restore_value: false
+    initial_value: "false"
 
   # ════════════════════════════════════════════════════════════
   # POLL BOOKKEEPING
@@ -1618,6 +1802,11 @@ script:
                         id(player_entity) = player;
                         id(queue_entity) = queue;
                         id(playlists_entity) = lists;
+                        // -- One half of what confirm_boot needs: this build
+                        //    can read the payload the whole interface is
+                        //    driven by. The other half is a status report
+                        //    Home Assistant accepted. --
+                        id(config_seen) = true;
 
                         // -- This device's half of the version check; the
                         //    integration performs the other half on the
@@ -1914,6 +2103,37 @@ script:
             }
           }
 
+          // -- An update is a command like any other and is watermarked like
+          //    any other, which is what stops a panel reinstalling the same
+          //    build every time it reads the sensor.
+          //
+          //    Unlike the others, what it leaves behind is a latch rather
+          //    than a value for this pass: want_update_version outlives the
+          //    parse, because the work it starts takes two poll cycles and a
+          //    minute of writing flash. It is cleared by install_firmware,
+          //    or given up on after a few failed manifest calls.
+          //
+          //    The version this device is already running is refused here as
+          //    well as in Home Assistant. A client trusts a payload no
+          //    further than it has to, and reinstalling the running build
+          //    would be a minute of dead screen for nothing. --
+          block = id(json_object)(payload, "update");
+          if (!block.empty()) {
+            double at = atof(id(json_field)(block, "at").c_str());
+            if (at > id(last_update_at)) {
+              id(last_update_at) = at;
+              std::string version = id(json_field)(block, "version");
+              if (!version.empty() && version.size() <= 32 &&
+                  version != "${firmware_version}") {
+                id(want_update_version) = version;
+                id(update_next_try_ms) = millis();
+                id(update_attempts) = 0;
+                ESP_LOGI("ota", "Home Assistant has firmware %s waiting",
+                         version.c_str());
+              }
+            }
+          }
+
   - id: apply_commands
     then:
       - if:
@@ -1972,6 +2192,32 @@ script:
             # -- is not replayed on the next boot. --
             - delay: 2s
             - lambda: App.safe_reboot();
+      # -- The two halves of an update, one poll cycle apart on purpose. The
+      # -- manifest call answers asynchronously, so the second condition is
+      # -- false on the pass that started it and true on the next one. That
+      # -- also keeps the write out of an HTTP response callback, which is
+      # -- not a place to stall the main loop for a minute. --
+      - if:
+          condition:
+            lambda: |-
+              return !id(want_update_version).empty() &&
+                     id(update_url).empty() &&
+                     (int32_t) (millis() - id(update_next_try_ms)) >= 0;
+          then:
+            - script.execute: start_firmware_update
+      - if:
+          condition:
+            and:
+              - lambda: return !id(update_url).empty();
+              # -- The install spends a second on screen and then a minute
+              # -- inside the update client, and this runs every poll. Asking
+              # -- whether it is already going keeps a warning per second out
+              # -- of the log of a device that is doing exactly the right
+              # -- thing. --
+              - not:
+                  script.is_running: install_firmware
+          then:
+            - script.execute: install_firmware
 
   # ════════════════════════════════════════════════════════════
   # THE ROOM GRID
@@ -2716,6 +2962,186 @@ script:
                 id(room_grid)->restore_finished(
                     false, "", "This device is not paired yet.");
 
+  # ════════════════════════════════════════════════════════════
+  # FIRMWARE UPDATES
+  # ════════════════════════════════════════════════════════════
+  # Two scripts and two poll cycles. The first asks Home Assistant, with this
+  # device's token, where the image is; the second fetches it and writes it.
+  #
+  # The split is not decoration. ESPHome's update client cannot send an
+  # Authorization header -- its flash action takes a URL, an MD5 and HTTP
+  # Basic credentials, and nothing else -- so the request that proves who this
+  # device is and the request that carries two megabytes cannot be the same
+  # request. The manifest call is the authenticated one and it answers with a
+  # path carrying a single-use nonce; the download presents that. The nonce is
+  # not the token: it names one panel and one version, it is spent the first
+  # time it is used, and it expires on its own a few minutes later.
+
+  - id: start_firmware_update
+    mode: single
+    then:
+      - if:
+          condition:
+            lambda: |-
+              return !id(ha_token).empty() && !id(want_update_version).empty();
+          then:
+            - http_request.get:
+                url: !lambda |-
+                  return id(ha_base) +
+                         "/api/media_controller/panel_firmware/" +
+                         get_mac_address();
+                request_headers:
+                  Authorization: !lambda return id(auth_header).c_str();
+                capture_response: true
+                max_response_buffer_size: 1024
+                on_response:
+                  then:
+                    - lambda: |-
+                        id(update_url) = "";
+                        id(update_md5) = "";
+                        id(update_attempts) = id(update_attempts) + 1;
+                        // -- Half a minute before asking again, and five
+                        //    attempts in all. Home Assistant verifies the
+                        //    image before it asks for anything, so a "not
+                        //    ready" here means it restarted in between and
+                        //    the request no longer stands. --
+                        id(update_next_try_ms) = millis() + 30000;
+
+                        if (response->status_code == 401 ||
+                            response->status_code == 403) {
+                          // -- The same answer every other endpoint gives a
+                          //    revoked token, and the same response to it. --
+                          id(want_update_version) = "";
+                          id(forget_token)->execute();
+                          return;
+                        }
+                        if (response->status_code != 200) {
+                          ESP_LOGW("ota", "Firmware manifest HTTP %d",
+                                   response->status_code);
+                        } else {
+                          std::string status = id(json_field)(body, "status");
+                          std::string version = id(json_field)(body,
+                                                               "version");
+                          std::string path = id(json_field)(body, "path");
+                          std::string md5 = id(json_field)(body, "md5");
+                          if (status != "ok") {
+                            ESP_LOGW("ota", "Home Assistant answered '%s'",
+                                     status.c_str());
+                          } else if (version != id(want_update_version)) {
+                            // -- Home Assistant is offering something other
+                            //    than what this device was told to install.
+                            //    Nothing good comes of guessing which is
+                            //    right, so neither is installed. --
+                            ESP_LOGW("ota",
+                                     "Asked for %s and offered %s; not "
+                                     "installing either",
+                                     id(want_update_version).c_str(),
+                                     version.c_str());
+                            id(want_update_version) = "";
+                          } else if (md5.size() != 32 ||
+                                     path.rfind(
+                                         "/api/media_controller/panel_firmware/",
+                                         0) != 0) {
+                            // -- The path is a path on this Home Assistant
+                            //    and on this route. It is joined to ha_base
+                            //    below, so an answer naming anywhere else is
+                            //    refused here rather than fetched. --
+                            ESP_LOGW("ota", "The firmware manifest is not "
+                                            "usable");
+                          } else {
+                            id(update_url) = id(ha_base) + path;
+                            id(update_md5) = md5;
+                          }
+                        }
+
+                        if (id(update_url).empty() &&
+                            id(update_attempts) >= 5) {
+                          ESP_LOGE("ota", "Giving up on firmware %s",
+                                   id(want_update_version).c_str());
+                          id(want_update_version) = "";
+                        }
+                on_error:
+                  then:
+                    - lambda: |-
+                        id(update_attempts) = id(update_attempts) + 1;
+                        id(update_next_try_ms) = millis() + 30000;
+                        if (id(update_attempts) >= 5) {
+                          id(want_update_version) = "";
+                        }
+                        ESP_LOGW("ota", "Home Assistant could not be reached "
+                                        "for the firmware manifest");
+
+  - id: install_firmware
+    mode: single
+    then:
+      - lambda: |-
+          id(update_target_version) = id(want_update_version);
+          id(want_update_version) = "";
+          ESP_LOGW("ota", "Installing firmware %s",
+                   id(update_target_version).c_str());
+      # -- The screen has to say what is happening before the loop stops
+      # -- running it. Everything after the delay below blocks: ESPHome writes
+      # -- the inactive application slot from the main loop, feeding only the
+      # -- watchdog, so LVGL draws nothing, touch does nothing and this device
+      # -- answers nothing for the minute or so it takes. That is a property
+      # -- of the update client rather than a choice made here, and the only
+      # -- honest response to it is to leave a frame on the glass that says
+      # -- so -- which is also why that frame carries no progress bar. It
+      # -- could not move.
+      # --
+      # -- The screen is woken first for the same reason. A panel that was
+      # -- asleep when the update started would otherwise spend the write
+      # -- black, and be indistinguishable from one that had died. --
+      - if:
+          condition:
+            lvgl.is_paused:
+          then:
+            - lvgl.resume:
+      - light.turn_on: backlight
+      - lambda: |-
+          id(screen_keep_awake) = true;
+          std::string hint = "Installing " + id(update_target_version) +
+                             " - do not switch this off";
+          lv_label_set_text(id(lbl_update_hint), hint.c_str());
+      - lvgl.page.show: page_updating
+      # -- Long enough for LVGL to render the page above and for the target
+      # -- version to reach flash. Both matter: the frame is what the person
+      # -- in the room sees for the next minute, and the version in flash is
+      # -- the only thing the *next* boot can use to tell an update that
+      # -- worked from one the bootloader rolled back. --
+      - delay: 1s
+      - lambda: global_preferences->sync();
+      - delay: 200ms
+      - ota.http_request.flash:
+          id: panel_ota
+          url: !lambda return id(update_url);
+          md5: !lambda return id(update_md5);
+
+  # -- What tells the bootloader to keep this image, and the only thing that
+  # -- does: safe_mode's own timer is set long enough that it cannot get there
+  # -- first. It asks for more than "the loop is still running", because a
+  # -- build that runs and cannot reach Home Assistant is exactly the build
+  # -- this whole mechanism exists to undo. Both halves have to be true: the
+  # -- config sensor parsed, and a status report accepted. --
+  - id: confirm_boot
+    then:
+      - if:
+          condition:
+            lambda: return !id(boot_confirmed) && id(config_seen);
+          then:
+            - lambda: |-
+                id(boot_confirmed) = true;
+                id(update_proving) = false;
+                if (!id(update_target_version).empty()) {
+                  ESP_LOGI("ota",
+                           "Firmware %s reached Home Assistant; the "
+                           "bootloader will keep it",
+                           id(update_target_version).c_str());
+                  id(update_target_version) = "";
+                  id(screen_keep_awake) = false;
+                }
+            - safe_mode.mark_successful:
+
   # -- Home Assistant cannot ask this device anything, so what it knows about
   # -- it is pushed. There is no battery to report; the integration expects an
   # -- absent one. --
@@ -2782,6 +3208,18 @@ script:
                   id(last_report_page) = id(current_page);
                   return json;
                 capture_response: false
+                on_response:
+                  then:
+                    # -- The second half of what confirms a new image. A
+                    # -- report Home Assistant accepted proves the token, the
+                    # -- address and the network are all still good on this
+                    # -- build, which is the whole of what a rollback would
+                    # -- otherwise have to guess at. --
+                    - lambda: |-
+                        if (response->status_code >= 200 &&
+                            response->status_code < 300) {
+                          id(confirm_boot)->execute();
+                        }
 
 # -------------------- THE POLL CYCLE --------------------
 # ESPHome cannot retune an interval at runtime, so the tick is fixed and each
@@ -2907,6 +3345,29 @@ interval:
               id(last_report_ms) == 0 || now - id(last_report_ms) >= 60000) {
             id(last_report_ms) = now;
             id(report_status)->execute();
+          }
+
+          // -- The failure the bootloader cannot see. It rolls an image back
+          //    when the device resets before that image was confirmed, so a
+          //    build that crashes or bootloops is covered without anything
+          //    here. A build that boots, runs, and can never reach Home
+          //    Assistant again is not: nothing resets, so nothing rolls
+          //    back, and a panel on a wall is stranded on it.
+          //
+          //    Ten minutes, and then this resets on purpose. The reset is
+          //    the mechanism -- it hands the decision to the bootloader,
+          //    which still has the previous image and still has this one
+          //    marked unverified. It runs only on the first boot after an
+          //    update, so a panel whose Home Assistant is simply down does
+          //    not reboot itself every ten minutes forever. --
+          if (id(update_proving) && !id(boot_confirmed) &&
+              now - id(update_proving_since_ms) >= 600000) {
+            id(update_proving) = false;
+            ESP_LOGE("ota",
+                     "Firmware ${firmware_version} did not reach Home "
+                     "Assistant within ten minutes; restarting so the "
+                     "bootloader rolls back");
+            App.safe_reboot();
           }
 
 # -------------------- ROOM CARD ARTWORK --------------------
@@ -3037,6 +3498,38 @@ lvgl:
         - label:
             id: lbl_pairing_hint
             text: "Add this device in Home Assistant"
+            text_font: roboto_16
+            text_color: 0x77779A
+            align: CENTER
+            y: 60
+
+    # -- The last frame this device draws before an update, and the one that
+    # -- stays on the glass for the whole write. Deliberately a sentence and
+    # -- not a progress bar: the main loop is inside the update client from
+    # -- the moment install_firmware calls it, so nothing here could be
+    # -- redrawn and a bar that never moved would read as a device that had
+    # -- hung. It is also why the wording is an instruction rather than a
+    # -- status -- pulling the power here is the one thing a person watching
+    # -- can do that makes matters worse. --
+    - id: page_updating
+      widgets:
+        - label:
+            text: "MEDIA CONTROLLER"
+            text_font: roboto_16
+            text_color: 0x5588cc
+            align: TOP_MID
+            y: 90
+
+        - label:
+            text: "UPDATING"
+            text_font: roboto_36
+            text_color: 0xffffff
+            align: CENTER
+            y: -20
+
+        - label:
+            id: lbl_update_hint
+            text: "Installing new firmware"
             text_font: roboto_16
             text_color: 0x77779A
             align: CENTER

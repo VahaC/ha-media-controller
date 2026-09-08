@@ -12,6 +12,7 @@ Run after tools/make-web-installer.py, and before anything is deployed.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -97,6 +98,55 @@ def check_manifest(path: Path, problems: list[str]) -> None:
                 problems.append(f"{where} names {name}, which is empty")
 
 
+def check_ota(build: dict, problems: list[str]) -> None:
+    """Check the over-the-air half of one entry in the version index.
+
+    This is the half Home Assistant reads, and it fails differently from a
+    missing flash binary: nothing goes wrong at release time, and a panel on
+    a wall is simply never offered an update, or is offered one whose digest
+    will not match. Both are found here instead.
+    """
+    version = build.get("version")
+    where = f"installer/versions.json build {version!r}"
+
+    contract = build.get("contract_version")
+    if not isinstance(contract, int) or isinstance(contract, bool) or contract < 1:
+        problems.append(f"{where} names no usable contract_version")
+
+    ota = build.get("ota")
+    if not isinstance(ota, dict):
+        problems.append(
+            f"{where} carries no ota block, so no panel can be updated to it"
+        )
+        return
+
+    path = ota.get("path")
+    if not path or str(path).startswith(("http://", "https://")):
+        problems.append(f"{where} names no over-the-air image inside the site")
+        return
+
+    binary = INSTALLER / str(path)
+    if not binary.is_file():
+        problems.append(f"{where} names {path}, which was not built")
+        return
+
+    payload = binary.read_bytes()
+    if ota.get("size") != len(payload):
+        problems.append(
+            f"{where} says {ota.get('size')} bytes and {path} is {len(payload)}"
+        )
+    for algorithm in ("sha256", "md5"):
+        expected = ota.get(algorithm)
+        actual = hashlib.new(
+            algorithm, payload, usedforsecurity=False
+        ).hexdigest()
+        if expected != actual:
+            problems.append(
+                f"{where} names a {algorithm} of {expected!r} and {path} "
+                f"hashes to {actual!r}"
+            )
+
+
 def main() -> int:
     problems: list[str] = []
 
@@ -117,6 +167,7 @@ def main() -> int:
                     )
                     continue
                 check_manifest(INSTALLER / str(relative), problems)
+                check_ota(build, problems)
         if versions.get("latest") not in {
             build.get("version") for build in (builds or []) if isinstance(build, dict)
         }:

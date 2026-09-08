@@ -1,0 +1,23 @@
+# The ESPHome that builds the published factory image.
+#
+# It is pinned, and the reason is narrower than "reproducible builds". The
+# image on this page is flashed onto panels that go on walls, and one of the
+# things it has to carry is a bootloader built with
+# CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE. ESPHome decides that from its own
+# defaults — `esp32.framework.advanced.enable_ota_rollback`, which is on by
+# default for esp-idf and is silently turned off when safe_mode is not
+# enabled. An unpinned toolchain means whichever ESPHome happened to be
+# newest on release day decided whether a wall-mounted panel can ever be
+# rolled back out of a bad update, and an application OTA cannot replace a
+# bootloader afterwards. That is not a decision to leave to a date.
+#
+# Raise it deliberately, and when you do, check that the built image still
+# has rollback and that the partition table has not moved:
+#
+#     esphome compile firmware/media-controller-factory.yaml
+#     grep BOOTLOADER_APP_ROLLBACK firmware/.esphome/build/*/sdkconfig.*
+#     python tools/make-web-installer.py --build-dir firmware/.esphome/build
+#
+# The second command must print `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y`,
+# and the third refuses the build outright if the partition table changed.
+esphome==2026.8.0

@@ -75,6 +75,7 @@ def async_update_panel_issue(
     *,
     loaded_at: float,
     now: float | None = None,
+    update_offered: bool = False,
 ) -> None:
     """Raise or clear the repair issue for one panel's build.
 
@@ -83,6 +84,19 @@ def async_update_panel_issue(
     clearing on undecided would make a real issue disappear for ten minutes
     after every restart and then come back, which reads as a bug rather than
     as a finding.
+
+    `update_offered` is what keeps this from saying the same thing twice. A
+    paired ESP32 panel now has a firmware update entity, and when that entity
+    is holding out a build the panel can install, the entity *is* the report:
+    it names the same defect and it has a button. This issue then steps
+    aside. It does not step aside merely because the entity exists — a panel
+    on an old contract with no newer build published, or with one held back
+    because the integration is older still, would otherwise be behind with
+    nothing anywhere saying so. See `update.py`.
+
+    The never-reported case is never suppressed, whatever is on offer. A
+    panel that has not spoken has no version to compare, so the update entity
+    has nothing to say about it, and this issue is the only thing that does.
     """
     device = dr.async_get(hass).async_get_device(
         identifiers={(DOMAIN, entry.entry_id)}
@@ -108,6 +122,12 @@ def async_update_panel_issue(
         return
 
     reported = state.status.contract_version
+    if reported and update_offered:
+        # The panel said which contract it speaks, it is behind, and there is
+        # a build waiting on its own entity. One statement of one defect.
+        ir.async_delete_issue(hass, DOMAIN, issue_id)
+        return
+
     kind = panel_profile(entry.data.get(CONF_PROFILE)).update_kind
     ir.async_create_issue(
         hass,

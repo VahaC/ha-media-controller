@@ -57,12 +57,17 @@ from .music_assistant import MusicAssistantAdapter, MusicAssistantUnavailable
 from .profiles import (
     CONTROL_TOGGLE,
     CONTROLLER_PROFILE,
+    UPDATE_KIND_FIRMWARE,
     limit_controls,
     panel_profile,
 )
 from .pairing import PairingStore
 from .icons import async_setup_icon_endpoints
 from .panel_card import async_setup_card_endpoint
+from .panel_firmware import (
+    async_firmware_index,
+    async_setup_firmware_endpoints,
+)
 from .panel_layout import async_setup_layout_endpoint
 from .panel_provision import async_deliver_bootstrap
 from .panel_state import PanelSettings, PanelState
@@ -271,6 +276,11 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
     # to Home Assistant: the display name and icon of a card it already draws.
     # See panel_card.py for how narrow that is and why it has to be.
     async_setup_card_endpoint(hass)
+    # The firmware a panel can install without a cable. The manifest half is
+    # authenticated the same way; the image half cannot be, because ESPHome's
+    # HTTP update client sends no Authorization header, and is guarded by a
+    # single-use nonce the manifest hands out instead. See panel_firmware.py.
+    async_setup_firmware_endpoints(hass)
     # The card artwork itself. Authenticated like everything else, and a
     # separate request rather than a block on the config sensor: panels poll
     # that sensor about once a second, and a catalog that changes when the
@@ -533,6 +543,26 @@ async def _async_setup_panel(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
 
     @callback
+    def _async_update_offered() -> bool:
+        """Return whether this panel has a firmware waiting on its own entity.
+
+        Only a client that can be updated from Home Assistant can have one,
+        and only when a build is actually being held out: an ESP32 panel that
+        is behind with nothing published for it, or with a build held back
+        because the integration is the older half, is offered nothing and
+        must still be reported by the repair issue.
+        """
+        if profile.update_kind != UPDATE_KIND_FIRMWARE:
+            return False
+        index = async_firmware_index(hass)
+        return (
+            index.offer(
+                state.status.app_version, state.status.contract_version
+            )
+            is not None
+        )
+
+    @callback
     def _async_presence_tick(_now: Any) -> None:
         """Re-evaluate availability, so a silent panel stops looking present."""
         state.notify()
@@ -540,7 +570,11 @@ async def _async_setup_panel(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # this panel has ever reported at all. A report cannot be waited for,
         # so it is re-read here rather than pushed from the endpoint.
         async_update_panel_issue(
-            hass, entry, state, loaded_at=runtime.loaded_at
+            hass,
+            entry,
+            state,
+            loaded_at=runtime.loaded_at,
+            update_offered=_async_update_offered(),
         )
 
     runtime.cancel_presence = async_track_time_interval(

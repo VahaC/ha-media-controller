@@ -146,10 +146,26 @@ Still outstanding, and honestly outstanding:
   captive portal and pairing in the pushed direction are all unverified. The
   checklist at the end of
   [ESP32_PAIRED_CONTROLLER.md](ESP32_PAIRED_CONTROLLER.md) covers them.
-- **there is no over-the-air update in the shipped image**, deliberately: a
-  password compiled into a public binary is not a password. Updates are a USB
-  install. Doing better needs per-device update authentication, which is its
-  own piece of work and is not one the shared image can fake.
+- **over-the-air updates landed in contract version 8**, and the reasoning
+  that used to stand here is worth keeping because it is what shaped the
+  answer. A password compiled into a public binary is not a password, so the
+  shipped image still has no `ota: platform: esphome`. What it has instead is
+  `platform: http_request`, which opens no port and only fetches when the
+  firmware decides to — and the firmware decides to only when Home Assistant
+  has put a version in the config sensor that panel reads with the token
+  minted for it alone. The authority is the pairing, not a shared secret.
+  Home Assistant downloads and verifies the image and serves it over the
+  local network, because a panel on an isolated VLAN cannot reach GitHub. See
+  **Panel firmware endpoint** in [CONTRACT.md](CONTRACT.md).
+
+  Two things about it are still honestly outstanding. **None of it has run on
+  hardware**: the download, the write, a deliberately broken build and the
+  rollback are all unverified, and the checklist in
+  [ESP32_PAIRED_CONTROLLER.md](ESP32_PAIRED_CONTROLLER.md) covers them. And
+  **a panel on 0.5.0 has to be moved forward once over USB** — that build has
+  no update client at all, so there is nothing in it to tell, and no change on
+  either side can reach it. Home Assistant offers such a panel nothing and
+  raises the repair issue that sends its owner to the installer page instead.
 - **GitHub Pages has to be switched on once, by hand.** Settings → Pages →
   Source: GitHub Actions. The workflow is written and cannot set it.
 

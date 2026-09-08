@@ -155,25 +155,65 @@ reinstalling anything.
 
 ### Updating
 
-Connect the panel over USB and press **Install** again with the same page.
-Installing over an existing panel keeps its Wi-Fi credentials and its Home
-Assistant pairing, so it comes back on its own; choosing **erase device**
-clears both and the panel shows a new pairing code.
+**From Home Assistant.** A paired panel has a **Firmware** entity on its
+device page and appears under **Settings → Updates** like anything else. Press
+**Install** and the panel takes the new build over your own network; it keeps
+its Wi-Fi, its pairing, its token and its room layout, because an update
+writes the application and nothing else.
 
-**There is no over-the-air update in the factory image, deliberately.**
-ESPHome's OTA needs a password, and a password compiled into a file anybody can
-download protects nothing; a shared one would let anyone on the network replace
-the firmware on every panel installed from this page. Until the firmware can
-authenticate an update per device, an update is a USB install. The two package
-builds keep their ordinary ESPHome OTA, because each of those has a password of
-its own that its owner chose.
+It takes a couple of minutes. During the download the panel keeps working;
+during the write it shows **UPDATING** and stops responding to touch entirely,
+which is why that screen asks you not to switch it off. It restarts on its own
+and comes back on the new build.
 
-The one exception is narrow and worth knowing about: while the recovery access
-point is up, ESPHome's captive portal also serves a firmware upload at
-`/update`, and it has no password either. It is reachable only from that access
-point, only while the panel cannot reach a network, and the same build disables
-that route on the ordinary house network. If that is not a trade you want, do
-not use the recovery portal — reconfigure over USB instead.
+Nothing about this needs a password, and the reason is worth stating: the
+panel is not listening for an update. It fetches one, and only after Home
+Assistant has put a version in the config sensor that panel reads with the
+token minted for it alone at pairing. Home Assistant does the downloading —
+the panel never talks to the internet — checks the released image against its
+published SHA-256, and serves the bytes it verified over the local network.
+Somebody who has downloaded the public binary has nothing that lets them flash
+your panel with it, and revoking a panel's token stops updates the way it
+stops everything else.
+
+If the new build does not come back, the panel's bootloader puts the previous
+one back on its own. It keeps the old image until the new one has re-read its
+config sensor and had a status report accepted; a build that crashes never
+gets that far, and one that runs but can never reach Home Assistant again
+restarts itself after ten minutes so the bootloader can undo it. Either way
+the panel returns to the build it was on, with everything intact.
+
+**Two panels this does not cover.**
+
+- **A panel still running 0.5.0** has to be updated over USB once. That build
+  has no update client in it at all, so there is nothing to tell — no change
+  to Home Assistant can reach it. Home Assistant knows this and offers it
+  nothing; it raises the repair issue that points here instead. After that one
+  USB install it never needs a cable again.
+- **A panel installed from the ESPHome package** keeps its own ESPHome OTA as
+  well, with the password its owner chose, and is updated from ESPHome Device
+  Builder as before. Nothing about that changes.
+
+**Over USB, which stays the recovery path.** Connect the panel and press
+**Install** again with the same page. Installing over an existing panel keeps
+its Wi-Fi credentials and its Home Assistant pairing, so it comes back on its
+own; choosing **erase device** clears both and the panel shows a new pairing
+code. This is what to reach for when a panel is on 0.5.0, when it has no
+working network, or when anything else has gone wrong badly enough that Home
+Assistant cannot see it.
+
+`ota: platform: esphome` — the one with a password and a listening socket — is
+still **not** in this image and will not be. A password compiled into a file
+anybody can download protects nothing: a shared one would let anyone on the
+network replace the firmware on every panel installed from this page.
+
+The one exception is narrow and worth knowing about, and it has not changed:
+while the recovery access point is up, ESPHome's captive portal also serves a
+firmware upload at `/update`, and it has no password either. It is reachable
+only from that access point, only while the panel cannot reach a network, and
+the same build disables that route on the ordinary house network. If that is
+not a trade you want, do not use the recovery portal — reconfigure over USB
+instead.
 
 ### Which version you installed
 

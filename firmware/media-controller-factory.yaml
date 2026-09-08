@@ -26,12 +26,28 @@
 # docs/ESP32_PAIRED_CONTROLLER.md, under "The web installer".
 #
 # ---------------------------------------------------------------------------
-# There is no OTA in this image, and that is a decision, not an omission.
-# ESPHome's OTA needs a password, and a password compiled into a binary that
-# anybody can download is not a password. Until the firmware can authenticate
-# an update per device, an update is a USB flash from the same web installer,
-# which keeps Wi-Fi credentials and the pairing in flash. See "Updating" in
-# docs/ESP32_PAIRED_CONTROLLER.md.
+# There is still no ESPHome OTA in this image, and that is still a decision
+# rather than an omission: `ota: platform: esphome` needs a password, it
+# listens on a port, and a password compiled into a binary anybody can
+# download from a public page would be the same password on every panel
+# flashed from it.
+#
+# What the image does have, since contract version 8, is
+# `ota: platform: http_request`, which is a different thing with the same
+# name. It opens no port and listens for nothing; it is a client that fetches
+# a URL when the firmware decides to, and the firmware decides to only when
+# Home Assistant has put an `update` command in this device's own config
+# sensor. The authority is therefore the per-device token minted at pairing
+# and revoked when the panel is removed -- something no copy of this file
+# contains and no two panels share -- rather than a secret that could be
+# read out of the published binary. Nothing here authorises an update on its
+# own: an attacker holding this exact image cannot flash a panel with it.
+#
+# A USB install from the same web installer remains the recovery path, and
+# the one way to move a panel that is still on 0.5.0: that build predates the
+# update client entirely, so there is nothing in it to tell. See "Updating" in
+# docs/ESP32_PAIRED_CONTROLLER.md, and firmware/media-controller-paired.yaml
+# under "OVER-THE-AIR UPDATES" for how the two halves fit together.
 # ---------------------------------------------------------------------------
 
 substitutions:

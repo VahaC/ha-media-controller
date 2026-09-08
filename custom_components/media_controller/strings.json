@@ -261,6 +261,11 @@
           "cover_card": "Cover Card"
         }
       }
+    },
+    "update": {
+      "firmware": {
+        "name": "Firmware"
+      }
     }
   },
   "services": {

@@ -18,6 +18,7 @@ PANEL_PLATFORMS: list[Platform] = [
     Platform.BUTTON,
     Platform.NUMBER,
     Platform.SELECT,
+    Platform.UPDATE,
 ]
 
 ENTRY_VERSION = 3
@@ -103,6 +104,10 @@ DATA_PANELS = "panels"
 # writing it to entry data would reload the entry and rebuild the config
 # sensor at the moment the panel saved a layout. See panel_layout.py.
 DATA_LAYOUTS = "layouts"
+# What the installer site publishes, and the verified images taken from it.
+# One per installation, shared by every panel: two panels moving to the same
+# build download it once. See panel_firmware.py.
+DATA_FIRMWARE = "firmware"
 
 # Version 1 keys. They survive only in async_migrate_entry.
 CONF_LIGHT_1_ENTITY = "light_1_entity"
@@ -126,6 +131,11 @@ DEFAULT_QUEUE_WINDOW_BEFORE = 5
 DEFAULT_QUEUE_WINDOW_SIZE = 50
 QUEUE_REFRESH_DELAY = 3.0
 PLAYLIST_REFRESH_INTERVAL = timedelta(hours=6)
+# How often the released firmware index is re-read. A firmware release is a
+# rare event and the answer is a file on a public page, so this is deliberately
+# unhurried: an installation should not be making a request an hour to find
+# out that nothing has changed since last month.
+FIRMWARE_INDEX_INTERVAL = timedelta(hours=6)
 
 SERVICE_REFRESH = "refresh"
 SERVICE_PLAY_QUEUE_ITEM = "play_queue_item"

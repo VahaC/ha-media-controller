@@ -48,6 +48,20 @@ DEFAULT_SCREEN_OFF_SECONDS = 30
 # seconds. It reports every minute, so two missed reports mark it offline.
 REPORT_TIMEOUT_SECONDS = 180.0
 
+# How long an over-the-air update may be under way before Home Assistant
+# stops calling it "installing". It covers the whole of the slowest honest
+# path: downloading two megabytes over a tired Wi-Fi link, writing the
+# inactive application slot, rebooting, reconnecting, and the first status
+# report after that. Once it runs out, the update is simply pending again —
+# the panel is on the build it was on, which is what a failed update leaves
+# behind and what the rollback in the bootloader guarantees.
+UPDATE_TIMEOUT_SECONDS = 900.0
+
+# What a firmware version may look like in a command. It is written by Home
+# Assistant from the release index rather than by anybody typing, so this is
+# a shape check and not a policy.
+UPDATE_VERSION_MAX_LENGTH = 32
+
 # Keys of the stored settings record and of the payload a panel reads. They
 # appear in config entries on disk and in the client contract, so they may not
 # be renamed casually.
@@ -314,6 +328,13 @@ class PanelCommands:
     restart_at: int = 0
     page: str = ""
     page_at: int = 0
+    # The build a panel has been asked to install over the air. It names the
+    # version and nothing else: where the image is, and the permission to
+    # fetch it, are answered by the firmware endpoint the panel then calls
+    # with its own token. Attributes of a config sensor are readable by every
+    # account in the installation, so a download nonce has no business here.
+    update_version: str = ""
+    update_at: int = 0
 
     def as_payload(self) -> dict[str, Any]:
         """Return the command block of the config sensor.
@@ -336,6 +357,11 @@ class PanelCommands:
             payload["restart"] = {"at": self.restart_at}
         if self.page_at:
             payload["page"] = {"value": self.page, "at": self.page_at}
+        if self.update_at:
+            payload["update"] = {
+                "version": self.update_version,
+                "at": self.update_at,
+            }
         return payload
 
 
@@ -428,6 +454,11 @@ class PanelState:
         # a monotonic one.
         self.reported_wall_at: float | None = None
         self.started_at: float | None = None
+        # The firmware version an update was asked for, and when. Both are
+        # cleared the moment the panel reports that version; see
+        # `update_in_progress`.
+        self.update_requested: str = ""
+        self.update_requested_at: float | None = None
         self._listeners: list[Callable[[], None]] = []
         self._config_listeners: list[Callable[[], None]] = []
 
@@ -506,6 +537,54 @@ class PanelState:
         )
         self._notify_configuration()
 
+    def request_update(
+        self,
+        version: str,
+        *,
+        at: int | None = None,
+        now: float | None = None,
+    ) -> bool:
+        """Ask the panel to install one build over the air.
+
+        Returns whether the request was made. Nothing is pushed: the version
+        travels in the config sensor like every other command, and the panel
+        acts on it once, the first time it reads an `at` newer than the one
+        it last acted on.
+
+        Home Assistant also remembers that it asked, because an update is the
+        one command whose completion is observable — the panel comes back
+        reporting a different version — and the update entity has to be able
+        to say "installing" until it does.
+        """
+        name = version.strip()
+        if not name or len(name) > UPDATE_VERSION_MAX_LENGTH:
+            return False
+        self.commands = replace(
+            self.commands,
+            update_version=name,
+            update_at=now_ms() if at is None else at,
+        )
+        self.update_requested = name
+        self.update_requested_at = (
+            time.monotonic() if now is None else now
+        )
+        self._notify_configuration()
+        return True
+
+    def update_in_progress(self, *, now: float | None = None) -> bool:
+        """Return whether an update asked for is still plausibly happening.
+
+        A panel cannot report progress: ESPHome's HTTP update writes the
+        flash from the main loop and the device answers nothing at all while
+        it does. So this is a window rather than a measurement — it closes
+        when the panel reports the version that was asked for, and it closes
+        on its own when the window runs out.
+        """
+        if not self.update_requested or self.update_requested_at is None:
+            return False
+        current = time.monotonic() if now is None else now
+        return current - self.update_requested_at < UPDATE_TIMEOUT_SECONDS
+
     def request_page(self, page: str, *, at: int | None = None) -> bool:
         """Ask the panel to show one of its pages.
 
@@ -539,6 +618,25 @@ class PanelState:
         self._record_started_at(
             self.status.uptime_seconds, self.reported_wall_at
         )
+        # A panel that comes back naming the build it was asked to install
+        # has finished. Nothing else can tell Home Assistant that: the device
+        # is unreachable for the whole of an update and says nothing about it
+        # afterwards either.
+        if (
+            self.update_requested
+            and self.status.app_version == self.update_requested
+        ):
+            self.update_requested = ""
+            self.update_requested_at = None
+            # And the command itself stops being sent. The panel keeps the
+            # watermark, so a later request with a newer `at` still reaches
+            # it; what goes away is a block that would otherwise sit in the
+            # config sensor for the life of the entry, telling the firmware
+            # endpoint that a build the panel is already running is waiting
+            # for it.
+            self.commands = replace(
+                self.commands, update_version="", update_at=0
+            )
         self.notify()
 
     def is_online(self, *, now: float | None = None) -> bool:

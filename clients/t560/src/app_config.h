@@ -15,8 +15,16 @@
  * understands, and it is the only number worth comparing with the other side.
  * The panel sends it in every status report and reads the integration's own
  * out of the config sensor, so each half can tell that the other is behind.
- * Raise it in the same change that raises the number in that document. */
-#define T560_PANEL_CONTRACT_VERSION 7
+ * Raise it in the same change that raises the number in that document.
+ *
+ * Version 8 added the `update` command and the firmware endpoint behind it,
+ * both of which belong to the paired ESP32 panel: this tablet is deployed
+ * over SSH and is never sent one. Nothing in the panel changes for it. The
+ * number is raised because the contract requires every client to declare
+ * which revision it speaks, and this build does speak revision 8 — it
+ * ignores the new command, which is exactly what the contract says an
+ * unknown command must do. */
+#define T560_PANEL_CONTRACT_VERSION 8
 
 /* How many registry elements this panel will hold. The integration sends its
  * own `entity_limit` and the T560 profile's is the same number; this is the

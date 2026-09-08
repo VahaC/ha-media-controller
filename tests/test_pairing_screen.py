@@ -96,10 +96,48 @@ class PairedFirmwareTests(unittest.TestCase):
                 # last touched, which for a new one is never.
                 self.assertIn("id(screen_last_active_ms) = millis();", block)
 
-    def test_the_flag_is_set_in_exactly_one_place(self) -> None:
-        self.assertEqual(
-            len(re.findall(rf"id\({FLAG}\) = true;", _read(PAIRED))), 1
+    def test_every_screen_that_holds_the_backlight_on_lets_go_of_it(
+        self,
+    ) -> None:
+        """Only two screens may hold it, and each has to release it.
+
+        The flag has no timeout of its own: whatever sets it owns turning it
+        off again, and a path that sets it and never clears it is a panel
+        that never sleeps for the rest of its life. So the two screens
+        allowed to hold it are named here rather than counted, and each one's
+        release is asserted separately.
+
+        The second screen is the update screen, added with contract version
+        8. It has the same claim as the pairing code: a person is meant to be
+        reading it, and it stays up for the whole of a firmware write, during
+        which nothing on this device runs — including the timeout that would
+        otherwise have taken the backlight away in the middle.
+        """
+        source = _read(PAIRED)
+        setters = re.findall(
+            rf"^  - id: (\w+)$|id\({FLAG}\) = true;", source, re.MULTILINE
         )
+        holding = []
+        script = ""
+        for name, in [(match,) for match in setters]:
+            if name:
+                script = name
+            elif script not in holding:
+                holding.append(script)
+        self.assertEqual(holding, ["show_start_page", "install_firmware"])
+
+    def test_the_update_screen_lets_go_both_ways(self) -> None:
+        # An update ends in one of exactly two places, and a panel left on
+        # the "do not switch this off" screen with the backlight pinned on is
+        # the worst of the two failures to leave behind.
+        source = _read(PAIRED)
+        self.assertIn(f"id({FLAG}) = false;", _script(source, "confirm_boot"))
+        # The failure path is the OTA component's own on_error, which is not
+        # a script, so it is asserted against the block that declares it.
+        ota = source[source.index("ota:\n  - platform: http_request") :]
+        ota = ota[: ota.index("\nsafe_mode:")]
+        self.assertIn(f"id({FLAG}) = false;", ota)
+        self.assertIn("script.execute: show_home_page", ota)
 
 
 if __name__ == "__main__":
