@@ -663,8 +663,19 @@ class MediaControllerConfigFlow(
             return self.async_abort(reason="no_panel_id")
 
         await self.async_set_unique_id(panel_unique_id(panel_id))
+        # The port is refreshed alongside the address, and it has to be: a
+        # probe that failed while somebody was typing a code stores a zero,
+        # and a zero means "this panel serves nothing" for the rest of its
+        # life. Nothing else ever put it back, so one unlucky moment demoted a
+        # panel Home Assistant pushes to into one it waits to be polled by.
+        #
+        # A panel announces itself continuously, so healing it here means the
+        # entry repairs itself the next time the device says where it is.
         self._abort_if_unique_id_configured(
-            updates={CONF_HOST: discovery_info.host}
+            updates={
+                CONF_HOST: discovery_info.host,
+                CONF_PANEL_PORT: int(discovery_info.port or 0),
+            }
         )
 
         self._panel_id = panel_id

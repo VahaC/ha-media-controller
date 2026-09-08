@@ -47,6 +47,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.network import NoURLAvailableError, get_url
 
 from .bootstrap import (
+    BLOCKED_NO_ADDRESS,
     ERROR_UNREACHABLE,
     PanelIdentity,
     error_for_status,
@@ -221,9 +222,14 @@ async def async_deliver_bootstrap(
     is waiting with a token attached, so a panel that polls, a panel that was
     set up long ago and a reload of either all pass straight through.
 
-    If the panel cannot be reached the token is revoked rather than left lying
-    about: a credential minted for a device which never received it is exactly
-    the orphan this has to avoid. The entry survives, and the standard
+    A panel that **serves no provisioning endpoint** is left alone: it is a
+    panel that collects its own token by polling, and its pairing is what it
+    collects. That is not a failure and must not be treated as one.
+
+    A panel that has an address and **cannot be reached at it** is a different
+    thing, and there the token is revoked rather than left lying about: a
+    credential minted for a device which never received it is exactly the
+    orphan this has to avoid. The entry survives, and the standard
     reauthentication prompt asks for a new code.
     """
     pairings: PairingStore | None = hass.data.get(DOMAIN, {}).get(
@@ -246,6 +252,31 @@ async def async_deliver_bootstrap(
             # The ordinary case: nothing was waiting. Every reload of every
             # panel that polls, or was set up long ago, lands here.
             await _async_check_still_paired(hass, entry)
+            return
+        if blocked == BLOCKED_NO_ADDRESS:
+            # Not a failure, and treating it as one was a trap that closed on
+            # itself. "No address" means this panel serves no provisioning
+            # endpoint, which is the whole description of a panel that
+            # collects its own token by polling: the T560 tablet always, and
+            # an ESP32 whose port could not be probed at the moment somebody
+            # typed the code.
+            #
+            # Abandoning here revoked the token that had just been minted and
+            # started reauthentication, which minted another one, which was
+            # abandoned in turn. The panel sat on its pairing screen through
+            # all of it, because the one thing that would have ended it --
+            # the token waiting to be collected -- was destroyed a moment
+            # after it was created, every time round.
+            #
+            # So the pairing is left exactly where it is. The panel claims it
+            # on its next poll, and if there is no panel to claim it the
+            # record expires on its own inside five minutes and takes the
+            # token with it.
+            _LOGGER.debug(
+                "%s has no provisioning endpoint; its token is left for it "
+                "to collect by polling",
+                entry.title,
+            )
             return
         _LOGGER.error("Cannot provision %s: %s", entry.title, blocked)
         await _async_abandon(hass, entry, pairings, panel_id)

@@ -289,6 +289,63 @@ class DeliveryPlanTests(unittest.TestCase):
                 self.assertIsNone(delivery)
                 self.assertEqual(blocked, bootstrap.BLOCKED_NO_ADDRESS)
 
+    def test_no_address_is_a_panel_that_polls_and_not_a_failure(self) -> None:
+        """The distinction that turned a pairing into an endless loop.
+
+        `plan_delivery` refuses to push to a panel with no address, and that
+        refusal is correct. What was wrong was what the caller did with it:
+        any blocked reason with a pairing waiting was treated as a failed
+        provisioning, which revoked the token that had just been minted and
+        started reauthentication -- which minted another token, which was
+        revoked in turn.
+
+        The panel sat on its pairing screen through every round of it, because
+        the one thing that would have ended it was the token waiting to be
+        collected, and that was destroyed a moment after each was created.
+
+        "No address" is the whole description of a panel that collects its own
+        token by polling: the T560 tablet always, and an ESP32 whose port could
+        not be probed at the moment somebody typed the code. The reason is
+        therefore its own value rather than one of a set to be lumped
+        together, and `async_deliver_bootstrap` branches on it.
+        """
+        for overrides in ({"port": 0}, {"host": ""}):
+            with self.subTest(overrides=overrides):
+                delivery, blocked = self._plan(**overrides)
+                self.assertIsNone(delivery)
+                self.assertEqual(blocked, bootstrap.BLOCKED_NO_ADDRESS)
+                # Not the same answer as any other refusal, because the caller
+                # has to tell it apart from one.
+                self.assertNotEqual(blocked, bootstrap.BLOCKED_NOT_PENDING)
+                self.assertNotEqual(blocked, bootstrap.BLOCKED_NO_URL)
+                self.assertNotEqual(
+                    blocked, bootstrap.BLOCKED_NO_CONFIG_ENTITY
+                )
+
+    def test_the_delivery_leaves_a_pollable_panel_alone(self) -> None:
+        """The caller's half of the rule above, checked where it is written.
+
+        `panel_provision.py` needs a Home Assistant runtime, which this suite
+        does not have, so what is pinned here is the branch itself: that the
+        one reason a panel may be left to poll is told apart from the reasons
+        that revoke its token.
+        """
+        source = (
+            Path(__file__).parents[1]
+            / "custom_components"
+            / "media_controller"
+            / "panel_provision.py"
+        ).read_text(encoding="utf-8")
+        deliver = source[source.index("async def async_deliver_bootstrap") :]
+        deliver = deliver[: deliver.index("\nasync def _async_check_still_paired")]
+        self.assertIn("if blocked == BLOCKED_NO_ADDRESS:", deliver)
+        # And the branch has to come before the one that throws the token
+        # away, or it never runs.
+        self.assertLess(
+            deliver.index("if blocked == BLOCKED_NO_ADDRESS:"),
+            deliver.index("_async_abandon"),
+        )
+
     def test_no_address_stops_the_delivery(self) -> None:
         for value in (None, "", "not-a-url"):
             with self.subTest(value=value):
