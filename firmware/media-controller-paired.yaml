@@ -40,7 +40,7 @@ substitutions:
   # an IP address if .local names are unreliable on your network.
   ha_url: "http://homeassistant.local:8123"
 
-  firmware_version: "0.6.5"
+  firmware_version: "0.6.6"
 
   # The version of docs/CONTRACT.md this firmware implements. firmware_version
   # says when this build shipped; this says what it understands, and it is the
