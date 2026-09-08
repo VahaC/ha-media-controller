@@ -68,6 +68,7 @@ async def async_setup_entry(
                     PanelHeapFragmentationSensor(entry, runtime),
                     PanelPsramFreeSensor(entry, runtime),
                     PanelLoopTimeSensor(entry, runtime),
+                    PanelHttpTimeSensor(entry, runtime),
                     PanelResetReasonSensor(entry, runtime),
                 ]
             )
@@ -536,6 +537,29 @@ class PanelLoopTimeSensor(_PanelDiagnosticSensor):
     def __init__(self, entry: ConfigEntry, runtime: Any) -> None:
         """Initialize the loop-time sensor of one panel."""
         super().__init__(entry, runtime, "loop_time")
+
+
+class PanelHttpTimeSensor(_PanelDiagnosticSensor):
+    """The longest single HTTP exchange the panel measured.
+
+    Read beside the loop time rather than instead of it. A long loop says the
+    panel stopped; this says whether it stopped on the network. The two
+    agreeing means a request held it, and on a client that draws its own
+    display out of PSRAM that is what a person sees as the picture jumping.
+    The two disagreeing means to look at what else the client was doing.
+
+    Zero is a real reading and means no request was made in the window, which
+    is the answer to expect from a panel that is being pushed to rather than
+    polling.
+    """
+
+    _status_key = "http_ms"
+    _attr_device_class = SensorDeviceClass.DURATION
+    _attr_native_unit_of_measurement = UnitOfTime.MILLISECONDS
+
+    def __init__(self, entry: ConfigEntry, runtime: Any) -> None:
+        """Initialize the HTTP-time sensor of one panel."""
+        super().__init__(entry, runtime, "http_ms")
 
 
 class PanelResetReasonSensor(PanelReadingEntity, SensorEntity):

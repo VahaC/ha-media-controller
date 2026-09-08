@@ -579,6 +579,10 @@ class PanelStatus:
     heap_fragmentation: float | None = None
     psram_free: float | None = None
     loop_time: float | None = None
+    # The longest single HTTP exchange the client measured since its last
+    # report. It answers what `loop_time` cannot: a long loop says something
+    # blocked, this says whether the something was the network.
+    http_ms: float | None = None
     reset_reason: str = ""
 
     @classmethod
@@ -639,6 +643,8 @@ class PanelStatus:
                                 PSRAM_MAX_BYTES),
             loop_time=_bounded(diagnostics.get("loop_time"), 0,
                                LOOP_TIME_MAX_MS),
+            http_ms=_bounded(diagnostics.get("http_ms"), 0,
+                             LOOP_TIME_MAX_MS),
             reset_reason=_reset_reason(diagnostics.get("reset_reason")),
         )
 

@@ -1162,6 +1162,7 @@ another's battery level.
     "heap_fragmentation": 54,
     "psram_free": 6291456,
     "loop_time": 38,
+    "http_ms": 210,
     "reset_reason": "Software reset CPU"
   }
 }
@@ -1173,6 +1174,14 @@ another's battery level.
 - `percent` and `brightness` are 0 – 100; anything else is discarded. Use -1
   for a backlight that exists but cannot be written by this session.
 - Booleans must be real JSON booleans; `1` is not `true`.
+- `http_ms` is the longest single HTTP exchange the client made since its
+  last report, in milliseconds, and it is read beside `loop_time` rather than
+  instead of it. A long loop says the client stopped; this says whether it
+  stopped on the network. Zero is a real reading and means no request was made
+  in the window, which is what a client being pushed to should report. Both
+  are maxima over the window rather than averages, and both are reset when
+  reported: an average hides the one exchange that took two seconds, and that
+  exchange is the whole question.
 - `push_key` says that this client serves the push routes and what it wants
   on them. It is the client's own secret, minted by the client, and it is the
   only thing that makes Home Assistant push rather than leave the client

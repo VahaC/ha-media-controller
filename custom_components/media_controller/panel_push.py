@@ -37,6 +37,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 import logging
+from urllib.parse import urlsplit
 
 import aiohttp
 
@@ -193,9 +194,8 @@ class PanelPusher:
             # No key reported: an older build, or one that is not paired.
             # It polls, and that is a complete answer rather than a problem.
             return
-        host = str(self._entry.data.get(CONF_HOST) or "")
-        port = int(self._entry.data.get(CONF_PANEL_PORT) or DEFAULT_PANEL_PORT)
-        if not host or port <= 0:
+        origin = self._async_origin()
+        if not origin:
             return
         current = self._hass.states.get(entity_id)
         if current is None:
@@ -207,7 +207,7 @@ class PanelPusher:
         body = json_dumps(
             {"state": current.state, "attributes": dict(current.attributes)}
         )
-        url = f"http://{host}:{port}{path}"
+        url = f"{origin}{path}"
         task = self._entry.async_create_background_task(
             self._hass,
             self._async_post(url, key, body),
@@ -215,6 +215,37 @@ class PanelPusher:
         )
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+
+    @callback
+    def _async_origin(self) -> str:
+        """Return where this panel answers, or "" when that is not known.
+
+        The config entry carries a host only for a panel Home Assistant found
+        over zeroconf; a panel added any other way has an empty one, and
+        pushing to it would be pushing at nothing. So the address the panel
+        reports for its own editor is the fallback: it is the panel's own
+        routable address, it is the one thing on the network that knows which
+        interface that is, and it arrives in every status report.
+
+        The port is taken with it. The editor and these routes are the same
+        listener on the same device -- a panel opens exactly one port -- so an
+        address that reaches one reaches the other.
+        """
+        host = str(self._entry.data.get(CONF_HOST) or "")
+        if host:
+            port = int(
+                self._entry.data.get(CONF_PANEL_PORT) or DEFAULT_PANEL_PORT
+            )
+            if port > 0:
+                return f"http://{host}:{port}"
+
+        reported = self._state.status.editor_url
+        if not reported:
+            return ""
+        parts = urlsplit(reported)
+        if parts.scheme not in ("http", "https") or not parts.hostname:
+            return ""
+        return f"{parts.scheme}://{parts.netloc}"
 
     async def _async_post(self, url: str, key: str, body: str) -> None:
         """Deliver one payload, or let the panel's fallback poll cover it."""

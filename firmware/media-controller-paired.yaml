@@ -40,7 +40,7 @@ substitutions:
   # an IP address if .local names are unreliable on your network.
   ha_url: "http://homeassistant.local:8123"
 
-  firmware_version: "0.6.9"
+  firmware_version: "0.6.10"
 
   # The version of docs/CONTRACT.md this firmware implements. firmware_version
   # says when this build shipped; this says what it understands, and it is the
@@ -615,6 +615,21 @@ globals:
     type: std::string
     restore_value: true
     max_restore_data_length: 40
+
+  # -- The longest single HTTP exchange since the last status report, in
+  # -- milliseconds, straight out of the container http_request fills in.
+  # -- A maximum rather than an average and reset when reported, exactly like
+  # -- loop_time beside it: what matters is the one request that took two
+  # -- seconds, and an average over a minute of them hides it.
+  # --
+  # -- It exists to answer a question the loop time cannot: a long loop says
+  # -- something blocked, this says whether the something was the network.
+  # -- The two together separate a slow Home Assistant, a name that resolves
+  # -- slowly and a device that is busy with its own work. --
+  - id: http_max_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
 
   # -- The last time a push was accepted. The polls read it: a payload that
   # -- Home Assistant is delivering does not need asking for, and one that has
@@ -1719,6 +1734,12 @@ script:
                 max_response_buffer_size: 8192
                 on_response:
                   then:
+                    # -- Timed whatever the answer was: a request that failed
+                    # -- slowly held the loop for just as long as one that
+                    # -- succeeded slowly. --
+                    - lambda: |-
+                        if (response->duration_ms > id(http_max_ms))
+                          id(http_max_ms) = response->duration_ms;
                     - if:
                         condition:
                           lambda: |-
@@ -2258,6 +2279,9 @@ script:
                 max_response_buffer_size: 32768
                 on_response:
                   then:
+                    - lambda: |-
+                        if (response->duration_ms > id(http_max_ms))
+                          id(http_max_ms) = response->duration_ms;
                     - if:
                         condition:
                           lambda: |-
@@ -3620,6 +3644,17 @@ script:
                          id(debug_heap_fragmentation).state, "%.0f");
                   number("psram_free", id(debug_psram_free).state, "%.0f");
                   number("loop_time", id(debug_loop_time).state, "%.0f");
+                  // -- Reset as it is read, so that each report covers the
+                  // -- window since the last one rather than the whole
+                  // -- uptime. Reported even when it is zero: a window with
+                  // -- no request in it is a real measurement and not a
+                  // -- missing one. --
+                  snprintf(buf, sizeof(buf), "%u",
+                           (unsigned) id(http_max_ms));
+                  if (!first) json += ",";
+                  json += std::string("\"http_ms\":") + buf;
+                  first = false;
+                  id(http_max_ms) = 0;
                   const std::string &reason =
                       id(debug_reset_reason).state;
                   if (!reason.empty()) {
@@ -3689,24 +3724,29 @@ interval:
             return;
           }
 
-          // -- One request per tick, and no more. Every job below blocks the
-          //    main loop from the moment it is executed until the response is
-          //    parsed: http_request has no asynchronous form, and the ESP-IDF
-          //    client is built and torn down around each call, so a request
-          //    is a connection as well as a transfer. Two of them in the same
-          //    iteration is twice the stall, and the stall is visible on the
-          //    glass. The main task is pinned to CPU0 and so is the interrupt
-          //    that refills the display's bounce buffer, so everything a
-          //    request does on the way through -- the critical sections in
-          //    the socket layer, the response streaming into a buffer this
-          //    build places in PSRAM -- competes with the one job that cannot
-          //    wait. Miss enough EOFs and the panel's VSYNC interrupt resets
-          //    the DMA channel, which is the recovery working as designed and
-          //    also the twitch that is seen. Spreading the jobs over the
-          //    ticks costs each of them at most 250 ms of delay -- they keep
-          //    their own clocks, so a job that yields this tick is due again
-          //    on the next one -- and it bounds what any single iteration can
-          //    cost.
+          // -- The two payloads the screen is drawn from go in the SAME
+          //    tick, deliberately, and the jobs behind them are what yield.
+          //
+          //    Every job below blocks the main loop from the moment it is
+          //    executed until the response is parsed: http_request has no
+          //    asynchronous form, and the ESP-IDF client is built and torn
+          //    down around each call, so a request is a connection as well as
+          //    a transfer. The main task is pinned to CPU0 and so is the
+          //    interrupt that refills the display's bounce buffer, so a
+          //    request competes with the one job that cannot wait; miss
+          //    enough EOFs and the VSYNC interrupt resets the DMA channel,
+          //    which is the recovery working as designed and also the twitch
+          //    that is seen.
+          //
+          //    This was written the other way round first -- one request per
+          //    tick, so that no single iteration cost two of them -- and that
+          //    is the wrong thing to minimise. It halved the longest stall
+          //    and doubled the number of them, and what a person watching the
+          //    screen counts is disturbances, not milliseconds: two stalls a
+          //    quarter of a second apart read as two twitches, and one stall
+          //    of twice the length reads as one. So the player and the config
+          //    sensor are asked for together, and everything rarer than they
+          //    are waits for a tick they are not using.
           bool spent = false;
 
           // -- What Home Assistant is delivering does not need asking for.
@@ -3746,6 +3786,8 @@ interval:
             spent = true;
             id(poll_player)->execute();
           }
+          // -- Deliberately not behind `spent`: this is the other half of the
+          //    same tick, not a job competing for it. --
 
           // -- The config sensor is the one payload with no page of its own.
           //    It is read every cycle whatever is showing, because it is also
@@ -3756,7 +3798,7 @@ interval:
           //    round. Both clocks run at poll_interval_ms, so after the first
           //    contested tick they settle a tick apart and neither waits
           //    again. --
-          if (!spent && now - id(last_poll_ms) >= interval) {
+          if (now - id(last_poll_ms) >= interval) {
             id(last_poll_ms) = now;
             spent = true;
             id(ui_load_room_config)->execute();
