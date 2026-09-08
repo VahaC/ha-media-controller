@@ -107,6 +107,16 @@ class PanelPusher:
         """
         self._config_entity = async_config_entity_id(self._hass, self._entry)
         if not self._config_entity:
+            # Said out loud rather than returned quietly. A pusher that never
+            # started logs none of the reasons below either, so silence in the
+            # log would otherwise be indistinguishable from everything working
+            # -- and it is the opposite.
+            _LOGGER.warning(
+                "No config sensor for panel %s yet, so nothing will be "
+                "pushed to it and it will go on polling; this clears itself "
+                "on the next reload once the sensor exists",
+                self._entry.title,
+            )
             return False
 
         self._cancel_config = async_track_state_change_event(
@@ -330,4 +340,5 @@ def async_start_push(
     pusher = PanelPusher(hass, entry, state)
     if not pusher.async_start():
         return None
+    _LOGGER.debug("Watching states to push to panel %s", entry.title)
     return pusher.async_stop

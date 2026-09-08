@@ -69,6 +69,7 @@ async def async_setup_entry(
                     PanelPsramFreeSensor(entry, runtime),
                     PanelLoopTimeSensor(entry, runtime),
                     PanelHttpTimeSensor(entry, runtime),
+                    PanelParseTimeSensor(entry, runtime),
                     PanelResetReasonSensor(entry, runtime),
                 ]
             )
@@ -560,6 +561,24 @@ class PanelHttpTimeSensor(_PanelDiagnosticSensor):
     def __init__(self, entry: ConfigEntry, runtime: Any) -> None:
         """Initialize the HTTP-time sensor of one panel."""
         super().__init__(entry, runtime, "http_ms")
+
+
+class PanelParseTimeSensor(_PanelDiagnosticSensor):
+    """The longest single application of a payload the panel measured.
+
+    The parse, every sensor it publishes and every widget write those fire --
+    all of it inside one script, none of it separable from outside. Read it
+    against `http_ms`: the two together are what a poll cycle costs, and what
+    `loop_time` has beyond their sum is LVGL rendering afterwards.
+    """
+
+    _status_key = "parse_ms"
+    _attr_device_class = SensorDeviceClass.DURATION
+    _attr_native_unit_of_measurement = UnitOfTime.MILLISECONDS
+
+    def __init__(self, entry: ConfigEntry, runtime: Any) -> None:
+        """Initialize the parse-time sensor of one panel."""
+        super().__init__(entry, runtime, "parse_ms")
 
 
 class PanelResetReasonSensor(PanelReadingEntity, SensorEntity):

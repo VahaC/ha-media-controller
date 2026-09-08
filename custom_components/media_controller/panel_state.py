@@ -583,6 +583,11 @@ class PanelStatus:
     # report. It answers what `loop_time` cannot: a long loop says something
     # blocked, this says whether the something was the network.
     http_ms: float | None = None
+    # The longest single application of a payload: the parse, the sensor
+    # updates it publishes and the widget writes those fire. Read beside
+    # `http_ms` -- together they say which half of a poll cycle is expensive,
+    # and what `loop_time` has left over after both is the drawing itself.
+    parse_ms: float | None = None
     reset_reason: str = ""
 
     @classmethod
@@ -645,6 +650,8 @@ class PanelStatus:
                                LOOP_TIME_MAX_MS),
             http_ms=_bounded(diagnostics.get("http_ms"), 0,
                              LOOP_TIME_MAX_MS),
+            parse_ms=_bounded(diagnostics.get("parse_ms"), 0,
+                              LOOP_TIME_MAX_MS),
             reset_reason=_reset_reason(diagnostics.get("reset_reason")),
         )
 

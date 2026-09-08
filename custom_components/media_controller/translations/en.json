@@ -177,6 +177,9 @@
       "http_ms": {
         "name": "HTTP time"
       },
+      "parse_ms": {
+        "name": "Parse time"
+      },
       "reset_reason": {
         "name": "Reset reason"
       }

@@ -40,7 +40,7 @@ substitutions:
   # an IP address if .local names are unreliable on your network.
   ha_url: "http://homeassistant.local:8123"
 
-  firmware_version: "0.6.10"
+  firmware_version: "0.6.11"
 
   # The version of docs/CONTRACT.md this firmware implements. firmware_version
   # says when this build shipped; this says what it understands, and it is the
@@ -615,6 +615,27 @@ globals:
     type: std::string
     restore_value: true
     max_restore_data_length: 40
+
+  # -- The longest single payload application since the last status report:
+  # -- the parse, plus every publish_state it makes and every widget update
+  # -- those fire, because all of that runs inside the script and none of it
+  # -- can be told apart from the outside.
+  # --
+  # -- It is the other half of http_ms, and the pair is the whole point. A
+  # -- poll cycle is a transfer and then a reading of what was transferred,
+  # -- and until both are measured, "the poll is expensive" names no part of
+  # -- it. What is left over -- loop_time minus these two -- is LVGL actually
+  # -- rendering, which happens in its own component afterwards. Three
+  # -- numbers, three suspects, and no argument about which it is. --
+  - id: parse_max_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+
+  - id: parse_start_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
 
   # -- The longest single HTTP exchange since the last status report, in
   # -- milliseconds, straight out of the container http_request fills in.
@@ -1618,6 +1639,7 @@ script:
     parameters:
       payload: string
     then:
+      - lambda: id(parse_start_ms) = millis();
       - lambda: |-
           std::string state = id(json_field)(payload, "state");
           if (!state.empty() &&
@@ -1714,6 +1736,9 @@ script:
             id(last_polled_position) = p;
             id(media_position).publish_state(p);
           }
+      - lambda: |-
+          uint32_t spent = millis() - id(parse_start_ms);
+          if (spent > id(parse_max_ms)) id(parse_max_ms) = spent;
 
   # -- The player, in one request, rather than nine state subscriptions over
   # -- a native API this firmware does not have. --
@@ -2010,6 +2035,7 @@ script:
     parameters:
       payload: string
     then:
+      - lambda: id(parse_start_ms) = millis();
       - lambda: |-
           id(pending_attributes) = "";
           id(pending_commands) = "";
@@ -2250,6 +2276,9 @@ script:
                   id(rebuild_room_grid)->execute();
                   id(last_forecast_poll_ms) = 0;
                 }
+      - lambda: |-
+          uint32_t spent = millis() - id(parse_start_ms);
+          if (spent > id(parse_max_ms)) id(parse_max_ms) = spent;
 
   - id: ui_load_room_config
     mode: restart
@@ -3655,6 +3684,10 @@ script:
                   json += std::string("\"http_ms\":") + buf;
                   first = false;
                   id(http_max_ms) = 0;
+                  snprintf(buf, sizeof(buf), "%u",
+                           (unsigned) id(parse_max_ms));
+                  json += std::string(",\"parse_ms\":") + buf;
+                  id(parse_max_ms) = 0;
                   const std::string &reason =
                       id(debug_reset_reason).state;
                   if (!reason.empty()) {
