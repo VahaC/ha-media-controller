@@ -24,6 +24,7 @@ REPO = Path(__file__).parents[1]
 FIRMWARE = REPO / "firmware"
 FACTORY = FIRMWARE / "media-controller-factory.yaml"
 PAIRED = FIRMWARE / "media-controller-paired.yaml"
+EXAMPLE = FIRMWARE / "media-controller-paired.example.yaml"
 UI = FIRMWARE / "media-controller-ui.yaml"
 INSTALLER = REPO / "installer"
 REQUIREMENTS = FIRMWARE / "requirements.txt"
@@ -191,6 +192,43 @@ class OverTheAirTests(unittest.TestCase):
         )
         assert declaration is not None, "update_target_version is not declared"
         self.assertIn("restore_value: true", declaration.group(0))
+
+    def test_a_build_configured_at_compile_time_refuses_the_command(
+        self,
+    ) -> None:
+        # What Home Assistant offers is the published factory image, which
+        # carries no Wi-Fi, no address and no credentials at all. A panel
+        # flashed from it keeps all of those across an update because they
+        # are in NVS; a build from the example configuration compiled them
+        # in and would lose them, coming back on its recovery access point
+        # with no way to reach either Home Assistant or ESPHome. Home
+        # Assistant cannot tell the two apart, so the firmware does, from
+        # the one value the factory image deliberately leaves empty.
+        text = _read(PAIRED)
+        latch = re.search(
+            r'block = id\(json_object\)\(payload, "update"\);'
+            r".*?id\(want_update_version\) = version;",
+            text,
+            re.DOTALL,
+        )
+        assert latch is not None, "the update command is no longer latched"
+        self.assertIn('std::string("${ha_url}").size() > 0', latch.group(0))
+
+    def test_the_example_configuration_is_what_that_refuses(self) -> None:
+        # The guard above means nothing unless the package route really does
+        # compile an address in. It is also what makes that route a build of
+        # its owner's rather than a copy of the published one.
+        address = re.search(
+            r'^  ha_url:\s*"([^"]*)"', _read(EXAMPLE), re.MULTILINE
+        )
+        assert address is not None, "the example names no ha_url"
+        self.assertNotEqual("", address.group(1))
+        # And that the factory image still leaves it empty, which is what
+        # test_no_address_is_compiled_in guards for its own reasons and this
+        # guard now also depends on.
+        self.assertTrue(
+            re.search(r'^\s*ha_url:\s*""\s*$', _read(FACTORY), re.MULTILINE)
+        )
 
     def test_the_download_address_is_built_from_the_paired_address(self) -> None:
         # A path from Home Assistant joined to the address this device is

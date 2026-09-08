@@ -30,6 +30,15 @@ packages:
       - firmware/media-controller-paired.yaml
     refresh: 1h
 
+# These three are what make this a build of your own rather than a copy of the
+# published image, and they are also why this device ignores the **Firmware**
+# update entity in Home Assistant. That entity offers the factory image, which
+# deliberately carries no credentials of any kind: installing it here would
+# replace the Wi-Fi below with nothing at all, and the panel would come back on
+# its recovery access point with no way to reach the network or ESPHome. The
+# firmware refuses the command for that reason and says so in its log. This
+# device is updated from ESPHome Device Builder, over the OTA password at the
+# bottom of this file, exactly as it always was.
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password

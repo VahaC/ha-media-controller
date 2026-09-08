@@ -580,7 +580,7 @@ fetches it from Home Assistant over the local network — it never talks to the
 internet — and keeps its Wi-Fi, its pairing, its token and its room layout,
 because an update writes the application partition and nothing else.
 
-Three things about that entity are worth knowing, because each of them looks
+Four things about that entity are worth knowing, because each of them looks
 like a bug from the outside:
 
 - **it can show a newer build on the installer page and offer nothing.** A
@@ -595,7 +595,20 @@ like a bug from the outside:
 - **an installation with no route to the internet is offered nothing**, and
   the entity reports its version as unknown rather than up to date. Home
   Assistant is the thing that downloads the image, so a Home Assistant that
-  cannot reach the release genuinely has no update to give.
+  cannot reach the release genuinely has no update to give;
+- **a panel built as an ESPHome package ignores the Install button**, and the
+  offer stays where it was. What is published is the factory image, and its
+  whole point is that it carries nothing personal — no Wi-Fi credentials, no
+  Home Assistant address, no API key, no OTA password. The sentence above is
+  true of a panel flashed from that image, which learned all of those at
+  runtime and keeps them in NVS. It is not true of a build that was given
+  them while it was compiled: for that panel the same image is a build with
+  the credentials removed, and it would come back on its recovery access
+  point, unreachable from Home Assistant and from ESPHome both. Nothing a
+  panel reports distinguishes the two — the version string comes from the
+  same package — so the firmware decides, from whether an address was
+  compiled into it, and refuses. Such a panel is updated from ESPHome Device
+  Builder, which is where its owner has always updated it.
 
 The **T560 tablet has no Firmware entity**: it is deployed over SSH, and a
 button that could not install anything would be worse than none. It keeps the

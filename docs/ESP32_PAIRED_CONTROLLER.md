@@ -245,6 +245,18 @@ and it can be avoided entirely by plugging the panel into a computer and using
 the installer's **Connect** button, which offers the Wi-Fi step again without
 reinstalling anything.
 
+The same access point is how you get back a panel built from the ESPHome
+package that was installed with the factory image before the firmware learned
+to refuse one — see **Updating** below. Its Wi-Fi was compiled in, so the new
+image came up with none, and **Media Controller Setup** is what it raises. Give
+it the network from a phone and it comes back paired: the Home Assistant address
+and the token were in NVS and survived, so nothing has to be paired again. What
+does not come back is the ESPHome half — the API key and the OTA password were
+compiled in as well and went with the Wi-Fi, so the device leaves the ESPHome
+dashboard and stops answering it. From then on it is a factory panel and is
+updated from Home Assistant; to have it back in the dashboard, install your own
+build over USB once, from ESPHome, exactly as it was installed the first time.
+
 ### Updating
 
 **From Home Assistant.** A paired panel has a **Firmware** entity on its
@@ -298,9 +310,22 @@ the panel returns to the build it was on, with everything intact.
   to Home Assistant can reach it. Home Assistant knows this and offers it
   nothing; it raises the repair issue that points here instead. After that one
   USB install it never needs a cable again.
-- **A panel installed from the ESPHome package** keeps its own ESPHome OTA as
-  well, with the password its owner chose, and is updated from ESPHome Device
-  Builder as before. Nothing about that changes.
+- **A panel installed from the ESPHome package** keeps its own ESPHome OTA,
+  with the password its owner chose, and is updated from ESPHome Device
+  Builder as before. It also **ignores this Install button**, and that is
+  deliberate rather than an oversight. What Home Assistant offers is the
+  published factory image, which carries no Wi-Fi credentials, no Home
+  Assistant address, no API key and no OTA password, because it is one file
+  flashed onto every panel in the world. A factory-flashed panel loses
+  nothing by taking it: its Wi-Fi and its address are in NVS, which an update
+  does not touch, and it never had the other two. A package build had all
+  four and had them from its own compile, so the same image would replace
+  them with nothing: the panel would come back
+  with no network, raise its recovery access point, and be reachable from
+  neither Home Assistant nor ESPHome until somebody walked up to it. The
+  firmware refuses the command for exactly that reason and writes the reason
+  to its log; Home Assistant, which cannot tell one build from the other,
+  goes on offering it and simply never sees the version change.
 
 **Over USB, which stays the recovery path.** Connect the panel and press
 **Install** again with the same page. Installing over an existing panel keeps
@@ -338,6 +363,13 @@ For an installation that already runs ESPHome and wants this device in that
 dashboard, with over-the-air updates and an encryption key it manages itself.
 Everything about the running firmware is identical to the factory image; only
 the way it is built and installed differs.
+
+One consequence of that difference is worth reading before you start: a device
+built this way is updated by **this** configuration and only by it. The
+**Firmware** entity in Home Assistant offers the published factory image, which
+carries none of the credentials below, and the firmware refuses it rather than
+lose them — see **Updating** above for what that would otherwise do to a panel
+on a wall.
 
 Paste this into the device configuration in ESPHome Device Builder. It is the
 whole thing; `packages:` downloads the maintained firmware, the shared

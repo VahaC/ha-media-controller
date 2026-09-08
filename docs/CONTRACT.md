@@ -1504,7 +1504,19 @@ and this endpoint is never called. A client that can must:
 - **leave everything that is not the application alone.** Wi-Fi credentials,
   the Home Assistant address, the token, the config entity and the room
   layout all survive an update, because an application update writes the
-  application and nothing else.
+  application and nothing else;
+- **refuse the command if any of that came from its own compile.** The
+  previous rule holds only for a client that keeps those five things outside
+  the application. What Home Assistant serves is a published, impersonal
+  build, so a client that was given its Wi-Fi, its address or its credentials
+  while it was being compiled does not keep them across this update — it
+  loses them, and the first one is the one that takes it off the network for
+  good. Such a client is built by whoever configured it and is updated the
+  same way; the `update` command is not for it, and it ignores the command
+  rather than acting on it. The ESP32 panel decides this from whether an
+  address was compiled into it: the factory image has none and learns
+  everything at runtime, so another copy of the factory image can replace it;
+  a build from the ESPHome package has one, and refuses.
 
 **A client from before version 8 cannot be updated this way and must not be
 offered it.** There is nothing in such a build to tell: it has no update

@@ -2276,15 +2276,50 @@ script:
           //    The version this device is already running is refused here as
           //    well as in Home Assistant. A client trusts a payload no
           //    further than it has to, and reinstalling the running build
-          //    would be a minute of dead screen for nothing. --
+          //    would be a minute of dead screen for nothing.
+          //
+          //    So is an update on a build that was configured while it was
+          //    compiled, and that one is not a nicety. What Home Assistant
+          //    offers is the published factory image, and the whole point of
+          //    that image is that it carries nothing personal: no Wi-Fi
+          //    credentials, no Home Assistant address, no API key, no OTA
+          //    password. A factory-flashed panel loses none of that by
+          //    taking it. Its Wi-Fi and its address are in NVS because it
+          //    learned them at runtime, and NVS is what an application
+          //    update leaves alone -- the contract's "leave everything that
+          //    is not the application alone" -- and it never had the other
+          //    two at all. A package build had all four, and had them from
+          //    its own compile rather than from NVS, so installing an image
+          //    built from somebody else's checkout is what deletes them.
+          //    The panel comes back with no network at all, raises its
+          //    recovery access point and is offline until somebody walks up
+          //    to it.
+          //
+          //    ha_url is the one thing that tells the two apart from inside
+          //    the firmware, and it is the same test on_boot uses to decide
+          //    whether this device knows where Home Assistant is before
+          //    pairing: empty means the factory image, which learns
+          //    everything at runtime and can therefore be replaced by
+          //    another copy of itself. A build with an address in it is
+          //    updated by the ESPHome that built it, over the OTA password
+          //    its owner chose -- see "Keeping a package build in the
+          //    ESPHome dashboard" in docs/ESP32_PAIRED_CONTROLLER.md. The
+          //    watermark is still taken, so this says so once rather than on
+          //    every poll for as long as the command stands. --
           block = id(json_object)(payload, "update");
           if (!block.empty()) {
             double at = atof(id(json_field)(block, "at").c_str());
             if (at > id(last_update_at)) {
               id(last_update_at) = at;
               std::string version = id(json_field)(block, "version");
-              if (!version.empty() && version.size() <= 32 &&
-                  version != "${firmware_version}") {
+              if (std::string("${ha_url}").size() > 0) {
+                ESP_LOGW("ota",
+                         "Home Assistant offered firmware %s; this build was "
+                         "configured when it was compiled and is updated by "
+                         "the ESPHome that built it, so it is not installed",
+                         version.c_str());
+              } else if (!version.empty() && version.size() <= 32 &&
+                         version != "${firmware_version}") {
                 id(want_update_version) = version;
                 id(update_next_try_ms) = millis();
                 id(update_attempts) = 0;

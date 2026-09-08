@@ -33,6 +33,21 @@ Only clients that can actually be updated this way get one. The T560 tablet
 is deployed over SSH and is a different problem; it keeps the repair issue in
 `compatibility.py`, which is the only thing that ever told anybody a panel
 was behind.
+
+One thing this entity cannot decide, and does not try to: whether the panel
+in front of it should take the image at all. What is offered is the published
+factory image, which carries no Wi-Fi credentials, no address and no
+credential of any kind, and a panel flashed from it loses nothing by taking
+one, because it learned all of that at runtime and keeps it in NVS. A panel
+built from `firmware/media-controller-paired.example.yaml` was given the same
+things while it was compiled, and would lose every one of them — starting
+with the Wi-Fi, which is what takes it off the network for good. Nothing a
+panel reports tells the two apart — the version string
+comes from the same package and is the same either way — so the decision is
+the firmware's, taken from whether an address was compiled into it, and a
+build that was ignores the `update` command and says so in its own log. See
+"What a client has to do to be updatable" in `docs/CONTRACT.md`. From here
+that panel simply never reports a new version, and the offer stands.
 """
 
 from __future__ import annotations
