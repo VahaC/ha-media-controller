@@ -169,6 +169,14 @@ class ClientProfile:
     # seven diagnostic sensors are not created at all, rather than created
     # and left unavailable for the life of the installation.
     reports_diagnostics: bool = False
+    # Whether this client serves the push routes, and therefore whether Home
+    # Assistant watches its two states in order to post them. False for the
+    # tablet, which has no such routes and never will: it is an app on a
+    # device Home Assistant cannot open a socket to on demand. A client that
+    # cannot be pushed to polls, and that is a complete arrangement rather
+    # than a degraded one -- so nothing is created for it and nothing is
+    # logged about it.
+    accepts_push: bool = False
     # What this client can draw for a registry element at all, intersected
     # with what the target entity actually supports. The paired ESP32 has a
     # tap and one long-press sweep per card, which it spends on brightness for a lamp and
@@ -255,6 +263,7 @@ ESP32_S3_PANEL = ClientProfile(
     # into this contract. This is the only client that has either.
     has_theme=True,
     reports_diagnostics=True,
+    accepts_push=True,
     controls=(
         CONTROL_TOGGLE,
         CONTROL_BRIGHTNESS,

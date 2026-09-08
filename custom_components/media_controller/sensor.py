@@ -71,10 +71,14 @@ async def async_setup_entry(
                     PanelLoopTimeSensor(entry, runtime),
                     PanelHttpTimeSensor(entry, runtime),
                     PanelParseTimeSensor(entry, runtime),
-                    PanelPushStateSensor(entry, runtime),
                     PanelResetReasonSensor(entry, runtime),
                 ]
             )
+        # Separate from the block above: whether a client reports diagnostics
+        # and whether it can be pushed to are two different questions, and a
+        # later client could answer them differently.
+        if runtime.client.profile.accepts_push:
+            async_add_entities([PanelPushStateSensor(entry, runtime)])
         return
 
     controller = runtime.client.controller
@@ -603,7 +607,7 @@ class PanelPushStateSensor(PanelReadingEntity, SensorEntity):
 
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_device_class = SensorDeviceClass.ENUM
-    _attr_options = ["pushing", "no_key", "no_address"]
+    _attr_options = ["pushing", "no_key", "key_empty", "no_address"]
 
     def __init__(self, entry: ConfigEntry, runtime: Any) -> None:
         """Initialize the push-state sensor of one panel."""
@@ -612,11 +616,17 @@ class PanelPushStateSensor(PanelReadingEntity, SensorEntity):
     @property
     def native_value(self) -> str:
         """Return what is standing between this panel and a push."""
-        if not self._panel.status.push_key:
+        status = self._panel.status
+        if not status.push_key_reported:
+            # The field is not in the report at all: a build from before the
+            # push routes existed.
             return "no_key"
+        if not status.push_key:
+            # The build has the routes and minted nothing. That is a fault on
+            # the device, and it is the one this distinction exists to name.
+            return "key_empty"
         if not (
-            self._entry.data.get(CONF_HOST)
-            or self._panel.status.editor_url
+            self._entry.data.get(CONF_HOST) or status.editor_url
         ):
             return "no_address"
         return "pushing"

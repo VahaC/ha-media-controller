@@ -40,7 +40,7 @@ substitutions:
   # an IP address if .local names are unreliable on your network.
   ha_url: "http://homeassistant.local:8123"
 
-  firmware_version: "0.6.11"
+  firmware_version: "0.6.12"
 
   # The version of docs/CONTRACT.md this firmware implements. firmware_version
   # says when this build shipped; this says what it understands, and it is the
@@ -3645,9 +3645,18 @@ script:
                   // -- on: a Home Assistant that was restored from a backup
                   // -- taken before the last pairing would otherwise never
                   // -- learn the current one. It is hex from the device's own
-                  // -- generator and means nothing anywhere else. --
-                  if (!id(push_key).empty())
-                    json += ",\"push_key\":\"" + id(push_key) + "\"";
+                  // -- generator and means nothing anywhere else.
+                  // --
+                  // -- Sent even when it is empty, and that is the point. This
+                  // -- device has no log anybody can read -- contract version
+                  // -- 9 removed the native API, so there is no ESPHome device
+                  // -- page and no way to reach a console short of a cable to
+                  // -- a panel on a wall. The report is the only channel out.
+                  // -- An absent key and an empty one are different faults --
+                  // -- a build too old to have one, against a build that has
+                  // -- one and did not mint it -- and a field that vanishes
+                  // -- when empty makes them look identical from the far end.
+                  json += ",\"push_key\":\"" + id(push_key) + "\"";
                   // -- The diagnostics block: what the seven ESPHome debug
                   // -- entities used to publish over the native API, in the
                   // -- report that was already going. Each key is omitted

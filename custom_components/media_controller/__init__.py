@@ -627,7 +627,7 @@ async def _async_setup_panel(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Nothing is pushed until the panel has reported a key, so this being
     # started here says only that Home Assistant is watching -- whether it
     # speaks is the panel's answer to give.
-    runtime.cancel_push = async_start_push(hass, entry, runtime.state)
+    runtime.cancel_push = async_start_push(hass, entry, runtime)
     return True
 
 

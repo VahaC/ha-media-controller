@@ -185,6 +185,7 @@
         "state": {
           "pushing": "Pushing",
           "no_key": "No key reported",
+          "key_empty": "Key empty on the panel",
           "no_address": "No address"
         }
       },

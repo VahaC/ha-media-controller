@@ -561,6 +561,13 @@ class PanelStatus:
     # pushes to a panel or leaves it polling, so it is never assumed and only
     # ever read from a report.
     push_key: str = ""
+    # Whether the report carried the field at all, which is a different
+    # question from whether it carried a key. Absent means a build from
+    # before the push routes; present and empty means a build that has them
+    # and has no key to offer, which is a fault on the device rather than a
+    # missing feature. The panel has no readable log, so this distinction is
+    # the only way to tell those two apart from here.
+    push_key_reported: bool = False
     # The protocol the client says it speaks, and 0 for one that says
     # nothing. `app_version` is a release number and answers a different
     # question: it says when this build shipped, not what it understands.
@@ -626,6 +633,7 @@ class PanelStatus:
             app_version=str(report.get("version") or "")[:32],
             editor_url=_editor_url(report.get("editor_url")),
             push_key=_push_key(report.get("push_key")),
+            push_key_reported=isinstance(report.get("push_key"), str),
             contract_version=_contract_version(report.get("contract_version")),
             page=page if page in PAGES else "",
             uptime_seconds=None if uptime is None else float(uptime),

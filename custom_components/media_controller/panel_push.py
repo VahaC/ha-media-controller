@@ -37,6 +37,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 import logging
+from typing import Any
 from urllib.parse import urlsplit
 
 import aiohttp
@@ -334,10 +335,18 @@ class PanelPusher:
 def async_start_push(
     hass: HomeAssistant,
     entry: ConfigEntry,
-    state: PanelState,
+    runtime: Any,
 ) -> Callable[[], None] | None:
-    """Start pushing to one panel, returning what stops it again."""
-    pusher = PanelPusher(hass, entry, state)
+    """Start pushing to one panel, returning what stops it again.
+
+    A client whose profile does not serve the push routes is left alone
+    entirely -- no listeners, and nothing logged. Polling is how that client
+    is meant to work, and a warning about it would be an alarm raised over
+    something behaving correctly.
+    """
+    if not runtime.client.profile.accepts_push:
+        return None
+    pusher = PanelPusher(hass, entry, runtime.state)
     if not pusher.async_start():
         return None
     _LOGGER.debug("Watching states to push to panel %s", entry.title)
