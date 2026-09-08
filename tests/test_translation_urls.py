@@ -59,6 +59,83 @@ def _values(document: object, path: str = "") -> list[tuple[str, str]]:
     return []
 
 
+CONFIG_FLOW = COMPONENT / "config_flow.py"
+
+# Every `self.context["title_placeholders"] = { ... }` in the config flow, as
+# the set of keys it provides. Matched textually because the alternative is a
+# Home Assistant runtime, which this suite deliberately does not have.
+RE_TITLE_PLACEHOLDERS = re.compile(
+    r"self\.context\[\"title_placeholders\"\]\s*=\s*\{(.*?)\}",
+    re.DOTALL,
+)
+RE_PLACEHOLDER_KEY = re.compile(r'"([a-z_]+)"\s*:')
+RE_FLOW_TITLE_VARIABLE = re.compile(r"\{([a-z_]+)\}")
+
+
+class FlowTitleTests(unittest.TestCase):
+    """`flow_title` is rendered by formatjs, which fails loudly and unhelpfully.
+
+    A step that shows its own card and does not fill in every variable
+    `flow_title` names does not get a plainer title. The row is replaced by
+
+        Translation [formatjs Error: MISSING_VALUE] The intl string context
+        variable "profile" was not provided to the string "{name} ({profile})"
+
+    which is the whole row — so the one line telling somebody that their panel
+    has lost its token, and offering the button that fixes it, becomes an error
+    message about translations. That happened once, to the reauth step.
+
+    Nothing in Home Assistant catches this: the string is valid, the code is
+    valid, and the two only meet in a browser.
+    """
+
+    def test_every_flow_title_variable_is_provided(self) -> None:
+        strings = json.loads(
+            (COMPONENT / "strings.json").read_text(encoding="utf-8")
+        )
+        flow_title = strings["config"]["flow_title"]
+        required = set(RE_FLOW_TITLE_VARIABLE.findall(flow_title))
+        self.assertTrue(required, "flow_title names no variables")
+
+        source = CONFIG_FLOW.read_text(encoding="utf-8")
+        blocks = RE_TITLE_PLACEHOLDERS.findall(source)
+        self.assertTrue(blocks, "no step sets title_placeholders")
+
+        for index, block in enumerate(blocks):
+            provided = set(RE_PLACEHOLDER_KEY.findall(block))
+            with self.subTest(block=index):
+                self.assertEqual(
+                    required - provided,
+                    set(),
+                    f"a step provides {sorted(provided)} and flow_title "
+                    f"needs {sorted(required)}",
+                )
+
+    def test_every_step_that_shows_a_card_sets_them(self) -> None:
+        """The steps a card can start at, and there are four of them.
+
+        Three discoveries and a reauth. A step added to this list without
+        placeholders is the bug above; a step removed from it is a card that
+        stopped existing, which is a change somebody should make deliberately.
+        """
+        source = CONFIG_FLOW.read_text(encoding="utf-8")
+        for step in (
+            "async_step_zeroconf",
+            "async_step_integration_discovery",
+            "async_step_reauth",
+        ):
+            with self.subTest(step=step):
+                start = source.find(f"    async def {step}(")
+                self.assertNotEqual(start, -1, f"{step} is gone")
+                end = source.find("\n    async def ", start + 1)
+                body = source[start : end if end != -1 else len(source)]
+                self.assertIn(
+                    'self.context["title_placeholders"]',
+                    body,
+                    f"{step} shows a card without filling its title in",
+                )
+
+
 class TranslationUrlTests(unittest.TestCase):
     """Verify that no translation value carries an address."""
 

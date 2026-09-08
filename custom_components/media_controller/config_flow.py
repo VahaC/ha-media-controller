@@ -1177,6 +1177,19 @@ class MediaControllerConfigFlow(
         self._panel_host = entry.data.get(CONF_HOST, "")
         self._panel_port = int(entry.data.get(CONF_PANEL_PORT) or 0)
         self._ha_url = entry.data.get(CONF_HA_URL, "")
+        # Read from the entry rather than left at the class default, which is
+        # the first panel profile and would be the wrong device here.
+        self._profile = panel_profile(entry.data.get(CONF_PROFILE))
+        # Every flow that appears as its own card has to fill these in.
+        # `flow_title` is "{name} ({profile})" and is rendered for this flow
+        # exactly as it is for a discovery, so leaving them out does not
+        # produce a plain title — it produces a formatjs MISSING_VALUE error
+        # in place of the row, which is the one row telling somebody their
+        # panel has lost its token.
+        self.context["title_placeholders"] = {
+            "name": self._panel_name,
+            "profile": self._profile.name,
+        }
         return await self.async_step_reauth_confirm()
 
     async def async_step_reauth_confirm(
