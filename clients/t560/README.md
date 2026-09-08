@@ -6,8 +6,9 @@ model of the ESP32 controller that lives in [firmware/](../../firmware), but
 runs as a lightweight GTK3 application on the tablet.
 
 It is one of the two clients of the Media Controller integration in this
-repository; the other is the [ESP32-S3 controller](../../docs/ESP32_CONTROLLER.md).
-Both read the same [contract](../../docs/CONTRACT.md).
+repository; the other is the
+[ESP32-S3 panel](../../docs/ESP32_PAIRED_CONTROLLER.md). Both read the same
+[contract](../../docs/CONTRACT.md).
 
 The application does not use WebKit, a browser, HTML/JavaScript, text fields,
 or an on-screen keyboard. Nothing is configured on the tablet: the room

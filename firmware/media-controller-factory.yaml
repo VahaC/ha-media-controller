@@ -9,8 +9,8 @@
 # Nothing is duplicated here. The whole device — display, touchscreen, LVGL
 # pages, room grid, polling, pairing — is media-controller-paired.yaml, which
 # is included as a package exactly as a user's own device YAML includes it.
-# This file adds only the four things a shipped image needs that a personal one
-# does not:
+# This file adds only the three things a shipped image needs that a personal
+# one does not:
 #
 #   1. an empty ha_url, so the address is learned during pairing instead of
 #      being compiled in;
@@ -18,9 +18,13 @@
 #      device can hand it Wi-Fi credentials without them ever leaving the
 #      machine;
 #   3. an access point and a captive portal, so a device whose network
-#      changed can be given new credentials without a cable;
-#   4. a per-device API encryption key, negotiated on the first connection
-#      rather than shared between every copy of this image.
+#      changed can be given new credentials without a cable.
+#
+# There used to be a fourth: a per-device API encryption key for the ESPHome
+# native API. Contract version 9 removed the native API itself — see
+# "THERE IS NO ESPHome NATIVE API" in media-controller-paired.yaml — so a
+# panel flashed from this image never appears in the ESPHome integration at
+# all, and there is no key to negotiate.
 #
 # How a device gets from here to a working panel is in
 # docs/ESP32_PAIRED_CONTROLLER.md, under "The web installer".
@@ -124,11 +128,3 @@ captive_portal:
 # credentials go from the browser straight down the serial port: they are never
 # sent anywhere, never built into anything, and never appear in a log.
 improv_serial:
-
-# Encryption with no key. The device boots unprovisioned and the first client
-# to connect gives it a key of its own, which it keeps in flash. That is what
-# lets a shared binary still have a per-device secret — a key written here
-# would be the same on every panel flashed from this file, which is no secret
-# at all.
-api:
-  encryption:

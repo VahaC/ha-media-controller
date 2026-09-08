@@ -1,14 +1,18 @@
 # Home Assistant Media Controller
 
-A Home Assistant custom integration and two touch controllers for Music
-Assistant.
+A Home Assistant custom integration and two touch panels for Music Assistant.
 
 The integration turns Music Assistant queue and playlist data into a form small
-devices can consume, and provides remappable room proxy entities. The clients
-render it. Both clients speak exactly the same
-[entity and service contract](docs/CONTRACT.md), so a room control remapped in
+devices can consume, and publishes the room entities each panel may control.
+The panels render it. Both speak exactly the same
+[entity and service contract](docs/CONTRACT.md), so a room control changed in
 Home Assistant changes on every screen without reflashing or redeploying
 anything.
+
+**Neither panel needs the ESPHome integration.** An ESP32 panel is installed
+from a browser, paired with a six-digit code, and never appears in ESPHome at
+all; everything you see in Home Assistant comes from this integration. ESPHome
+builds the firmware, the way a compiler builds a program.
 
 For the build story, photos, and setup walkthrough, see the write-up:
 [Music Assistant ESP32 Media Controller](https://vahac.com/blogs/music-assistant-esp32-media-controller/?utm_source=github).
@@ -17,34 +21,32 @@ For the build story, photos, and setup walkthrough, see the write-up:
 
 | Component | Path | What it is |
 | --- | --- | --- |
-| Media Controller integration | [custom_components/media_controller/](custom_components/media_controller) | HACS custom integration. Queue and playlist sensors, room proxy entities, two services. Required by every client. |
-| ESP32-S3 controller | [firmware/media-controller.yaml](firmware/media-controller.yaml) | ESPHome package for the 480x480 ST7701S + GT911 board sold as `ESP32-S3-4848S040`. Three LVGL screen styles. Configured by flashing: entity IDs and a token live in the YAML. |
-| ESP32-S3 controller, paired | [firmware/media-controller-paired.yaml](firmware/media-controller-paired.yaml) | The same board and the same screens, paired from Home Assistant with a six-digit code. No entity IDs and no token in the build; room controls and the home layout are chosen in the Home Assistant UI and changed without reflashing. |
+| Media Controller integration | [custom_components/media_controller/](custom_components/media_controller) | HACS custom integration. Queue and playlist sensors, the room registry, and every entity a panel owns. Required by every client. |
+| ESP32-S3 panel | [firmware/media-controller-paired.yaml](firmware/media-controller-paired.yaml) | ESPHome package for the 480x480 ST7701S + GT911 board sold as `ESP32-S3-4848S040`. Three LVGL screen styles, paired from Home Assistant with a six-digit code. No entity IDs and no token in the build; room controls, the home layout and the colours are chosen in the Home Assistant UI and changed without reflashing. |
 | ESP32-S3 web installer | [https://vahac.github.io/ha-media-controller/](https://vahac.github.io/ha-media-controller/) | The paired firmware as one finished image for every board, installed from a browser over USB. No ESPHome, no YAML, no `secrets.yaml`. Wi-Fi is typed into the same page and never leaves the machine. |
 | T560 panel | [clients/t560/](clients/t560) | Native GTK3 application for a Samsung Galaxy Tab E SM-T560 (ARMv7) running postmarketOS and Openbox. No browser, no WebKit. Two interface skins, chosen from Home Assistant. |
 
-Choose any one client, or run all of them against one Home Assistant.
+Choose either panel, or run both against one Home Assistant.
 
-The two ESP32 firmwares are the same device configured two ways, and they share
-every pixel of their interface through
-[firmware/media-controller-ui.yaml](firmware/media-controller-ui.yaml). Nothing
-about the classic one changed when the paired one arrived, so a device already
-in the field needs no attention; the
-[comparison table](docs/ESP32_PAIRED_CONTROLLER.md#which-firmware-to-use) is
-there when you want to move.
-
-The web installer is not a third firmware. It publishes the paired firmware as
+The web installer is not a second firmware. It publishes the ESP32 firmware as
 a finished image with nothing personal compiled into it, so that installing a
 panel needs a browser and a cable rather than a toolchain. ESPHome still builds
 that image — in this repository's continuous integration, not on your machine.
+
+A third component used to be here: `firmware/media-controller.yaml`, the
+classic ESP32 firmware, configured by flashing nine entity IDs and a long-lived
+token into a YAML file. It reached Home Assistant over the ESPHome native API,
+which is the dependency contract version 9 removed, so it went with it. The
+board is the same one: install the factory image over USB and it becomes a
+paired panel. See
+[Moving a classic device forward](docs/ESP32_PAIRED_CONTROLLER.md#moving-a-classic-device-forward).
 
 ## Documentation
 
 | Document | Read it when |
 | --- | --- |
 | [docs/INTEGRATION.md](docs/INTEGRATION.md) | Installing or configuring the Home Assistant side. Start here — both clients depend on it. |
-| [docs/ESP32_CONTROLLER.md](docs/ESP32_CONTROLLER.md) | Flashing, configuring, or modifying the ESP32-S3 controller. |
-| [docs/ESP32_PAIRED_CONTROLLER.md](docs/ESP32_PAIRED_CONTROLLER.md) | The same board, paired from Home Assistant instead of configured by flashing. Start here for a new build. |
+| [docs/ESP32_PAIRED_CONTROLLER.md](docs/ESP32_PAIRED_CONTROLLER.md) | Installing, configuring, or modifying the ESP32-S3 panel. Start here for a new build. |
 | [clients/t560/README.md](clients/t560/README.md) | Building, deploying, or modifying the tablet panel. |
 | [docs/CONTRACT.md](docs/CONTRACT.md) | Changing anything a client reads. This is the change-control surface. |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Planned work: Home Assistant-owned panel layout, colour-temperature proxies, portability. |
@@ -69,22 +71,18 @@ that image — in this repository's continuous integration, not on your machine.
      That is the only time the cable is needed: a paired panel is updated from
      **Settings → Updates** afterwards, authenticated by the token it was
      given when it paired.
-   - ESP32-S3, paired, from an ESPHome package — the same firmware, for an
+   - ESP32-S3, from an ESPHome package — the same firmware, for an
      installation that already runs ESPHome:
      [docs/ESP32_PAIRED_CONTROLLER.md](docs/ESP32_PAIRED_CONTROLLER.md).
-   - ESP32-S3, classic — [docs/ESP32_CONTROLLER.md](docs/ESP32_CONTROLLER.md).
-     Copy the entity IDs Home Assistant assigned to the new source into the
-     YAML first.
    - T560 tablet — [clients/t560/docs/BUILD_AND_INSTALL.md](clients/t560/docs/BUILD_AND_INSTALL.md).
 
 ## Repository layout
 
 ```text
 custom_components/media_controller/   Home Assistant integration (HACS)
-firmware/media-controller-ui.yaml     Shared ESPHome interface: display, LVGL, theme
-firmware/media-controller.yaml        Classic transport: native API, flashed config
-firmware/media-controller-paired.yaml Paired transport: REST, config from Home Assistant
-firmware/media-controller-factory.yaml The paired transport as one shipped image, with nothing personal in it
+firmware/media-controller-ui.yaml     ESPHome interface: display, LVGL, theme
+firmware/media-controller-paired.yaml Transport: REST, config from Home Assistant
+firmware/media-controller-factory.yaml The same firmware as one shipped image, with nothing personal in it
 firmware/assets/                      Image assets, fetched at compile time
 firmware/requirements.txt             The pinned ESPHome that builds the published image
 custom_components/media_controller/icons/  Card artwork the integration serves to panels
@@ -118,12 +116,10 @@ firmware-vX.Y.Z       firmware/** and components/**
 panel-vX.Y.Z          clients/t560/**
 ```
 
-One `firmware-` tag covers both ESP32 firmwares, the interface package they
-share and the external components the paired one loads, because a change to the
-shared package ships to both at once and the components are pinned to `main`.
-Each firmware also carries its own `project.version`, which is what ESPHome
-shows on the device: `media_controller.esp32s3` for the classic one,
-`media_controller.esp32s3_paired` for the paired one, and
+One `firmware-` tag covers the ESP32 firmware, the interface package it
+includes and the external components it loads, because they ship together and
+the components are pinned to `main`. Each entrypoint also carries its own
+`project.version`: `media_controller.esp32s3_paired` for the package build and
 `media_controller.esp32s3_factory` for the same firmware as a shipped image.
 
 Pushing a `vX.Y.Z` tag is also what publishes the web installer: it compiles
@@ -145,12 +141,15 @@ of the integration and every affected client.
 python -m unittest discover -s tests -v                 # integration transformations
 python tools/make-icon-assets.py --check                # card artwork is in step with the catalog
 cd clients/t560 && make test                            # panel JSON parsing + helpers
-esphome config firmware/media-controller.yaml           # classic firmware
-esphome config firmware/media-controller-paired.yaml    # paired firmware
+esphome config <your device YAML>                       # the package build
+esphome config firmware/media-controller-factory.yaml   # the shipped image
 ```
 
-Both firmware files must validate: they share an interface package, so a change
-to it is a change to both.
+`firmware/media-controller-paired.yaml` is a package rather than a complete
+device configuration — it deliberately takes Wi-Fi from whatever imports it —
+so it is validated through a device wrapper. `.github/workflows/firmware.yml`
+builds one; `firmware/paired-check.local.yaml` is the same thing locally, and
+neither carries `api:`, because a shipped panel has none.
 
 ## License
 

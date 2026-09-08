@@ -82,6 +82,63 @@ def _screen_rotation(value: Any) -> int | None:
 # the shape. An empty value means Home Assistant has not chosen: the key is
 # then left out of the payload and the client keeps whatever it falls back to
 # on its own, `config.ini` on the tablet and a restoring select on the ESP32.
+# -------------------------------------------------------------------- theme
+#
+# The eight colours and four opacities a panel draws its player page with.
+# Until contract version 9 these were ESPHome entities on the device's own
+# ESPHome device; they are here because that is what made the ESPHome
+# integration removable. The defaults are the values that firmware shipped
+# with, so a panel upgraded to version 9 looks exactly as it did.
+THEME_COLOR_DEFAULTS: Mapping[str, str] = {
+    "color_arc": "#1a1a35",
+    "color_arc_indicator": "#00cfff",
+    "color_decoration": "#00cfff",
+    "color_title": "#ffffff",
+    "color_artist": "#5588cc",
+    "color_volume": "#334466",
+    "color_buttons": "#00cfff",
+    "color_flat_controls": "#d8dce6",
+}
+THEME_OPACITY_DEFAULTS: Mapping[str, int] = {
+    "opacity_album_art": 255,
+    "opacity_arc": 255,
+    "opacity_decoration": 153,
+    "opacity_buttons": 153,
+}
+THEME_KEYS: tuple[str, ...] = (
+    *THEME_COLOR_DEFAULTS,
+    *THEME_OPACITY_DEFAULTS,
+)
+OPACITY_MIN = 0
+OPACITY_MAX = 255
+_HEX_DIGITS = frozenset("0123456789abcdef")
+
+
+def _color(value: Any, fallback: str) -> str:
+    """Read one colour, using the fallback for anything unusable.
+
+    A colour is `#` and six hexadecimal digits, which is what the entity
+    offers and what the contract says travels. Anything else — a name, three
+    digits, an alpha channel — is a value no client could apply, so it is
+    rejected here rather than sent for a device to reject.
+    """
+    if not isinstance(value, str):
+        return fallback
+    text = value.strip().lower()
+    if not text.startswith("#"):
+        text = f"#{text}"
+    if len(text) != 7 or not set(text[1:]) <= _HEX_DIGITS:
+        return fallback
+    return text
+
+
+def _opacity(value: Any, fallback: int) -> int:
+    """Read one opacity, using the fallback for anything unusable."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return fallback
+    return max(OPACITY_MIN, min(int(value), OPACITY_MAX))
+
+
 PLAYER_SKIN_UNSET = ""
 PLAYER_SKIN_MAX_LENGTH = 32
 
@@ -116,6 +173,17 @@ WIFI_MIN_DBM = -120
 WIFI_MAX_DBM = 0
 TEMPERATURE_MIN_C = -50.0
 TEMPERATURE_MAX_C = 150.0
+
+# Bounds for the optional diagnostics block. They exist to reject nonsense
+# rather than to describe the hardware: an ESP32-S3 with octal PSRAM cannot
+# have 32 MiB of heap free, and a report that says so is a broken client, not
+# a discovery. A value outside its range is read as "not reported".
+HEAP_MAX_BYTES = 33554432
+PSRAM_MAX_BYTES = 67108864
+FRAGMENTATION_MIN = 0.0
+FRAGMENTATION_MAX = 100.0
+LOOP_TIME_MAX_MS = 60000.0
+RESET_REASON_MAX_LENGTH = 64
 
 # An uptime is republished only when the start time it implies moves by more
 # than this. Every report would otherwise shift it by a second or two, purely
@@ -205,6 +273,18 @@ def _contract_version(value: Any) -> int:
         return 0
     number = int(value)
     return number if number > 0 else 0
+
+
+def _reset_reason(value: Any) -> str:
+    """Read why a client last restarted, or "" when it did not say.
+
+    It becomes the state of a text sensor, so it is bounded: a Home Assistant
+    state is limited to 255 characters, and nothing a client has to say about
+    a reset needs more than a short phrase.
+    """
+    if not isinstance(value, str):
+        return ""
+    return value.strip()[:RESET_REASON_MAX_LENGTH]
 
 
 def _bounded(value: Any, minimum: float, maximum: float) -> float | None:
@@ -301,6 +381,69 @@ class PanelSettings:
         return payload
 
 
+@dataclass(frozen=True, slots=True)
+class PanelTheme:
+    """How one panel colours its player page.
+
+    Home Assistant owns every value, the way it owns the settings above, and a
+    panel keeps what it applied in its own flash so that it comes back looking
+    the same after a reboot with Home Assistant down.
+
+    Field names are the payload keys and the entity keys, deliberately: an
+    entity reads its own value with `getattr(theme, self._theme_key)`, and a
+    thirteenth colour is then one entry in the defaults above and one line
+    here rather than a mapping to keep in step.
+    """
+
+    color_arc: str = THEME_COLOR_DEFAULTS["color_arc"]
+    color_arc_indicator: str = THEME_COLOR_DEFAULTS["color_arc_indicator"]
+    color_decoration: str = THEME_COLOR_DEFAULTS["color_decoration"]
+    color_title: str = THEME_COLOR_DEFAULTS["color_title"]
+    color_artist: str = THEME_COLOR_DEFAULTS["color_artist"]
+    color_volume: str = THEME_COLOR_DEFAULTS["color_volume"]
+    color_buttons: str = THEME_COLOR_DEFAULTS["color_buttons"]
+    color_flat_controls: str = THEME_COLOR_DEFAULTS["color_flat_controls"]
+    opacity_album_art: int = THEME_OPACITY_DEFAULTS["opacity_album_art"]
+    opacity_arc: int = THEME_OPACITY_DEFAULTS["opacity_arc"]
+    opacity_decoration: int = THEME_OPACITY_DEFAULTS["opacity_decoration"]
+    opacity_buttons: int = THEME_OPACITY_DEFAULTS["opacity_buttons"]
+
+    @classmethod
+    def from_stored(cls, stored: Mapping[str, Any] | None) -> PanelTheme:
+        """Read a stored theme, repairing every value that is unusable."""
+        source = stored or {}
+        values: dict[str, Any] = {
+            key: _color(source.get(key), fallback)
+            for key, fallback in THEME_COLOR_DEFAULTS.items()
+        }
+        values.update(
+            {
+                key: _opacity(source.get(key), fallback)
+                for key, fallback in THEME_OPACITY_DEFAULTS.items()
+            }
+        )
+        return cls(**values)
+
+    def with_value(self, key: str, value: Any) -> PanelTheme:
+        """Return this theme with one key replaced and re-validated."""
+        stored = dict(self.as_stored())
+        stored[key] = value
+        return PanelTheme.from_stored(stored)
+
+    def as_stored(self) -> dict[str, Any]:
+        """Return the config-entry representation of this theme."""
+        return {key: getattr(self, key) for key in THEME_KEYS}
+
+    def as_payload(self) -> dict[str, Any]:
+        """Return what a panel reads from its config sensor.
+
+        Every key is always present. Unlike `player_skin`, there is no such
+        thing as "nobody has chosen": a colour always has a value, and the
+        defaults above are the ones the firmware itself shipped with.
+        """
+        return self.as_stored()
+
+
 def _screen_off(value: Any) -> int:
     """Read the screen-off timeout, where 0 means never."""
     try:
@@ -391,6 +534,17 @@ class PanelStatus:
     uptime_seconds: float | None = None
     wifi_dbm: float | None = None
     temperature_c: float | None = None
+    # The optional diagnostics block, added in contract version 9. None is
+    # "not reported", which is what keeps the sensor unavailable rather than
+    # claiming zero bytes free. Only a client whose profile says it reports
+    # them gets the entities at all.
+    heap_free: float | None = None
+    heap_max_block: float | None = None
+    heap_min_free: float | None = None
+    heap_fragmentation: float | None = None
+    psram_free: float | None = None
+    loop_time: float | None = None
+    reset_reason: str = ""
 
     @classmethod
     def from_report(cls, report: Mapping[str, Any]) -> PanelStatus:
@@ -408,6 +562,9 @@ class PanelStatus:
         percent = _percent(battery.get("percent"))
         if not _flag(battery.get("available")):
             percent = -1
+
+        diagnostics = report.get("diagnostics")
+        diagnostics = diagnostics if isinstance(diagnostics, Mapping) else {}
 
         page = str(report.get("page") or "")
         uptime = report.get("uptime_seconds")
@@ -431,6 +588,22 @@ class PanelStatus:
                               WIFI_MAX_DBM),
             temperature_c=_bounded(report.get("temperature_c"),
                                    TEMPERATURE_MIN_C, TEMPERATURE_MAX_C),
+            heap_free=_bounded(diagnostics.get("heap_free"), 0,
+                               HEAP_MAX_BYTES),
+            heap_max_block=_bounded(diagnostics.get("heap_max_block"), 0,
+                                    HEAP_MAX_BYTES),
+            heap_min_free=_bounded(diagnostics.get("heap_min_free"), 0,
+                                   HEAP_MAX_BYTES),
+            heap_fragmentation=_bounded(
+                diagnostics.get("heap_fragmentation"),
+                FRAGMENTATION_MIN,
+                FRAGMENTATION_MAX,
+            ),
+            psram_free=_bounded(diagnostics.get("psram_free"), 0,
+                                PSRAM_MAX_BYTES),
+            loop_time=_bounded(diagnostics.get("loop_time"), 0,
+                               LOOP_TIME_MAX_MS),
+            reset_reason=_reset_reason(diagnostics.get("reset_reason")),
         )
 
 
@@ -443,9 +616,14 @@ class PanelState:
     tested on their own.
     """
 
-    def __init__(self, settings: PanelSettings | None = None) -> None:
+    def __init__(
+        self,
+        settings: PanelSettings | None = None,
+        theme: PanelTheme | None = None,
+    ) -> None:
         """Initialize with the settings stored on the config entry."""
         self.settings = settings or PanelSettings()
+        self.theme = theme or PanelTheme()
         self.commands = PanelCommands()
         self.status = PanelStatus()
         # Monotonic, for deciding whether the panel is still present.
@@ -504,6 +682,16 @@ class PanelState:
             self.settings = updated
             self._notify_configuration()
         return self.settings
+
+    # ---------------------------------------------------------------- theme
+
+    def set_theme_value(self, key: str, value: Any) -> PanelTheme:
+        """Change one theme value and return the new theme, for storing."""
+        updated = self.theme.with_value(key, value)
+        if updated != self.theme:
+            self.theme = updated
+            self._notify_configuration()
+        return self.theme
 
     # ------------------------------------------------------------- commands
 
@@ -668,8 +856,9 @@ class PanelState:
     # -------------------------------------------------------------- payload
 
     def as_payload(self) -> dict[str, Any]:
-        """Return the settings and commands block of the config sensor."""
+        """Return the settings, theme and commands of the config sensor."""
         return {
             "settings": self.settings.as_payload(),
+            "theme": self.theme.as_payload(),
             "commands": self.commands.as_payload(),
         }

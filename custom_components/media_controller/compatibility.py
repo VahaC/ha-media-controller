@@ -17,7 +17,7 @@ The other direction — a new panel against an old integration — cannot be
 reported here at all, because an old integration is by definition a build
 without this file in it. Each panel notices that one itself and says so where
 its own user looks: the tablet on its status line, in `update_config` in
-`clients/t560/src/application.c`, and the paired firmware in its ESPHome log,
+`clients/t560/src/application.c`, and the ESP32 panel in its serial log,
 in `ui_load_room_config` in `firmware/media-controller-paired.yaml`.
 
 The rule being applied lives in `contract.py`, which has no Home Assistant

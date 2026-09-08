@@ -36,10 +36,13 @@ jobs:
         # afterwards.
         run: pip install -r firmware/requirements.txt
       - name: Validate the maintained packages
-        # The classic package is standalone. The paired package intentionally
-        # receives Wi-Fi from the importing device YAML, so validate it through
-        # a complete local device wrapper instead of pretending the package is
-        # a complete device configuration.
+        # The paired package intentionally receives Wi-Fi from the importing
+        # device YAML, so validate it through a complete local device wrapper
+        # instead of pretending the package is a complete device
+        # configuration. The wrapper carries no `api:` and no
+        # `ota: platform: esphome`, because a shipped panel has neither and a
+        # wrapper that added them back would be validating something nobody
+        # runs.
         #
         # The factory entrypoint needs no wrapper: it is a complete device
         # configuration on purpose, because it is the thing that gets built
@@ -54,7 +57,6 @@ jobs:
         # can fix. The paths are relative to the directory of the
         # configuration being validated, which is firmware/.
         run: |
-          esphome config firmware/media-controller.yaml
           trap 'rm -f firmware/.ci-paired.yaml' EXIT
           printf '%s\n' \
             'substitutions:' \
@@ -67,31 +69,50 @@ jobs:
             'wifi:' \
             '  ssid: ci-validation-network' \
             '  password: ci-validation-password' \
-            '' \
-            'api:' \
-            '  encryption:' \
-            '    key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' \
-            '' \
-            'ota:' \
-            '  - platform: esphome' \
-            '    password: ci-validation-password' \
             > firmware/.ci-paired.yaml
           esphome config firmware/.ci-paired.yaml
           esphome config firmware/media-controller-factory.yaml
 
+      - name: Check no shipped firmware carries the ESPHome native API
+        # Contract version 9 removed it, and removing it is the whole point of
+        # that version rather than a tidy-up: `api:` is what defines USE_API,
+        # USE_API is what publishes the `_esphomelib._tcp` mDNS record, and
+        # that record is what makes a panel appear in the ESPHome integration.
+        # One key put back by accident undoes all of it silently, because
+        # everything still compiles and still works — the panel simply turns
+        # up in an integration it is supposed to have left.
+        #
+        # An owner of a package build may still opt in, in their own device
+        # YAML. That is theirs and is not checked here; these two files are
+        # what every panel installed from the web installer runs.
+        run: |
+          status=0
+          for config in firmware/media-controller-paired.yaml \
+                        firmware/media-controller-factory.yaml; do
+            if grep -nE '^api:' "$config"; then
+              echo "::error file=$config::A shipped firmware must not declare api:; see \"THERE IS NO ESPHome NATIVE API\" in firmware/media-controller-paired.yaml."
+              status=1
+            fi
+            if grep -nE '^\s+-?\s*platform:\s*esphome\s*$' "$config"; then
+              echo "::error file=$config::ota: platform: esphome has a password, and a password compiled into a public binary is the same password on every panel."
+              status=1
+            fi
+          done
+          exit $status
+
       - name: Check the interface package names no transport
-        # The two firmwares can only share an interface for as long as the
-        # interface knows nothing about how Home Assistant is reached. A widget
-        # that calls homeassistant.service directly, or a Home Assistant entity
-        # ID that creeps back into a substitution, compiles happily under the
-        # classic firmware and breaks the paired one. Catch it here rather than
-        # on the bench. See the header of media-controller-ui.yaml.
+        # The interface package is everything about widgets and nothing about
+        # reaching Home Assistant, which is what let it be built into an image
+        # that has no Home Assistant address at all. A widget that calls
+        # homeassistant.service directly, or an entity ID that creeps back
+        # into a substitution, would end that quietly. Catch it here rather
+        # than on the bench. See the header of media-controller-ui.yaml.
         run: |
           ui=firmware/media-controller-ui.yaml
           status=0
 
           if grep -n 'homeassistant\.' "$ui"; then
-            echo "::error file=$ui::The interface package must not call Home Assistant directly; add a cmd_ script to each transport half instead."
+            echo "::error file=$ui::The interface package must not call Home Assistant directly; add a cmd_ script to the transport half instead."
             status=1
           fi
 

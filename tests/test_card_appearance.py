@@ -313,19 +313,14 @@ class PayloadTests(unittest.TestCase):
         ).as_attributes()
         self.assertNotEqual(without["revision"], with_icon["revision"])
 
-    def test_the_classic_controller_is_sent_none_of_it(self) -> None:
-        """It reads `slots`, which carry no icon and no registry name."""
+    def test_a_source_is_sent_none_of_it(self) -> None:
+        """It has no registry at all, so it has nothing to give an icon to."""
         payload = transformations.ClientConfigPayload(
-            profile="esp32_s3",
-            slot_count=4,
-            slots=(
-                transformations.SlotPayload(
-                    slot=1, entity="light.controller_slot_1", label="DESK LAMP"
-                ),
-            ),
+            profile="source",
+            player_entity="media_player.kitchen",
         ).as_attributes()
         self.assertNotIn("entities", payload)
-        self.assertNotIn("icon", payload["slots"][0])
+        self.assertNotIn("entity_limit", payload)
 
 
 if __name__ == "__main__":

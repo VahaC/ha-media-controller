@@ -1,8 +1,8 @@
 """Tests for the stored halves of the config-entry migrations.
 
-The registry half of the migration needs a Home Assistant runtime and is not
-covered here; this protects the stored shape, which is what decides whether a
-flashed ESP32 keeps its entities.
+The entity-registry half needs a Home Assistant runtime and is not covered
+here; this protects the stored shape, which is what an entry carries on disk
+from one release to the next.
 """
 
 from __future__ import annotations
@@ -44,6 +44,10 @@ LEGACY_SLOTS = (
 )
 SLOTS_KEY = "slots"
 PLAYER_KEY = "player_entity"
+# What the version 4 migration deletes: the version 2 block and the version 1
+# keys that preceded it. Mirrors the set const.CONF_SLOTS and const.LEGACY_SLOTS
+# build in __init__._async_migrate_v3_slots.
+DEAD_KEYS = (SLOTS_KEY, *(key for _, key, _ in LEGACY_SLOTS))
 
 # Mirrors const.LEGACY_TITLE_PREFIX, and duplicated for the same reason.
 # The dash is an en dash, which is what version 2 actually wrote.
@@ -51,104 +55,85 @@ LEGACY_TITLE_PREFIX = "Media Controller – "
 
 
 def migrate(section):
-    """Run the migration with the ESP32 controls seeding."""
-    return transformations.migrate_v1_section(
-        section,
-        SLOTS_KEY,
-        PLAYER_KEY,
-        LEGACY_SLOTS,
-        lambda index: ("toggle", "brightness") if index <= 2 else ("toggle",),
-    )
+    """Run the version 4 migration over one stored mapping."""
+    return transformations.migrate_v3_section(section, DEAD_KEYS)
 
 
-class MigrationTests(unittest.TestCase):
-    """Verify the version 1 configuration becomes numbered slots."""
+class SlotRemovalTests(unittest.TestCase):
+    """Verify version 4 leaves nothing of the room-control slots behind.
 
-    def test_full_v1_entry(self) -> None:
-        migrated = migrate(
-            {
-                PLAYER_KEY: "media_player.kitchen",
-                "light_1_entity": "light.ceiling",
-                "light_2_entity": "light.wall",
-                "fan_entity": "switch.fan",
-                "ac_entity": "switch.ac",
-            }
-        )
-        self.assertEqual(migrated[PLAYER_KEY], "media_player.kitchen")
-        self.assertEqual(
-            [(slot["slot"], slot["entity"], slot["domain"]) for slot in migrated[SLOTS_KEY]],
-            [
-                (1, "light.ceiling", "light"),
-                (2, "light.wall", "light"),
-                (3, "switch.fan", "switch"),
-                (4, "switch.ac", "switch"),
+    Contract version 9 deletes them along with the classic firmware that was
+    the only thing that ever read one. What has to survive the deletion is the
+    rest of the entry: a source is bound to a Music Assistant player, and that
+    binding is in the same mapping as the slots being removed.
+    """
+
+    def test_a_version_2_entry_loses_its_slots_block(self) -> None:
+        section = {
+            PLAYER_KEY: "media_player.kitchen",
+            SLOTS_KEY: [
+                {
+                    "slot": 1,
+                    "entity": "light.desk_lamp",
+                    "domain": "light",
+                    "label": "DESK LAMP",
+                    "controls": ["toggle", "brightness"],
+                }
             ],
-        )
-
-    def test_legacy_keys_are_removed(self) -> None:
-        migrated = migrate(
-            {PLAYER_KEY: "media_player.kitchen", "fan_entity": "switch.fan"}
-        )
-        for _, legacy_key, _ in LEGACY_SLOTS:
-            self.assertNotIn(legacy_key, migrated)
-
-    def test_slot_numbers_do_not_shift_when_a_slot_was_unset(self) -> None:
-        # The ESP32 button that reads slot 4 must keep reading slot 4.
-        migrated = migrate(
-            {
-                PLAYER_KEY: "media_player.kitchen",
-                "light_1_entity": "light.ceiling",
-                "ac_entity": "switch.ac",
-            }
-        )
+        }
         self.assertEqual(
-            [slot["slot"] for slot in migrated[SLOTS_KEY]], [1, 4]
+            migrate(section), {PLAYER_KEY: "media_player.kitchen"}
         )
 
-    def test_seeded_controls_respect_the_slot(self) -> None:
-        migrated = migrate(
-            {
-                PLAYER_KEY: "media_player.kitchen",
-                "light_1_entity": "light.ceiling",
-                "fan_entity": "switch.fan",
-            }
+    def test_a_version_1_entry_loses_all_four_named_keys(self) -> None:
+        """An installation may have skipped straight from version 1."""
+        section = {
+            PLAYER_KEY: "media_player.kitchen",
+            "light_1_entity": "light.desk_lamp",
+            "light_2_entity": "light.hall",
+            "fan_entity": "switch.fan",
+            "ac_entity": "switch.ac",
+        }
+        self.assertEqual(
+            migrate(section), {PLAYER_KEY: "media_player.kitchen"}
         )
-        slots = {slot["slot"]: slot for slot in migrated[SLOTS_KEY]}
-        self.assertEqual(slots[1]["controls"], ["toggle", "brightness"])
-        self.assertEqual(slots[3]["controls"], ["toggle"])
 
-    def test_entry_without_room_controls(self) -> None:
-        migrated = migrate({PLAYER_KEY: "media_player.kitchen"})
-        self.assertEqual(migrated[SLOTS_KEY], [])
+    def test_the_player_binding_survives(self) -> None:
+        section = {PLAYER_KEY: "media_player.kitchen", SLOTS_KEY: []}
+        self.assertEqual(migrate(section)[PLAYER_KEY], "media_player.kitchen")
+
+    def test_unrelated_keys_are_untouched(self) -> None:
+        section = {"entry_type": "controller", PLAYER_KEY: "media_player.a"}
+        self.assertEqual(migrate(section), section)
+
+    def test_an_entry_that_never_had_slots_is_unchanged(self) -> None:
+        section = {PLAYER_KEY: "media_player.kitchen"}
+        self.assertEqual(migrate(section), section)
 
     def test_empty_options_stay_empty(self) -> None:
         self.assertEqual(migrate({}), {})
         self.assertEqual(migrate(None), {})
 
-    def test_options_without_a_player_get_no_slots_key(self) -> None:
-        # A v1 options mapping that only remapped a room control.
-        migrated = migrate({"fan_entity": "switch.fan"})
-        self.assertEqual([slot["slot"] for slot in migrated[SLOTS_KEY]], [3])
+    def test_running_it_twice_changes_nothing(self) -> None:
+        section = {PLAYER_KEY: "media_player.kitchen", SLOTS_KEY: []}
+        once = migrate(section)
+        self.assertEqual(migrate(once), once)
 
-    def test_migrated_slots_round_trip(self) -> None:
-        migrated = migrate(
-            {PLAYER_KEY: "media_player.kitchen", "light_1_entity": "light.ceiling"}
-        )
-        slots = transformations.stored_slots(migrated, SLOTS_KEY)
-        self.assertEqual(len(slots), 1)
-        self.assertEqual(slots[0].target_entity_id, "light.ceiling")
-        self.assertEqual(slots[0].domain, "light")
-        self.assertEqual(slots[0].label, "")
+    def test_the_source_returned_is_a_copy(self) -> None:
+        """The migration must not mutate the mapping it was handed."""
+        section = {PLAYER_KEY: "media_player.kitchen", SLOTS_KEY: []}
+        migrate(section)
+        self.assertIn(SLOTS_KEY, section)
 
 
-class PanelSlotsAreNotMigratedTests(unittest.TestCase):
-    """Contract version 6 replaces a panel's slots without migrating them.
+class NothingReadsSlotsAnyMoreTests(unittest.TestCase):
+    """Verify the slot vocabulary is gone rather than merely unused.
 
-    A slot is a numbered position that a proxy entity stood in, and other
-    things in Home Assistant may name that proxy. Turning it into a registry
-    element would delete the proxy underneath them silently, so the room
-    controls are chosen again instead. Nothing here converts anything: this
-    protects the fact that nothing does.
+    A panel entry written under contract version 5 may still carry a `slots`
+    block, and a source entry that has not been migrated yet certainly does.
+    Neither is read: version 6 refused to turn a panel's slots into registry
+    elements — see docs/ROOM_SLOTS.md — and version 9 removed the only client
+    that read a source's.
     """
 
     PANEL_ENTRY = {
@@ -179,19 +164,13 @@ class PanelSlotsAreNotMigratedTests(unittest.TestCase):
             registry.stored_retired_rids(self.PANEL_ENTRY, "retired_rids"), []
         )
 
-    def test_its_stored_slots_are_left_where_they_are(self) -> None:
-        """Unread, but not deleted: nothing rewrites a panel entry on load."""
-        slots = transformations.stored_slots(self.PANEL_ENTRY, SLOTS_KEY)
-        self.assertEqual(len(slots), 1)
-        self.assertEqual(slots[0].target_entity_id, "light.desk_lamp")
-
-    def test_the_v1_migration_is_the_controller_s_alone(self) -> None:
-        # It is keyed on the four classic-firmware substitution names, none
-        # of which a panel entry has ever carried, so it passes a panel's
-        # stored slots through without touching them.
-        self.assertEqual(
-            migrate(self.PANEL_ENTRY)[SLOTS_KEY], self.PANEL_ENTRY[SLOTS_KEY]
-        )
+    def test_the_stored_slot_reader_is_gone(self) -> None:
+        for name in ("stored_slots", "SlotConfig", "SlotPayload"):
+            self.assertFalse(
+                hasattr(transformations, name),
+                f"transformations.{name} came back; contract version 9 has "
+                "no room-control slots.",
+            )
 
 
 class TitleMigrationTests(unittest.TestCase):

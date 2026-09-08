@@ -178,11 +178,9 @@ class RoomStatesBlockTests(unittest.TestCase):
         ).as_attributes()
         self.assertEqual(attributes["room_states"], {"a3f1c92d": ["on"]})
 
-    def test_the_classic_esp32_is_sent_no_room_states(self) -> None:
+    def test_a_source_is_sent_no_room_states(self) -> None:
         attributes = transformations.ClientConfigPayload(
-            profile="esp32_s3",
-            slot_count=4,
-            slots=(),
+            profile="source",
             player_entity="media_player.kitchen",
             queue_entity="sensor.controller_queue",
             playlists_entity="sensor.controller_playlists",

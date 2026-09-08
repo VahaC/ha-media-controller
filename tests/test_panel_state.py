@@ -554,5 +554,120 @@ class PayloadTests(unittest.TestCase):
         self.assertEqual(payload["commands"]["display"]["state"], "off")
 
 
+class DiagnosticsReportTests(unittest.TestCase):
+    """Verify the optional diagnostics block of contract version 9.
+
+    These seven readings were ESPHome diagnostic entities until that version.
+    They now arrive in the status report, which comes from the device over
+    HTTP, so every one of them is validated here rather than trusted: a panel
+    running a broken build must not be able to put a nonsense value into a
+    Home Assistant sensor.
+    """
+
+    GOOD = {
+        "heap_free": 142336,
+        "heap_max_block": 65524,
+        "heap_min_free": 118220,
+        "heap_fragmentation": 54,
+        "psram_free": 6291456,
+        "loop_time": 38,
+        "reset_reason": "Software reset CPU",
+    }
+
+    def _status(self, diagnostics):
+        return panel_state.PanelStatus.from_report(
+            {"panel_id": "abc", "diagnostics": diagnostics}
+        )
+
+    def test_a_good_block_is_read_whole(self) -> None:
+        status = self._status(self.GOOD)
+        self.assertEqual(status.heap_free, 142336)
+        self.assertEqual(status.heap_max_block, 65524)
+        self.assertEqual(status.heap_min_free, 118220)
+        self.assertEqual(status.heap_fragmentation, 54)
+        self.assertEqual(status.psram_free, 6291456)
+        self.assertEqual(status.loop_time, 38)
+        self.assertEqual(status.reset_reason, "Software reset CPU")
+
+    def test_a_report_with_no_block_reports_nothing(self) -> None:
+        """A client that cannot measure them omits the block entirely."""
+        status = panel_state.PanelStatus.from_report({"panel_id": "abc"})
+        self.assertIsNone(status.heap_free)
+        self.assertIsNone(status.loop_time)
+        self.assertEqual(status.reset_reason, "")
+
+    def test_a_block_that_is_not_an_object_is_ignored(self) -> None:
+        for value in ("", [], 5, None, True):
+            with self.subTest(value=value):
+                self.assertIsNone(self._status(value).heap_free)
+
+    def test_a_partial_block_is_accepted(self) -> None:
+        """A client sends what it can measure and omits the rest."""
+        status = self._status({"heap_free": 1024})
+        self.assertEqual(status.heap_free, 1024)
+        self.assertIsNone(status.psram_free)
+
+    def test_negative_values_are_discarded(self) -> None:
+        status = self._status(dict(self.GOOD, heap_free=-1, loop_time=-1))
+        self.assertIsNone(status.heap_free)
+        self.assertIsNone(status.loop_time)
+
+    def test_values_past_the_hardware_are_discarded(self) -> None:
+        # An ESP32-S3 cannot have 64 MiB of heap free. A report that says so
+        # is a broken client rather than a discovery.
+        status = self._status(
+            dict(self.GOOD, heap_free=99999999, psram_free=99999999999)
+        )
+        self.assertIsNone(status.heap_free)
+        self.assertIsNone(status.psram_free)
+
+    def test_fragmentation_is_a_percentage(self) -> None:
+        self.assertEqual(self._status({"heap_fragmentation": 0}).
+                         heap_fragmentation, 0)
+        self.assertEqual(self._status({"heap_fragmentation": 100}).
+                         heap_fragmentation, 100)
+        self.assertIsNone(
+            self._status({"heap_fragmentation": 101}).heap_fragmentation
+        )
+
+    def test_a_loop_time_longer_than_a_minute_is_discarded(self) -> None:
+        self.assertIsNone(self._status({"loop_time": 60001}).loop_time)
+
+    def test_values_of_the_wrong_type_are_discarded(self) -> None:
+        for value in ("142336", None, [1], {}, True):
+            with self.subTest(value=value):
+                self.assertIsNone(self._status({"heap_free": value}).heap_free)
+
+    def test_a_reset_reason_is_trimmed_and_bounded(self) -> None:
+        # It becomes the state of a sensor, and a Home Assistant state is
+        # limited to 255 characters.
+        status = self._status({"reset_reason": "  " + "x" * 200 + "  "})
+        self.assertEqual(len(status.reset_reason), 64)
+
+    def test_a_reset_reason_that_is_not_text_is_dropped(self) -> None:
+        for value in (5, None, ["reset"], True):
+            with self.subTest(value=value):
+                self.assertEqual(self._status({"reset_reason": value}).
+                                 reset_reason, "")
+
+    def test_one_bad_key_does_not_take_the_others_with_it(self) -> None:
+        status = self._status(dict(self.GOOD, heap_free="lots"))
+        self.assertIsNone(status.heap_free)
+        self.assertEqual(status.psram_free, 6291456)
+
+    def test_the_rest_of_the_report_is_unaffected(self) -> None:
+        """The block is additive: version 8 sends none and is still valid."""
+        report = {
+            "panel_id": "abc",
+            "version": "0.6.2",
+            "contract_version": 8,
+            "battery": {"available": True, "percent": 82},
+        }
+        status = panel_state.PanelStatus.from_report(report)
+        self.assertEqual(status.battery_percent, 82)
+        self.assertEqual(status.contract_version, 8)
+        self.assertIsNone(status.heap_free)
+
+
 if __name__ == "__main__":
     unittest.main()

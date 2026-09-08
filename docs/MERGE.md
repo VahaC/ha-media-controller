@@ -26,13 +26,34 @@ them, and do not "tidy" them into `clients/`:**
 | Path | Why it cannot move |
 | --- | --- |
 | `custom_components/media_controller/` | HACS resolves the integration by this path. |
-| `firmware/media-controller.yaml` | Named in the `packages:` block of every flashed device. |
-| `firmware/media-controller-paired.yaml` | The same, for every device on the paired firmware. |
-| `firmware/media-controller-ui.yaml` | Reached by a **relative `!include`** from both files above. A device fetches only the file it names; the include is resolved inside the clone ESPHome makes of this repository, so renaming or moving this file breaks devices that never mention it. |
+| `firmware/media-controller-paired.yaml` | Named in the `packages:` block of every device built from a package. |
+| `firmware/media-controller-ui.yaml` | Reached by a **relative `!include`** from the file above. A device fetches only the file it names; the include is resolved inside the clone ESPHome makes of this repository, so renaming or moving this file breaks devices that never mention it. |
 | `firmware/assets/` | Fetched at compile time through `asset_base_url`, a raw GitHub URL. |
 | `components/media_controller_grid/` | Fetched at compile time by every paired device, as an ESPHome `external_components` Git source pinned to this repository. ESPHome looks for `components/` or `esphome/components/` at the repository root, which is why it is not under `firmware/`. |
 | `components/media_controller_provision/` | The same source, in the same `external_components:` block. A paired device names both components in one list, so this one cannot move either. |
 | `hacs.json` | Must stay at the repository root. |
+
+### One frozen path was deleted, on purpose
+
+`firmware/media-controller.yaml` was in the table above until contract version
+9. It was the classic firmware: built on `platform: homeassistant` sensors and
+`homeassistant.service` calls, which is the ESPHome integration by
+construction, and that integration is what version 9 exists to remove. It could
+not be carried forward in any form, so it was deleted rather than frozen.
+
+Deleting a frozen path is a real cost and it is worth naming: a `packages:`
+block in somebody's device YAML that points at it stops resolving the next time
+their ESPHome refreshes the package. Their device keeps running — nothing
+reaches out and stops it — but it can no longer be rebuilt. The way forward is
+the web installer: it is the same board, and the factory image turns it into a
+paired panel. See **Moving a classic device forward** in
+[ESP32_PAIRED_CONTROLLER.md](ESP32_PAIRED_CONTROLLER.md).
+
+Nothing else moved. `firmware/media-controller-paired.yaml`,
+`firmware/media-controller-ui.yaml`, `firmware/assets/`, both components under
+`components/`, `custom_components/media_controller/` and `hacs.json` are where
+they were, and version 9 changed the contents of some of them and the path of
+none.
 
 The tablet panel had no such constraint — it is installed over SSH from a local
 checkout — so it is the component that moved, into `clients/t560/`.
@@ -100,8 +121,9 @@ directories were deliberately left out of the copy and must stay out.
 3. Check that HACS still resolves the integration after the first push. The
    extra top-level directories do not affect it — HACS downloads only
    `custom_components/media_controller` — but confirm once.
-4. Run `esphome config firmware/media-controller.yaml` once against the pushed
-   `main` to prove `packages:` and `asset_base_url` still resolve.
+4. Run `esphome config` once, against a device YAML that imports
+   `firmware/media-controller-paired.yaml` from the pushed `main`, to prove
+   `packages:` and `asset_base_url` still resolve.
 5. Update the vahac.com write-up link if it names the old repository.
 6. Cut the first tags of the new scheme: `integration-v0.7.2`,
    `firmware-v0.7.1`, `panel-v0.1.0`. The integration is at `0.7.2` because the

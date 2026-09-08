@@ -348,17 +348,15 @@ class ClimateTests(unittest.TestCase):
                     ("toggle", "target_temperature"),
                 )
 
-    def test_the_classic_esp32_slots_never_carry_a_setpoint(self) -> None:
-        # Its four buttons are lights and switches, resolved while compiling.
-        for index in (1, 2, 3, 4):
-            with self.subTest(slot=index):
-                self.assertEqual(
-                    profiles.limit_controls(
-                        ("toggle", "target_temperature"),
-                        profiles.ESP32_S3.spec(index),
-                    ),
-                    ("toggle",),
-                )
+    def test_a_source_draws_no_thermostat_because_it_draws_nothing(
+        self,
+    ) -> None:
+        self.assertEqual(
+            profiles.limit_controls(
+                ("toggle", "target_temperature"), profiles.SOURCE
+            ),
+            (),
+        )
 
     def test_the_signature_ignores_a_room_that_warms_up(self) -> None:
         # A thermostat's own numbers move all day. Folding them in would
@@ -394,34 +392,21 @@ class ClimateTests(unittest.TestCase):
 
 
 class ProfileTests(unittest.TestCase):
-    """Verify the per-slot constraints of each client."""
+    """Verify what each client is allowed to draw."""
 
-    def test_esp32_slot_domains_are_fixed(self) -> None:
-        self.assertEqual(profiles.ESP32_S3.slot_count, 4)
-        self.assertEqual(profiles.ESP32_S3.spec(1).domains, ("light",))
-        self.assertEqual(profiles.ESP32_S3.spec(3).domains, ("switch",))
-
-    def test_esp32_switch_slot_cannot_dim(self) -> None:
-        # Buttons 3 and 4 have no long-press brightness action in the firmware.
-        controls = profiles.limit_controls(
-            ("toggle", "brightness", "color_temp"), profiles.ESP32_S3.spec(3)
-        )
-        self.assertEqual(controls, ("toggle",))
-
-    def test_esp32_light_slot_drops_colour_temperature(self) -> None:
-        controls = profiles.limit_controls(
-            ("toggle", "brightness", "color_temp"), profiles.ESP32_S3.spec(1)
-        )
-        self.assertEqual(controls, ("toggle", "brightness"))
-
-    def test_a_panel_has_no_slots_at_all(self) -> None:
-        # Contract version 6: a panel reads an unbounded registry instead,
-        # and its proxies are gone with its slots.
-        for profile in profiles.PANEL_PROFILES:
+    def test_no_profile_has_slots_of_any_kind(self) -> None:
+        # Contract version 9 removed them along with the classic firmware.
+        # A profile that grew a `slots` field again would be that firmware
+        # coming back, so this checks the attribute is absent rather than
+        # empty.
+        for name in ("SlotSpec", "ESP32_S3", "CONTROLLER_PROFILE"):
+            with self.subTest(name=name):
+                self.assertFalse(hasattr(profiles, name))
+        for profile in profiles.PROFILES.values():
             with self.subTest(profile=profile.slug):
-                self.assertEqual(profile.slots, ())
-                self.assertEqual(profile.slot_count, 0)
-                self.assertIsNone(profile.spec(1))
+                self.assertFalse(hasattr(profile, "slots"))
+                self.assertFalse(hasattr(profile, "slot_count"))
+                self.assertFalse(hasattr(profile, "spec"))
 
     def test_paired_esp32_dims_every_registry_element_but_drops_colour_temp(
         self,
@@ -435,10 +420,10 @@ class ProfileTests(unittest.TestCase):
         )
         self.assertEqual(controls, ("toggle", "brightness"))
 
-    def test_paired_esp32_is_a_panel_and_the_classic_one_is_not(self) -> None:
+    def test_a_source_is_a_profile_but_not_a_panel(self) -> None:
         self.assertIn(profiles.ESP32_S3_PANEL, profiles.PANEL_PROFILES)
-        self.assertNotIn(profiles.ESP32_S3, profiles.PANEL_PROFILES)
-        self.assertIs(profiles.CONTROLLER_PROFILE, profiles.ESP32_S3)
+        self.assertNotIn(profiles.SOURCE, profiles.PANEL_PROFILES)
+        self.assertIs(profiles.PROFILES["source"], profiles.SOURCE)
         self.assertIs(
             profiles.panel_profile("esp32_s3_panel"),
             profiles.ESP32_S3_PANEL,
@@ -460,14 +445,10 @@ class ProfileTests(unittest.TestCase):
                 self.assertTrue(
                     set(profile.controls) <= set(profiles.CONTROL_ORDER)
                 )
-                for spec in profile.slots:
-                    self.assertTrue(
-                        set(spec.controls) <= set(profiles.CONTROL_ORDER)
-                    )
 
     def test_only_a_panel_has_a_registry(self) -> None:
-        self.assertFalse(profiles.ESP32_S3.has_registry)
-        self.assertEqual(profiles.ESP32_S3.entity_limit, 0)
+        self.assertFalse(profiles.SOURCE.has_registry)
+        self.assertEqual(profiles.SOURCE.entity_limit, 0)
         for profile in profiles.PANEL_PROFILES:
             with self.subTest(profile=profile.slug):
                 self.assertTrue(profile.has_registry)
@@ -484,11 +465,11 @@ class ProfileTests(unittest.TestCase):
             ("toggle", "color_temp"),
         )
 
-    def test_out_of_range_slot_has_no_spec(self) -> None:
-        self.assertIsNone(profiles.ESP32_S3.spec(5))
-
     def test_panel_profile_falls_back(self) -> None:
         self.assertIs(profiles.panel_profile(None), profiles.T560)
+        # A slug that names something real but not a panel: the source, and
+        # the classic controller profile that no longer exists at all.
+        self.assertIs(profiles.panel_profile("source"), profiles.T560)
         self.assertIs(profiles.panel_profile("esp32_s3"), profiles.T560)
         self.assertIs(profiles.panel_profile("t560"), profiles.T560)
 
@@ -500,10 +481,10 @@ if __name__ == "__main__":
 class SkinTests(unittest.TestCase):
     """Every client offers its own layouts, and only its own."""
 
-    def test_a_client_that_draws_one_interface_offers_no_skins(self) -> None:
-        # The classic ESP32 is a controller, not a panel: it applies nothing
-        # at runtime and is never sent a settings block at all.
-        self.assertEqual(profiles.ESP32_S3.skins, ())
+    def test_something_that_draws_nothing_offers_no_skins(self) -> None:
+        # A source is not a client: it applies nothing at runtime and is
+        # never sent a settings block at all.
+        self.assertEqual(profiles.SOURCE.skins, ())
 
     def test_each_panel_offers_its_own_layouts(self) -> None:
         self.assertEqual(profiles.T560.skins, ("modern", "cassette"))
@@ -515,7 +496,7 @@ class SkinTests(unittest.TestCase):
     def test_each_panel_offers_only_supported_screen_rotations(self) -> None:
         self.assertEqual(profiles.T560.rotations, (0, 180))
         self.assertEqual(profiles.ESP32_S3_PANEL.rotations, (0, 90, 180, 270))
-        self.assertEqual(profiles.ESP32_S3.rotations, ())
+        self.assertEqual(profiles.SOURCE.rotations, ())
 
     def test_a_client_does_not_know_another_client_s_layouts(self) -> None:
         self.assertTrue(profiles.T560.knows_skin("cassette"))

@@ -1,9 +1,9 @@
 # Media Controller — paired ESP32-S3 firmware
 #
-# The same device and the same interface as media-controller.yaml, configured
-# from Home Assistant instead of from this file. Nothing here names a Home
-# Assistant entity: the device advertises itself over mDNS, shows a six-digit
-# code, and Home Assistant answers with a token and one entity ID. Everything
+# The half of the firmware that talks to Home Assistant; the half that draws is
+# media-controller-ui.yaml. Nothing is configured in this file: the device
+# advertises itself over mDNS, shows a six-digit code, and Home Assistant
+# answers with a token and one entity ID. Everything
 # else — which player, which queue sensor, which lamp is behind button 1 —
 # arrives at runtime in the config sensor and is kept in flash.
 #
@@ -20,9 +20,9 @@
 # on a wall move to a newer build without a cable, and it is why the factory
 # image no longer has to say it cannot.
 #
-# The interface is shared with the classic firmware and lives in
-# media-controller-ui.yaml. This file supplies the other half of the seam its
-# header describes.
+# The interface lives in media-controller-ui.yaml and this file supplies the
+# other half of the seam its header describes: everything about widgets is
+# there, everything about reaching Home Assistant is here.
 
 substitutions:
   device_name: media-controller
@@ -40,7 +40,7 @@ substitutions:
   # an IP address if .local names are unreliable on your network.
   ha_url: "http://homeassistant.local:8123"
 
-  firmware_version: "0.6.2"
+  firmware_version: "0.6.3"
 
   # The version of docs/CONTRACT.md this firmware implements. firmware_version
   # says when this build shipped; this says what it understands, and it is the
@@ -49,7 +49,7 @@ substitutions:
   # sensor, so each half can tell that the other is behind. Raise it in the
   # same change that raises the number in that document; it is not a knob to
   # turn per device.
-  contract_version: "8"
+  contract_version: "9"
   asset_base_url: "https://raw.githubusercontent.com/VahaC/ha-media-controller/main/firmware/assets"
 
   # Where the room-grid external component is fetched from. It is a
@@ -61,9 +61,8 @@ substitutions:
   # `../components`.
   grid_component_source: "github://VahaC/ha-media-controller@main"
 
-# The interface — display, touchscreen, LVGL pages, theme — is shared with
-# media-controller.yaml and lives next to this file. See its header for the
-# names the two halves agree on.
+# The interface — display, touchscreen, LVGL pages, theme — lives next to this
+# file. See its header for the names the two halves agree on.
 packages:
   ui: !include media-controller-ui.yaml
 
@@ -177,7 +176,43 @@ esphome:
       - script.execute: rebuild_room_grid
       - script.execute: show_start_page
 
-api:
+# -------------------- THERE IS NO ESPHome NATIVE API --------------------
+# `api:` was here until contract version 9, and removing it is the whole point
+# of that version rather than a tidy-up.
+#
+# What it cost while it was here was not the socket. It was that a panel
+# appeared in the **ESPHome integration** in Home Assistant — as a discovered
+# device asking to be adopted, and then as a second device carrying a dozen
+# entities of its own beside the ones this contract already provides. A user
+# had two places to look for one panel's backlight, and an installation had a
+# dependency on an integration it did not otherwise need.
+#
+# Nothing here disables discovery by hand. `esphome/components/mdns` publishes
+# `_esphomelib._tcp` only under `USE_API`, and `USE_API` is defined only when
+# this key is present. No key, no record, and nothing for ESPHome's zeroconf
+# discovery to find — the mechanism is absence rather than suppression, which
+# is why it cannot come back by accident. What a panel does advertise is
+# `_media-controller._tcp`, above, which is what this integration finds it by.
+#
+# Two things went with it, and both are honest losses:
+#
+#   * adoption in ESPHome Device Builder. A panel is installed from the web
+#     installer and updated from Home Assistant instead — see "Updating" in
+#     docs/ESP32_PAIRED_CONTROLLER.md;
+#   * the log stream in the ESPHome dashboard. Logs come out of UART0 over the
+#     USB-C port at 115200 baud, which is the same cable the device is flashed
+#     with; `esphome logs` still works over serial.
+#
+# The twelve entities the API used to carry are not gone, only moved: the
+# theme is `theme` in the config sensor and the diagnostics are `diagnostics`
+# in the status report, so they are entities of the panel's own Home Assistant
+# device now. See docs/CONTRACT.md.
+#
+# An owner of a package-based build who wants this device in the ESPHome
+# dashboard anyway can add `api:` in **their own** device YAML, on top of this
+# package. That is a deliberate opt-in with a consequence — the panel becomes
+# discoverable by the ESPHome integration again — and it is not the default
+# for anybody who has not asked for it.
 
 # -------------------- OVER-THE-AIR UPDATES --------------------
 # The factory image used to ship with no OTA at all, and that was a decision
@@ -266,9 +301,8 @@ web_server_base:
 # factory image knows no address and cannot, so Home Assistant posts the
 # bootstrap here instead once somebody has typed the six digits on screen.
 #
-# Both firmwares carry it, because both benefit: a paired device whose token
-# was revoked is re-paired the same way, without the poll having to guess
-# whether Home Assistant has moved.
+# A paired device whose token was revoked is re-paired the same way, without
+# the poll having to guess whether Home Assistant has moved.
 #
 # It shares the listener with the layout editor, so this adds no port. What
 # guards it — unpaired only, five attempts, a constant-time compare and hard
@@ -326,8 +360,7 @@ sensor:
 
   # -------------------- PLAYER STATE --------------------
   # The interface reads thirteen ids and does not care where they came from.
-  # In the classic firmware they are `platform: homeassistant` and Home
-  # Assistant pushes them; here the poll cycle publishes them.
+  # The poll cycle publishes them, out of what it read over REST.
   #
   # Every one is published only when it actually changed, because a template
   # entity fires on_value on every publish and a once-a-second poll would
@@ -775,6 +808,14 @@ globals:
   - id: pending_rotation
     type: std::string
     restore_value: false
+
+  # -- Set while parsing when the theme block moved a value, so that
+  # -- apply_theme runs once after the payload rather than up to twelve times
+  # -- inside it. A lambda cannot call a script; only an action can. --
+  - id: theme_changed
+    type: bool
+    restore_value: false
+    initial_value: 'false'
   - id: last_playlist_poll_ms
     type: uint32_t
     restore_value: false
@@ -932,10 +973,9 @@ script:
   # ════════════════════════════════════════════════════════════
   # COMMANDS
   # ════════════════════════════════════════════════════════════
-  # The other half of the seam described in media-controller-ui.yaml. Same
-  # names and same parameters as the classic firmware; a POST to the REST API
-  # rather than a native API call, and the entity comes from flash rather than
-  # from a substitution.
+  # The other half of the seam described in media-controller-ui.yaml: the
+  # cmd_ scripts a widget calls. Each is a POST to the REST API, addressed to
+  # an entity read out of flash rather than out of a substitution.
 
   - id: ha_action
     mode: parallel
@@ -1182,11 +1222,13 @@ script:
           else:
             - logger.log: "Home Assistant named no skin entity for this device"
 
-  # -- The four fixed room buttons the interface package draws. This firmware
-  # -- never shows that page: under contract version 6 a panel is sent no
-  # -- `slots` block at all, so there is no entity behind a slot number and
+  # -- The four fixed room buttons the interface package draws. Nothing shows
+  # -- that page: a panel has been sent no `slots` block since contract
+  # -- version 6, and version 9 removed the block from the contract
+  # -- altogether, so there is no entity behind a slot number and
   # -- room_page_index points at the grid instead. The scripts stay because
-  # -- the interface names them and both firmwares answer to the same seam. --
+  # -- the interface package names them, and taking the page out means
+  # -- rearranging LVGL pages that work; see docs/ROADMAP.md. --
   - id: cmd_slot_toggle
     parameters:
       slot: int
@@ -1408,8 +1450,8 @@ script:
   # POLLING
   # ════════════════════════════════════════════════════════════
 
-  # -- The player, in one request. It replaces the nine separate state
-  # -- subscriptions the classic firmware gets over the native API. --
+  # -- The player, in one request, rather than nine state subscriptions over
+  # -- a native API this firmware does not have. --
   - id: poll_player
     mode: restart
     then:
@@ -1865,6 +1907,82 @@ script:
                                                             "player_skin");
                           id(pending_rotation) = id(json_field)(settings,
                                                                 "screen_rotation");
+
+                          // -- How long the backlight stays on. Home
+                          //    Assistant has owned this since contract
+                          //    version 3 and this device ignored it until
+                          //    version 9, because a "Screen Timeout" ESPHome
+                          //    number of its own was a second owner. That
+                          //    number went with the native API. 0 is never;
+                          //    anything else is clamped to the contract's
+                          //    range, which is wider than the old number's.
+                          v = id(json_field)(settings, "screen_off_seconds");
+                          if (!v.empty()) {
+                            long seconds = atol(v.c_str());
+                            if (seconds <= 0) {
+                              seconds = 0;
+                            } else {
+                              if (seconds < 5) seconds = 5;
+                              if (seconds > 3600) seconds = 3600;
+                            }
+                            id(screen_off_seconds) = (uint32_t) seconds;
+                          }
+                        }
+
+                        // -- The theme: eight colours and four opacities.
+                        //    Every key is optional, and a key this firmware
+                        //    cannot parse leaves the value it already has
+                        //    rather than resetting it -- a panel that lost
+                        //    its colours because one of them arrived
+                        //    malformed would be worse than one that kept
+                        //    them. Each is stored in a restoring global, so
+                        //    a reboot with Home Assistant down comes back
+                        //    looking the same. --
+                        std::string theme = id(json_object)(attrs, "theme");
+                        if (!theme.empty()) {
+                          auto colour = [&](const char *key,
+                                            uint32_t *target) {
+                            std::string raw = id(json_field)(theme, key);
+                            if (raw.empty()) return;
+                            if (raw[0] == '#') raw.erase(0, 1);
+                            if (raw.size() != 6) return;
+                            char *end = nullptr;
+                            unsigned long value =
+                                strtoul(raw.c_str(), &end, 16);
+                            if (end == nullptr || *end != '\0') return;
+                            if (*target == (uint32_t) value) return;
+                            *target = (uint32_t) value;
+                            id(theme_changed) = true;
+                          };
+                          auto opacity = [&](const char *key, int *target) {
+                            std::string raw = id(json_field)(theme, key);
+                            if (raw.empty()) return;
+                            int value = atoi(raw.c_str());
+                            if (value < 0) value = 0;
+                            if (value > 255) value = 255;
+                            if (*target == value) return;
+                            *target = value;
+                            id(theme_changed) = true;
+                          };
+
+                          colour("color_arc", &id(theme_color_arc));
+                          colour("color_arc_indicator",
+                                 &id(theme_color_arc_indicator));
+                          colour("color_decoration",
+                                 &id(theme_color_decoration));
+                          colour("color_title", &id(theme_color_title));
+                          colour("color_artist", &id(theme_color_artist));
+                          colour("color_volume", &id(theme_color_volume));
+                          colour("color_buttons", &id(theme_color_buttons));
+                          colour("color_flat_controls",
+                                 &id(theme_color_flat_controls));
+                          opacity("opacity_album_art",
+                                  &id(theme_opacity_album_art));
+                          opacity("opacity_arc", &id(theme_opacity_arc));
+                          opacity("opacity_decoration",
+                                  &id(theme_opacity_decoration));
+                          opacity("opacity_buttons",
+                                  &id(theme_opacity_buttons));
                         }
 
                         // -- The Player Skin select on this device's own Home
@@ -1911,6 +2029,17 @@ script:
                           - script.execute:
                               id: ui_apply_skin
                               skin: !lambda return id(pending_skin);
+                    # -- Once per payload, and only when something actually
+                    # -- moved: apply_theme walks every widget on every
+                    # -- layout, and doing that once a second for a colour
+                    # -- nobody changed is exactly the churn the revision
+                    # -- exists to avoid elsewhere. --
+                    - if:
+                        condition:
+                          lambda: return id(theme_changed);
+                        then:
+                          - lambda: id(theme_changed) = false;
+                          - script.execute: apply_theme
                     - script.execute: read_commands
                     - script.execute:
                         id: ui_apply_rotation
@@ -2049,11 +2178,6 @@ script:
   #
   # Parsing and acting are two scripts because a lambda cannot turn a
   # backlight on; only an action can.
-  #
-  # `screen_off_seconds` is deliberately not applied. This device already owns
-  # a "Screen Timeout" number of its own on its ESPHome device, its range is
-  # narrower than the contract's, and two owners for one setting is a bug
-  # waiting to happen.
 
   - id: read_commands
     then:
@@ -2229,10 +2353,9 @@ script:
   # themselves, anyway.
   #
   # This page is drawn here rather than in media-controller-ui.yaml for the
-  # same reason page_pairing is: the classic firmware can never have it. It
-  # resolves entity IDs while compiling, in both directions, so a card handed
-  # to it at runtime would have nothing to call. That is a property of the
-  # variant and not a gap; see docs/ESP32_PAIRED_CONTROLLER.md. The interface
+  # same reason page_pairing is: it is about talking to Home Assistant rather
+  # than about widgets, and the interface package names no entity and makes no
+  # call. See docs/ESP32_PAIRED_CONTROLLER.md. The interface
   # keeps its four fixed buttons, and this firmware points room_page_index
   # here instead.
   #
@@ -3197,6 +3320,38 @@ script:
                   std::string editor = id(room_grid)->editor_url();
                   if (!editor.empty())
                     json += ",\"editor_url\":\"" + editor + "\"";
+                  // -- The diagnostics block: what the seven ESPHome debug
+                  // -- entities used to publish over the native API, in the
+                  // -- report that was already going. Each key is omitted
+                  // -- when the reading is not available yet, because the
+                  // -- contract reads an absent key as "not reported" and a
+                  // -- zero as a measurement. --
+                  json += ",\"diagnostics\":{";
+                  bool first = true;
+                  auto number = [&](const char *key, float value,
+                                    const char *format) {
+                    if (isnan(value) || value < 0) return;
+                    snprintf(buf, sizeof(buf), format, value);
+                    if (!first) json += ",";
+                    json += std::string("\"") + key + "\":" + buf;
+                    first = false;
+                  };
+                  number("heap_free", id(debug_heap_free).state, "%.0f");
+                  number("heap_max_block", id(debug_heap_max_block).state,
+                         "%.0f");
+                  number("heap_min_free", id(debug_heap_min_free).state,
+                         "%.0f");
+                  number("heap_fragmentation",
+                         id(debug_heap_fragmentation).state, "%.0f");
+                  number("psram_free", id(debug_psram_free).state, "%.0f");
+                  number("loop_time", id(debug_loop_time).state, "%.0f");
+                  const std::string &reason =
+                      id(debug_reset_reason).state;
+                  if (!reason.empty()) {
+                    if (!first) json += ",";
+                    json += "\"reset_reason\":\"" + reason + "\"";
+                  }
+                  json += "}";
                   snprintf(buf, sizeof(buf),
                            ",\"display\":{\"available\":true,\"on\":%s,"
                            "\"brightness\":%d}}",
@@ -3374,8 +3529,8 @@ interval:
 # The same four files the interface already draws at 128 px, decoded again at
 # the size a grid card uses. A second asset rather than a scale: this build
 # sets LV_COLOR_16_SWAP and leaves LV_DRAW_SW_SUPPORT_SWAPPED off, so LVGL
-# cannot transform a swapped RGB565 source at all. Declared here so the
-# classic firmware pays no flash for artwork it has no grid to draw.
+# cannot transform a swapped RGB565 source at all. Declared here beside the
+# grid that draws them.
 image:
   - platform: file
     file: "${asset_base_url}/1lamp.png"
@@ -3414,11 +3569,11 @@ image:
     type: RGB
     transparency: alpha_channel
 
-# -------------------- THE PAGES THIS FIRMWARE ADDS --------------------
-# Appended to the pages the interface package defines; the classic firmware
-# compiles neither. The room grid replaces the four fixed buttons on this
-# variant, and the pairing screen is what a person sees before the device
-# belongs to a Home Assistant.
+# -------------------- THE PAGES THIS FILE ADDS --------------------
+# Appended to the pages the interface package defines, because both are about
+# Home Assistant rather than about widgets. The room grid replaces the four
+# fixed buttons the interface draws, and the pairing screen is what a person
+# sees before the device belongs to a Home Assistant.
 lvgl:
   pages:
     # -- The room grid. Empty at compile time on purpose: what is on it comes

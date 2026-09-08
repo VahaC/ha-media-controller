@@ -8,7 +8,7 @@ Treat this file as the change-control surface: a change to anything below
 affects released devices in the field. A change to code that is not described
 here affects one component only.
 
-Contract version: **8** (matches integration `1.4.x`).
+Contract version: **9** (matches integration `1.9.x`).
 
 Every version so far has been purely additive. Version 2 added the config
 sensor and let proxy lights forward colour temperature. Version 3 added two
@@ -180,6 +180,54 @@ command to, and Home Assistant does not send one: it offers an update only to
 a client reporting contract 8 or later. Such a panel is moved forward once
 over USB, and then never again.
 
+Version 9 removes the ESPHome integration from the picture entirely. Up to
+version 8 a paired panel still spoke the ESPHome native API alongside
+everything in this document, and a dozen of the entities a user saw in Home
+Assistant came from the **ESPHome integration** rather than from
+`media_controller`: the backlight, the screen style, the screen timeout, the
+theme colours and opacities, and the heap and reset diagnostics. A new panel
+appeared in ESPHome as a discovered device and asked to be adopted.
+
+It no longer does. `api:` is gone from the shipped firmware, and with it the
+`_esphomelib._tcp` mDNS record that ESPHome's zeroconf discovery looks for:
+there is nothing left for that integration to find. A panel is discovered on
+`_media-controller._tcp` and paired with a six-digit code, and every entity a
+user sees comes from `media_controller` over this contract. ESPHome remains
+the compiler that builds the firmware and nothing else.
+
+Two things move into this contract to make that possible, and both are
+additive:
+
+- **`theme`**, a new optional block in the config sensor carrying eight
+  colours and four opacities. It replaces the twelve ESPHome entities that
+  were the only way to restyle the player, and it is what makes them
+  replaceable at all;
+- **a `diagnostics` block** in the status report, carrying six memory and
+  loop-time readings and the reason for the last reset. It replaces the seven
+  ESPHome diagnostic entities.
+
+One thing is **removed**, and it is the first removal since version 6:
+
+- **`slots` and `slot_count` are gone**, along with the classic firmware that
+  was the only client that ever read them and the proxy entities it addressed.
+  That firmware was built on `platform: homeassistant` sensors and
+  `homeassistant.service` calls — it required the ESPHome integration by
+  construction — so it could not survive this version in any form. See **What
+  version 9 breaks** below.
+
+One thing that was written down as not working now works: a paired ESP32
+applies `settings.screen_off_seconds`. Version 8 said it did not, because its
+own ESPHome *Screen Timeout* number owned the value and two owners for one
+setting is a bug waiting to happen. That number is gone with the rest of them,
+so there is one owner again.
+
+Both additions are optional in the sense every earlier one was. A panel on
+version 8 reads a payload with a `theme` block it does not know and ignores
+it; a panel on version 9 works against an integration still on version 8,
+which simply sends no `theme` and receives no `diagnostics`. The removal is
+not additive, and is admissible only because the single client that read
+`slots` is deleted in the same change. See **Version compatibility**.
+
 ## Producer
 
 `custom_components/media_controller` creates one device per configured Music
@@ -193,19 +241,15 @@ hardcode them.
 | --- | --- | --- |
 | `sensor.<controller>_queue` | sensor | Bounded queue window |
 | `sensor.<controller>_playlists` | sensor | Library playlists |
-| `sensor.<client>_config` | sensor | Room-control layout of one client |
-| `light.<controller>_slot_<n>` | light | Room light proxy in slot n |
-| `switch.<controller>_slot_<n>` | switch | Room switch proxy in slot n |
+| `sensor.<client>_config` | sensor | What one client reads its configuration from |
 
-The two proxy rows exist **only for a controller entry**, which is to say only
-for an ESP32 running the classic firmware. As of version 6 a panel has no
-slots and no proxies; it is handed the real entity IDs in the `entities` block
-and addresses them directly.
+There are no proxy entities. Version 6 removed a panel's and version 9 removed
+the last of them with the classic firmware, so every client is handed real
+entity IDs in the `entities` block and addresses them directly.
 
-A **panel** device carries these as well. The classic ESP32 controller has none
-of them, because it is a controller rather than a panel; the paired ESP32
-firmware and the tablet both have all of them, except where a client says
-otherwise below:
+A **panel** device carries these as well. A source has none of them, because
+it is not a client; the paired ESP32 firmware and the tablet both have all of
+them, except where a client says otherwise below:
 
 | Entity | Platform | Purpose |
 | --- | --- | --- |
@@ -223,26 +267,47 @@ otherwise below:
 | `number.<panel>_poll_interval` | number | `poll_interval_ms`, in seconds |
 | `number.<panel>_playlist_poll_interval` | number | `playlist_poll_interval_ms`, in seconds |
 | `number.<panel>_screen_off` | number | `screen_off_seconds` |
+| `select.<panel>_screen_rotation` | select | `screen_rotation`, in clockwise degrees |
 | `button.<panel>_restart` | button | Restart the panel application |
+| `update.<panel>_firmware` | update | A newer firmware, where the client can install one |
 
 The three interval numbers are shown in seconds and stored on the config entry
 in the units the payload uses. `screen_off` accepts 0, meaning never.
 
 `player_skin` exists for every client that draws more than one layout, and its
 options are that client's own names — see **Panel settings** below. A client
-that draws one interface gets no such entity.
+that draws one interface gets no such entity. `screen_rotation` works the same
+way: its options are the angles the client's profile says it can apply.
 
-`<client>` is the controller itself for the slots of an ESP32 running the
-classic firmware, and the panel device for the config sensor of every other
-client — the tablet and the paired ESP32 firmware alike.
+A panel whose profile carries a **theme** — the paired ESP32 firmware — has
+twelve more, all of them configuration entities, and they are the twelve keys
+of the `theme` block above:
 
-**Two entity ID spellings are valid and both are permanent.** An installation
-created before integration `0.8.2` keeps `light.<controller>_light_1`,
-`light.<controller>_light_2`, `switch.<controller>_fan`, and
-`switch.<controller>_ac` for slots 1 to 4, because the migration preserves the
-registry rows so that flashed devices need no reflash. An installation created
-after it uses `_slot_1` to `_slot_4`. The classic ESP32 firmware reads them
-from substitutions and must assume neither spelling.
+| Entity | Platform | Purpose |
+| --- | --- | --- |
+| `text.<panel>_color_<name>` | text | One of the eight colours, as `#RRGGBB` |
+| `number.<panel>_opacity_<name>` | number | One of the four opacities, 0 – 255 |
+
+A panel whose profile says it **reports diagnostics** — again the paired ESP32
+firmware — has seven more, all of them diagnostic entities and all of them
+unavailable until the matching key arrives in a status report:
+
+| Entity | Platform | Purpose |
+| --- | --- | --- |
+| `sensor.<panel>_heap_free` | sensor | `diagnostics.heap_free`, bytes |
+| `sensor.<panel>_heap_max_block` | sensor | `diagnostics.heap_max_block`, bytes |
+| `sensor.<panel>_heap_min_free` | sensor | `diagnostics.heap_min_free`, bytes |
+| `sensor.<panel>_heap_fragmentation` | sensor | `diagnostics.heap_fragmentation`, percent |
+| `sensor.<panel>_psram_free` | sensor | `diagnostics.psram_free`, bytes |
+| `sensor.<panel>_loop_time` | sensor | `diagnostics.loop_time`, milliseconds |
+| `sensor.<panel>_reset_reason` | sensor | `diagnostics.reset_reason`, text |
+
+A client that does not report a block gets none of the entities that read it,
+rather than a row of sensors that are unavailable for the life of the
+installation.
+
+`<client>` is the panel device for a panel's config sensor and the source
+device for a source's.
 
 The state of every sensor above is the constant string `ok`. All data is in
 the attributes, because a Home Assistant state is limited to 255 characters.
@@ -288,8 +353,9 @@ list is capped at `DEFAULT_PLAYLIST_LIMIT` (500), fetched in pages of 100.
 
 ### Config sensor attributes
 
-One client kind reads `slots` and the other reads `entities`, and neither
-receives the block it does not read. The panel payload is:
+A panel reads a registry of room entities. A source — the config entry bound
+to a Music Assistant player — has no screen and no registry, and carries only
+the three entities every client is pointed at. The panel payload is:
 
 ```json
 {
@@ -310,13 +376,27 @@ receives the block it does not read. The panel payload is:
     }
   ],
   "revision": 2098342174,
-  "contract_version": 7,
+  "contract_version": 9,
   "skin_select": "select.kitchen_tablet_player_skin",
   "settings": {
     "poll_interval_ms": 1000,
     "playlist_poll_interval_ms": 60000,
     "screen_off_seconds": 30,
     "player_skin": "cassette"
+  },
+  "theme": {
+    "color_arc": "#1a1a35",
+    "color_arc_indicator": "#00cfff",
+    "color_decoration": "#00cfff",
+    "color_title": "#ffffff",
+    "color_artist": "#5588cc",
+    "color_volume": "#334466",
+    "color_buttons": "#00cfff",
+    "color_flat_controls": "#d8dce6",
+    "opacity_album_art": 255,
+    "opacity_arc": 255,
+    "opacity_decoration": 153,
+    "opacity_buttons": 153
   },
   "commands": {
     "display": {"state": "off", "at": 1756800000000},
@@ -327,29 +407,16 @@ receives the block it does not read. The panel payload is:
 }
 ```
 
-The classic ESP32 controller reads the same payload with `slots` and
-`slot_count` where a panel has `entities` and `entity_limit`, and with neither
-`settings` nor `commands`:
+A source publishes the three entities and nothing else:
 
 ```json
 {
-  "profile": "esp32_s3",
-  "slot_count": 4,
+  "profile": "source",
   "player": "media_player.kitchen",
   "queue": "sensor.controller_queue",
   "playlists": "sensor.controller_playlists",
-  "slots": [
-    {
-      "slot": 1,
-      "entity": "light.controller_slot_1",
-      "label": "DESK LAMP",
-      "controls": ["toggle", "brightness"],
-      "min_kelvin": 2000,
-      "max_kelvin": 6535
-    }
-  ],
   "revision": 2098342174,
-  "contract_version": 7
+  "contract_version": 9
 }
 ```
 
@@ -359,25 +426,20 @@ Real attributes, not an encoded string. Rules a client must follow:
   reads. They are here so that a client needs no entity ID of its own: a URL,
   a token, and its own identifier are enough to bootstrap. A payload in which
   any of them is empty is not yet usable and must be retried, not cached.
-- `slots` and `slot_count` are sent **only to the classic ESP32 controller**,
-  and `entities` and `entity_limit` **only to panels**. A client reads the
-  block it knows and ignores the other, exactly as it ignores `settings` and
-  `commands` it has no use for. Neither block is ever sent to both.
-- In `slots`, `entity` is always the **proxy**, never the entity the user
-  selected. In `entities` it is always the **real entity**, because panels
-  have no proxies; see **Registry entries** below.
-- Unconfigured slots are **omitted**. Render what arrives, in `slot` order, and
-  handle an empty `slots` list.
+- `entities` and `entity_limit` are sent **only to panels**. A source carries
+  neither, exactly as it carries neither `settings` nor `commands`. There is
+  no second room-control block: `slots` and `slot_count` were removed in
+  version 9 along with the only client that read them.
+- In `entities`, `entity` is always the **real entity**. There are no proxy
+  entities anywhere in this contract any more; see **Registry entries** below.
 - `controls` uses the closed vocabulary `toggle`, `brightness`, `color_temp`,
   `target_temperature`, `position`, `stop`. An unknown value must be ignored,
   not treated as an error, so that a future control can be added without
-  breaking released clients. `target_temperature`, `position` and `stop`
-  appear only in `entities`; the classic ESP32 firmware's fixed `slots` are
-  lights and switches.
+  breaking released clients.
 - `min_kelvin` and `max_kelvin` are present only when `controls` contains
   `color_temp`.
 - `min_temp`, `max_temp` and `target_temp_step` are present only when
-  `controls` contains `target_temperature`, and only in `entities`.
+  `controls` contains `target_temperature`.
 - `revision` is a checksum of the rest of the payload, not a counter. Equal
   values mean an unchanged configuration; any change produces a different
   value. A client uses it to skip a re-layout, never to order versions.
@@ -401,25 +463,23 @@ Real attributes, not an encoded string. Rules a client must follow:
   see **Version compatibility** below.
 - A client must cache the last payload it read and start from that cache when
   Home Assistant is unreachable at boot. The paired ESP32 firmware keeps the
-  entity IDs it learned in flash for exactly this reason. A client that cannot
-  store a cache — the classic ESP32 firmware — must keep working from its
-  compile-time defaults instead, and must not treat a missing config sensor as
-  fatal.
-- `settings` and `commands` are **optional and only sent to panels**. Both are
-  absent for the classic ESP32 controller, which applies nothing at runtime. A
-  client that does not understand them ignores them, and a client that
-  understands only some of them applies those and ignores the rest: the paired
-  ESP32 firmware applies both poll intervals and every command, but not
-  `screen_off_seconds`, which its own ESPHome device already owns as a *Screen
-  Timeout* number. It does apply `player_skin`: the *Screen Style* select on
-  its ESPHome device stays the value's owner and its local fallback, the way
-  `config.ini` is the tablet's, and a named skin writes to it.
+  entity IDs it learned, its settings and its theme in flash for exactly this
+  reason, and must not treat a missing config sensor as fatal.
+- `settings`, `theme` and `commands` are **optional and only sent to panels**.
+  All three are absent for a source, which applies nothing at runtime. A
+  client that does not understand a block ignores it, and a client that
+  understands only some of a block applies what it knows and ignores the
+  rest.
+- `theme` is what a client draws its player page with; see **Panel theme**
+  below. It is outside `revision` for the same reason `settings` is: a colour
+  is restyled onto widgets that already exist, and folding it into the
+  checksum would rebuild the room page to change the colour of a progress
+  ring.
 
 ### Registry entries
 
-`entities` is a panel's room controls. It replaces `slots` for panels and is
-sent to nothing else. Where a slot list was a fixed number of numbered
-positions, this is an ordinary list: a user adds as many entities as the
+`entities` is a panel's room controls, and since version 9 the only shape a
+room control has. It is an ordinary list: a user adds as many entities as the
 client profile allows, in any of the groups below, and removes them again.
 
 ```json
@@ -476,7 +536,7 @@ client profile allows, in any of the groups below, and removes them again.
   a control — see **Weather blocks** and **Sensor blocks** below — as is any
   domain that is no longer a group.
 - `min_kelvin` and `max_kelvin` appear only when `controls` contains
-  `color_temp`, as in `slots`.
+  `color_temp`.
 - `min_temp`, `max_temp` and `target_temp_step` appear only when `controls`
   contains `target_temperature`. See **Climate cards** below.
 - The order of the list is the order to render in. It is the group order in
@@ -490,7 +550,7 @@ tablet's registry never travels into a firmware image, and the ESP32's does.
 | --- | --- |
 | T560 panel | 100 |
 | ESP32-S3 panel | 64 |
-| ESP32-S3 controller | — (no registry; it reads `slots`) |
+| Source | — (not a client; it has no registry) |
 
 The groups, in payload order:
 
@@ -591,7 +651,6 @@ What a client draws is its own business, and the two panels differ:
 | --- | --- | --- |
 | T560 panel | `toggle` | The setpoint on the same sheet the brightness of a light uses |
 | ESP32-S3 panel | `toggle` | A long press sweeps the setpoint, as it sweeps brightness for a light |
-| ESP32-S3 controller | — | Not a panel; it reads `slots` and is sent no `entities` |
 
 Both panels also **show** the room temperature the thermostat reports, which
 needs nothing from this document: it is an ordinary attribute of the entity a
@@ -650,7 +709,6 @@ What a client draws is its own business, and the two panels differ:
 | --- | --- | --- |
 | T560 panel | `toggle` | The percentage on the sheet a light's brightness uses, and a STOP button beside it |
 | ESP32-S3 panel | `toggle` | Nothing; `position` and `stop` are stripped by its panel profile, so the card reads OPEN/CLOSED and a tap toggles |
-| ESP32-S3 controller | — | Not a panel; it reads `slots` and is sent no `entities` |
 
 A card whose element gives no `position` still draws and still toggles, and a
 card that gives none of the three is drawn as a reading rather than a
@@ -693,7 +751,6 @@ What a client draws is its own business, and the two panels differ:
 | --- | --- | --- |
 | T560 panel | Nothing; the block is a reading, not a button | Nothing; it never opens the adjustment sheet |
 | ESP32-S3 panel | Nothing; the block is a reading, not a button | Nothing; a long press moves no value |
-| ESP32-S3 controller | — | Not a panel; it reads `slots` and is sent no `entities` |
 
 A block whose entity reports no temperature still draws and still reads:
 it says the condition alone, or the humidity alone, rather than nothing.
@@ -726,11 +783,42 @@ What a client draws is its own business, and the two panels agree:
 | --- | --- | --- |
 | T560 panel | Nothing; the block is a reading, not a button | Nothing; it never opens the adjustment sheet |
 | ESP32-S3 panel | Nothing; the block is a reading, not a button | Nothing; a long press moves no value |
-| ESP32-S3 controller | — | Not a panel; it reads `slots` and is sent no `entities` |
 
 A block whose entity reports `unavailable` or `unknown` still draws: it says
 the name alone, rather than nothing. A tap on it acts on nothing, it never
 shows a pressed state, and it never opens the adjustment sheet.
+
+### What version 9 breaks
+
+Two things, and both only where the classic ESP32 firmware was involved.
+
+- **`firmware/media-controller.yaml` no longer exists.** It was built on
+  `platform: homeassistant` sensors and `homeassistant.service` calls, which
+  is the ESPHome integration by construction, so it could not be carried into
+  a version whose whole point is that the integration is not needed. A device
+  on it keeps running exactly as it is — nothing reaches out and stops it —
+  but it is no longer maintained and its `packages:` reference stops
+  resolving once the file is gone from the branch it points at. The way
+  forward for that hardware is the same web installer a new panel uses: it is
+  the same ESP32-S3-4848S040, and the factory image turns it into a paired
+  panel. See **the web installer** in
+  [ESP32_PAIRED_CONTROLLER.md](ESP32_PAIRED_CONTROLLER.md).
+- **`slots`, `slot_count` and the proxy entities are gone.**
+  `light.<source>_slot_<n>` and `switch.<source>_slot_<n>` are deleted from
+  the entity registry the first time a source entry loads on this version,
+  the same way a panel's were in version 6. Anything that referenced one — an
+  automation, a script, a dashboard card — must be pointed at the real entity
+  instead. The stored `slots` block is deleted from the config entry with
+  them; the entry keeps its identity, its title and the Music Assistant
+  player it is bound to.
+
+A panel that was flashed with the classic firmware also loses the room
+controls it drew, because those *were* the proxies. After reflashing, the same
+entities are chosen again on the panel itself, as registry elements, and are
+then drawn on a grid the user arranges rather than on four fixed buttons.
+
+Nothing else moves. Every entity `media_controller` owns keeps its unique ID
+and its entity ID, and no panel has to be re-paired.
 
 ### What version 6 breaks
 
@@ -752,8 +840,8 @@ Only panels, and only their room controls.
   and the remedy is the ordinary one for that panel: rebuild and deploy the
   tablet application, or install the ESP32 again from ESPHome Device Builder.
 
-Nothing about the classic ESP32 controller changes. Its four slots, its four
-proxies and its payload are exactly what they were.
+Nothing about the classic ESP32 controller changed at the time. Version 9
+removed it, and its slots and proxies with it.
 
 ### Panel settings
 
@@ -763,7 +851,7 @@ to the normal display orientation: T560 accepts 0 and 180; paired ESP32 accepts
 value across Home Assistant restarts. Missing or invalid values leave the client
 orientation unchanged. Older clients ignore this additive field (contract 7).
 Clients rotate touch coordinates together with the display and preserve the
-wake-touch guard. Classic ESP32 exposes a restoring ESPHome select directly.
+wake-touch guard.
 
 `settings` is a desired configuration, not an event: the newest payload simply
 wins, and a client adopts it without acknowledging it. It is what used to be
@@ -779,6 +867,11 @@ edited in `config.ini` over SSH.
 
 Home Assistant clamps every value before it sends one; a client clamps again
 rather than trusting the payload. `screen_off_seconds` is 0 for never.
+
+Both panels apply `screen_off_seconds`. The paired ESP32 did not until
+version 9, because a *Screen Timeout* number on its own ESPHome device owned
+the value and had a narrower range; that number is gone and this is the only
+owner left.
 
 Both intervals are the rate at which a payload is re-read *while the page that
 draws it is the page on screen*. `poll_interval_ms` still paces the config
@@ -798,14 +891,14 @@ client it is talking to actually draws.
 | --- | --- | --- |
 | T560 panel | `modern`, `cassette` | The whole interface — player page, navigation bar and room controls alike |
 | ESP32-S3 panel | `classic`, `minimal_ring`, `cover_card` | Which of the three home layouts the firmware shows |
-| ESP32-S3 controller | — | Not a panel; it is sent no `settings` block at all |
+| Source | — | Not a panel; it is sent no `settings` block at all |
 
 Three rules make that workable across versions:
 
 - **Absent is not a default.** A payload that does not carry `player_skin`
   means nobody has chosen, and the client keeps whatever it falls back to on
-  its own — `config.ini` on the tablet, a restoring select in flash on the
-  ESP32. A client must not read an absent key as a request for its first
+  its own — `config.ini` on the tablet, a value kept in flash on the ESP32.
+  A client must not read an absent key as a request for its first
   layout, or an unconfigured Home Assistant would silently overrule the
   device's own file.
 - **An unknown name is a choice that cannot be honoured.** A client draws its
@@ -873,37 +966,58 @@ Rules:
   one.
 
 How much of the payload a client uses depends on what it can change at
-runtime. The T560 panel builds its whole room page from `entities`. The
-classic ESP32 takes only the labels and the visibility of its four buttons
-from `slots`: everything else about those buttons, including the entity IDs
-and the service domains, is resolved while compiling and cannot follow a
-configuration change.
+runtime, and since version 9 both maintained clients can change all of it:
+each builds its whole room page from `entities` and resolves every entity ID
+and service domain from the payload rather than while compiling.
 
-### Proxy entities
+### Panel theme
 
-Proxies belong to the classic ESP32 controller and to nothing else. They exist
-because that firmware resolves both the entity ID and the service domain of
-its four buttons while compiling, so a stable entity ID it can be flashed
-against is the only way it can follow a slot change made in the Home Assistant
-UI. Every other client learns entity IDs at runtime and addresses the real
-entity; as of version 6 that is what panels do, through `entities`.
+`theme` is how a panel's player page is coloured. It is optional, sent only to
+panels, and every key in it is optional in turn: a panel applies the ones it
+knows and keeps its own value for the rest.
 
-A proxy mirrors the state of the entity selected for its slot and forwards
-actions to it. A proxy whose source is missing is `unavailable`; the other
-controller functions keep working. Clearing a slot removes its proxy.
+Until version 9 these twelve values were ESPHome entities on the device's own
+ESPHome device, which is to say they existed only for as long as the ESPHome
+integration did. They are here because that is what makes the integration
+removable — not because a colour belongs in a protocol.
 
-A slot's domain is fixed when the slot is created, because the ESP32 resolves
-both the entity ID and the service domain of its four buttons at compile time.
+| Key | Type | Range | What it colours |
+| --- | --- | --- | --- |
+| `color_arc` | colour | `#RRGGBB` | The progress ring's track |
+| `color_arc_indicator` | colour | `#RRGGBB` | The progress ring's filled part |
+| `color_decoration` | colour | `#RRGGBB` | The decoration circle behind the artwork |
+| `color_title` | colour | `#RRGGBB` | The track title |
+| `color_artist` | colour | `#RRGGBB` | The artist name |
+| `color_volume` | colour | `#RRGGBB` | The volume label |
+| `color_buttons` | colour | `#RRGGBB` | The transport buttons' border and glyphs |
+| `color_flat_controls` | colour | `#RRGGBB` | The transport glyphs of the flat layouts, which reserve the accent for the progress indicator |
+| `opacity_album_art` | integer | 0 – 255 | The album artwork |
+| `opacity_arc` | integer | 0 – 255 | The progress ring |
+| `opacity_decoration` | integer | 0 – 255 | The decoration circle |
+| `opacity_buttons` | integer | 0 – 255 | The transport buttons' background |
 
-Proxy lights mirror the colour modes of their target: `onoff`, `brightness`, or
-`color_temp` with the target's Kelvin bounds. They forward `brightness` and
-`color_temp_kelvin` on turn-on. Colour, effects, and every other light feature
-are **not** forwarded. The classic ESP32 firmware must not address the target
-entity directly to work around that; the slot mechanism is the only supported
-path for it. A panel addresses real entities by design and is not covered by
-this rule at all.
+Rules:
 
-## Discovery and pairing
+- a colour is exactly `#` followed by six hexadecimal digits. Home Assistant
+  sends nothing else; a client that receives anything else ignores that one
+  key rather than the block. Case is not significant;
+- an opacity is an integer 0 – 255. Home Assistant clamps before sending and a
+  client clamps again;
+- **a client stores what it applied.** The theme has to survive a reboot and a
+  Home Assistant that is down, or a panel would come back grey until the first
+  poll succeeded. The paired ESP32 keeps it in NVS beside the entity IDs it
+  learned;
+- an **absent block** means the same as an absent `player_skin`: nobody has
+  chosen, and the client keeps what it has. It is not a request to return to
+  any default;
+- **which values a client has is the client's business.** A client that draws
+  no progress ring ignores `color_arc` and is not in error, exactly as it may
+  ignore a control it cannot draw. A client whose profile says it has no theme
+  at all — the T560 panel, whose two skins carry their own palettes — is sent
+  no block;
+- `theme` is outside `revision`. Restyling is not layout.
+
+## Discovery and pairing## Discovery and pairing
 
 Nothing below changes a payload or an entity, and no client has to do anything
 differently than it did. It is written down because it is now a **two-sided**
@@ -1034,7 +1148,16 @@ another's battery level.
   "temperature_c": 31.5,
   "editor_url": "http://192.168.1.105:8730/",
   "battery": {"available": true, "percent": 82, "charging": false},
-  "display": {"available": true, "on": true, "brightness": 57}
+  "display": {"available": true, "on": true, "brightness": 57},
+  "diagnostics": {
+    "heap_free": 142336,
+    "heap_max_block": 65524,
+    "heap_min_free": 118220,
+    "heap_fragmentation": 54,
+    "psram_free": 6291456,
+    "loop_time": 38,
+    "reset_reason": "Software reset CPU"
+  }
 }
 ```
 
@@ -1063,6 +1186,28 @@ another's battery level.
   omits either where the hardware has none, and the matching sensor stays
   unavailable. Neither is worth a report of its own: send them with whatever
   report is already going.
+- `diagnostics` is optional and reports how the client's own runtime is
+  doing. Every key inside it is optional in turn: a client sends the ones it
+  can measure and omits the rest, and an entity is created in Home Assistant
+  only for a client whose profile says it reports them at all — a client that
+  would never send the block gets no permanently unavailable sensors. Like
+  `wifi_dbm`, none of it is worth a report of its own: send it with whatever
+  report is already going.
+
+  | Key | Unit | Range | Meaning |
+  | --- | --- | --- | --- |
+  | `heap_free` | bytes | 0 – 33554432 | Free heap now |
+  | `heap_max_block` | bytes | 0 – 33554432 | Largest single free block; the gap between this and `heap_free` is fragmentation |
+  | `heap_min_free` | bytes | 0 – 33554432 | Lowest free heap since the device started |
+  | `heap_fragmentation` | percent | 0 – 100 | How fragmented the heap is |
+  | `psram_free` | bytes | 0 – 67108864 | Free PSRAM |
+  | `loop_time` | milliseconds | 0 – 60000 | The **longest single** main-loop iteration in the last measuring interval, not an average |
+  | `reset_reason` | text | at most 64 characters | Why the device last restarted |
+
+  A value outside its range, of the wrong type, or negative is discarded and
+  read as "not reported", exactly as `percent` is. `reset_reason` is carried
+  over from the previous boot and does not change until the next one, which is
+  what makes the uptime sensor beside it worth reading with it.
 - `editor_url` is where the layout editor this panel serves on its own
   hardware answers, and it becomes the link on the panel's Home Assistant
   device page. It is reported rather than worked out by Home Assistant,
@@ -1433,12 +1578,38 @@ screen and a warning every poll cycle would bury everything else.
 
 ### Clients that do not participate
 
-Reporting a contract version is optional in both directions, and the classic
-ESP32 firmware does neither. It is a controller rather than a panel: it never
-reports, so the integration has no version of its own to compare and raises
-nothing about it, and it ignores `contract_version` in the config sensor
-exactly as it ignores `settings` and `commands`. Nothing about that firmware
-changes, and no change to it is required.
+There are none left. Every maintained client is a panel: it pairs, it polls,
+it reports, and it names the contract version it speaks. Up to version 8 the
+classic ESP32 firmware was the exception — it never reported, so there was no
+version of its own to compare — and version 9 removed it.
+
+### What version 9 removes, and why that is allowed
+
+Every version through 8 was additive on the wire: an older client ignored what
+it did not understand and kept working. Version 9 breaks that once, by
+deleting `slots` and `slot_count` from the config sensor.
+
+That is admissible for exactly one reason, and it is not a general licence:
+**the only client that ever read either key is deleted in the same change.**
+The classic ESP32 firmware was built on `platform: homeassistant` sensors and
+`homeassistant.service` calls, so it required the ESPHome integration by
+construction and could not be carried into this version at all. Removing a
+block that no client reads is bookkeeping; removing one that a released client
+reads would not be, and this document has never done it and should not.
+
+The two additions of version 9 are additive in the ordinary sense, and the
+compatibility matrix is the usual one:
+
+| Integration | Client | What happens |
+| --- | --- | --- |
+| 9 | 9 | Everything below works. |
+| 9 | 8 | The client ignores `theme` and never sends `diagnostics`. Its player keeps the colours it has in flash, and the seven diagnostic sensors stay unavailable. Home Assistant raises the repair issue for a client that is behind. |
+| 8 | 9 | The client is sent no `theme` and keeps the colours it stored; the integration ignores `diagnostics` it does not know. The client reports that Home Assistant is behind. |
+
+A T560 panel is unaffected in either direction. It never read `slots`, it has
+no theme block — its skins carry their own palettes — and it reports no
+diagnostics, so a tablet that speaks version 8 and one that speaks version 9
+send and receive exactly the same bytes.
 
 ## Services
 
@@ -1500,9 +1671,6 @@ firmware/media-controller-ui.yaml       every page's on_load calls one of
                                         refresh_playlists, refresh_room
 firmware/media-controller-paired.yaml   the poll cycle, gated on current_page,
                                         and the four scripts it names
-firmware/media-controller.yaml          the same four names over the native
-                                        API, where most state is pushed and
-                                        two of them do nothing
 ```
 
 Three things are deliberately outside the rule, and a fourth needs a reason
@@ -1567,9 +1735,8 @@ Rules a client must follow:
   `commands`: states move constantly while the house is simply being used,
   and a re-layout on every toggle would rebuild the room page out from
   under the finger that caused it;
-- it is sent **only to panels**, and only beside an `entities` block. The
-  classic ESP32 controller is sent neither: it learns its four states over
-  the ESPHome native API;
+- it is sent **only to panels**, and only beside an `entities` block. A
+  source is sent neither;
 - a client that has no use for the block ignores it. The T560 panel reads
   per-entity state and ignores the whole of it; an older ESP32 panel reads
   nothing and behaves exactly as it did before the block existed, which is
@@ -1598,13 +1765,18 @@ can consume.
 
 Tests that protect the contract:
 
-- `tests/test_transformations.py` — payload construction, including which of
-  `slots` and `entities` each client kind is sent;
+- `tests/test_transformations.py` — payload construction, including which
+  blocks each kind of entry is sent and which it is never sent;
 - `tests/test_registry.py` — `rid` generation and stability, the per-profile
   limits, an empty registry and one at its limit;
 - `tests/test_profiles.py` — which controls a client is told to draw,
   including the climate rules and the card domains;
-- `tests/test_migration.py` — the version 1 slots keep their numbers;
+- `tests/test_migration.py` — the stored halves of the entry migrations,
+  including that version 4 leaves nothing of the room-control slots behind;
+- `tests/test_panel_state.py` — the status report is validated rather than
+  trusted, the diagnostics block included;
+- `tests/test_theme.py` — the `theme` block: what a colour and an opacity
+  are, and what a client is sent when it has no theme;
 - `clients/t560/tests/test_panel_config.c` — payload parsing on the client
   side, including an unknown control name, a climate element and its bounds,
   the registry limit, and the skin select;

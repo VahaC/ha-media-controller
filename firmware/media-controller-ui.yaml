@@ -1,17 +1,25 @@
-# Media Controller — shared interface package
+# Media Controller — interface package
 #
-# Everything both firmwares draw: the panel, the touchscreen, the three LVGL
-# screen styles, the theme entities, and the scripts that move widgets around.
-# It contains no Home Assistant entity ID and performs no Home Assistant call.
+# Everything the panel draws: the display, the touchscreen, the three LVGL
+# screen styles, the theme, and the scripts that move widgets around. It
+# contains no Home Assistant entity ID and performs no Home Assistant call.
 #
-# Two files include it:
+# One file includes it:
 #
-#   media-controller.yaml         entity IDs and a token in substitutions,
-#                                 state over the ESPHome native API
 #   media-controller-paired.yaml  paired from Home Assistant, state over REST
 #
-# The seam between this file and either of them is a set of names, and both
-# halves have to agree on them:
+# It used to be two. `media-controller.yaml` — the classic firmware, which
+# read its entity IDs from substitutions and its state over the ESPHome native
+# API — was removed in contract version 9, because it required the ESPHome
+# integration by construction and that is the thing that version exists to
+# remove. The split survives it, and is worth keeping for a reason that has
+# nothing to do with there being two of anything: everything below is about
+# widgets, and everything about talking to Home Assistant is in the other
+# file. That is why this file could be built into an image that has no Home
+# Assistant address at all.
+#
+# The seam between the two is a set of names, and both halves have to agree
+# on them:
 #
 #   Commands this file calls.     cmd_prev, cmd_play_pause, cmd_next,
 #                                 cmd_volume_up, cmd_volume_down,
@@ -27,15 +35,14 @@
 #                                 the on_load of the page that draws what
 #                                 they fetch, and are the only place a page's
 #                                 data is asked for at the moment it opens.
-#                                 A transport whose state arrives on its own
-#                                 — the classic firmware subscribes over the
-#                                 native API — still has to declare them, as
-#                                 scripts that do nothing. See "Request only
-#                                 what the active page draws" in
-#                                 docs/CONTRACT.md.
+#                                 See "Request only what the active page
+#                                 draws" in docs/CONTRACT.md.
 #   Scripts this file offers.     ui_apply_skin(skin) — the layout named in
 #                                 the config sensor, in contract spelling
 #                                 ui_apply_rotation(angle) — clockwise degrees
+#                                 apply_theme — restyle every layout from the
+#                                 theme globals below. Call it after writing
+#                                 any of them.
 #   Globals this file offers.     room_page_index — which LVGL page the room
 #                                 controls live on, as an index into the
 #                                 lvgl pages list. -1, the default, means the
@@ -44,6 +51,22 @@
 #                                 appends it to lvgl.pages and writes its
 #                                 index here at boot; navigation then goes
 #                                 there instead. See show_room_page.
+#
+#                                 theme_color_* (8) and theme_opacity_* (4) —
+#                                 the theme, as 0xRRGGBB and 0-255. They are
+#                                 restoring globals rather than ESPHome
+#                                 entities because contract version 9 removed
+#                                 the native API that used to carry them:
+#                                 Home Assistant owns the values and sends
+#                                 them in the config sensor, and these are
+#                                 where a panel keeps what it applied so that
+#                                 it comes back looking the same after a
+#                                 reboot with Home Assistant down.
+#
+#                                 screen_off_seconds — how long the backlight
+#                                 stays on with nothing playing and nobody
+#                                 touching. 0 is never. Restoring, and owned
+#                                 by Home Assistant for the same reason.
 #
 #                                 screen_keep_awake — set while what is on
 #                                 screen has to stay readable with nobody
@@ -70,8 +93,7 @@
 # an unroutable placeholder and are pointed at the real picture at runtime.
 #
 # This file is reached by a relative !include from a file devices fetch by raw
-# URL, so its path is frozen for the same reason media-controller.yaml is.
-# See docs/MERGE.md.
+# URL, so its path is frozen. See docs/MERGE.md.
 
 esphome:
   on_boot:
@@ -127,11 +149,16 @@ output:
     id: backlight_output
     frequency: 1000Hz
 
+# Internal since contract version 9. It used to carry a name, which made it
+# a light in Home Assistant through the ESPHome integration — a second owner
+# of the same backlight that `switch.<panel>_screen` and
+# `number.<panel>_screen_brightness` already own over this contract. With the
+# native API gone there is nobody to publish it to, and one owner left.
 light:
   - platform: monochromatic
     output: backlight_output
     id: backlight
-    name: "Backlight"
+    internal: true
     restore_mode: ALWAYS_ON
 
 # -------------------- DISPLAY (ST7701S RGB) --------------------
@@ -311,115 +338,13 @@ image:
       then:
         - logger.log: Album art (disc) download failed
 
-# -------------------- COLOR CONTROLS --------------------
-text:
-  # -- Progress ring background color (hex, e.g. 1a1a35) --
-  - platform: template
-    name: "Progress Ring Color"
-    id: color_arc
-    mode: text
-    initial_value: "1a1a35"
-    optimistic: true
-    restore_value: true
-    on_value:
-      then:
-        - script.execute: apply_theme
-
-  # -- Progress ring fill (indicator) color --
-  - platform: template
-    name: "Progress Ring Fill Color"
-    id: color_arc_indicator
-    mode: text
-    initial_value: "00cfff"
-    optimistic: true
-    restore_value: true
-    on_value:
-      then:
-        - script.execute: apply_theme
-
-  # -- Decoration circle background color --
-  - platform: template
-    name: "Decoration Color"
-    id: color_decoration
-    mode: text
-    initial_value: "00cfff"
-    optimistic: true
-    restore_value: true
-    on_value:
-      then:
-        - script.execute: apply_theme
-
-  # -- Track title text color --
-  - platform: template
-    name: "Title Color"
-    id: color_title
-    mode: text
-    initial_value: "ffffff"
-    optimistic: true
-    restore_value: true
-    on_value:
-      then:
-        - script.execute: apply_theme
-
-  # -- Artist name text color --
-  - platform: template
-    name: "Artist Color"
-    id: color_artist
-    mode: text
-    initial_value: "5588cc"
-    optimistic: true
-    restore_value: true
-    on_value:
-      then:
-        - script.execute: apply_theme
-
-  # -- Volume label text color --
-  - platform: template
-    name: "Volume Color"
-    id: color_volume
-    mode: text
-    initial_value: "334466"
-    optimistic: true
-    restore_value: true
-    on_value:
-      then:
-        - script.execute: apply_theme
-
-  # -- Control buttons border and icon color --
-  - platform: template
-    name: "Buttons Color"
-    id: color_buttons
-    mode: text
-    initial_value: "00cfff"
-    optimistic: true
-    restore_value: true
-    on_value:
-      then:
-        - script.execute: apply_theme
-
-  # -- Transport glyph colour for the Minimal Ring and Cover Card layouts.
-  # -- Kept separate from "Buttons Color" because both layouts deliberately
-  # -- reserve the accent for the progress indicator and one play button, and
-  # -- render everything else in neutral grey. --
-  - platform: template
-    name: "Flat Controls Color"
-    id: color_flat_controls
-    mode: text
-    initial_value: "d8dce6"
-    optimistic: true
-    restore_value: true
-    on_value:
-      then:
-        - script.execute: apply_theme
-
 # -------------------- SCREEN STYLE --------------------
 # -- Selecting a different option swaps the whole home layout at runtime.
 # -- The value survives reboots, so no reflash is needed to change it. --
 select:
   - platform: template
     id: screen_rotation
-    name: "Screen rotation"
-    entity_category: config
+    internal: true
     optimistic: true
     restore_value: true
     initial_option: "0"
@@ -428,9 +353,12 @@ select:
       then:
         - script.execute: apply_screen_rotation
 
+  # Internal since contract version 9, like the backlight above and for the
+  # same reason: `select.<panel>_player_skin` owns the value over this
+  # contract, and this is where the device keeps what it applied.
   - platform: template
-    name: "Screen Style"
     id: screen_style
+    internal: true
     optimistic: true
     restore_value: true
     initial_option: "Classic"
@@ -442,79 +370,9 @@ select:
       then:
         - script.execute: apply_screen_style
 
-# -------------------- OPACITY CONTROLS --------------------
-number:
-  # -- Screen sleep timeout (seconds of no playback + no touch before backlight turns off) --
-  - platform: template
-    name: "Screen Timeout"
-    id: screen_timeout
-    min_value: 5
-    max_value: 120
-    step: 5
-    initial_value: 15
-    unit_of_measurement: s
-    optimistic: true
-    restore_value: true
-
-  # -- Album art image opacity --
-  - platform: template
-    name: "Album Art Opacity"
-    id: album_art_opacity
-    min_value: 0
-    max_value: 255
-    step: 1
-    initial_value: 255
-    optimistic: true
-    restore_value: true
-    on_value:
-      then:
-        - script.execute: apply_theme
-
-  # -- Progress ring opacity --
-  - platform: template
-    name: "Progress Ring Opacity"
-    id: arc_opacity
-    min_value: 0
-    max_value: 255
-    step: 1
-    initial_value: 255
-    optimistic: true
-    restore_value: true
-    on_value:
-      then:
-        - script.execute: apply_theme
-
-  # -- Decoration circle opacity --
-  - platform: template
-    name: "Decoration Opacity"
-    id: deco_opacity
-    min_value: 0
-    max_value: 255
-    step: 1
-    initial_value: 153
-    optimistic: true
-    restore_value: true
-    on_value:
-      then:
-        - script.execute: apply_theme
-
-  # -- Control buttons background opacity --
-  - platform: template
-    name: "Buttons Opacity"
-    id: btn_opacity
-    min_value: 0
-    max_value: 255
-    step: 1
-    initial_value: 153
-    optimistic: true
-    restore_value: true
-    on_value:
-      then:
-        - script.execute: apply_theme
-
 # -------------------- ALBUM ART TRANSPORT --------------------
 # online_image needs an HTTP client, so it is configured here rather than in
-# either firmware: both would declare the same thing.
+# the transport half: the two album-art images are drawn here.
 http_request:
   verify_ssl: false
   timeout: 10s
@@ -542,8 +400,11 @@ interval:
               // -- A screen somebody is being asked to read never sleeps,
               // -- however long they take to get to it. --
               if (id(screen_keep_awake)) return false;
+              // -- 0 is never, which is what the contract says and what a
+              // -- hallway panel on mains power is usually set to. --
+              if (id(screen_off_seconds) == 0) return false;
               bool is_playing = id(player_state).state == "playing";
-              uint32_t timeout_ms = (uint32_t)(id(screen_timeout).state * 1000.0f);
+              uint32_t timeout_ms = id(screen_off_seconds) * 1000;
               uint32_t elapsed = millis() - id(screen_last_active_ms);
               return !is_playing && elapsed >= timeout_ms && id(backlight).remote_values.is_on();
           then:
@@ -630,11 +491,12 @@ script:
                 id: show_room_page
                 animation: 0
 
-  # -- The room controls are the one page a firmware may replace. This file
-  # -- draws four fixed buttons, which is everything the classic firmware can
-  # -- ever have: it resolves entity IDs while compiling, so a card it was not
-  # -- flashed with cannot exist. A firmware that learns its room controls at
-  # -- runtime appends a page of its own and points room_page_index at it.
+  # -- The room controls are the one page the transport half may replace.
+  # -- This file draws four fixed buttons, which is what a client that had no
+  # -- registry could have; the paired firmware appends a room grid of its own
+  # -- and points room_page_index at it, so nothing reaches the four buttons
+  # -- any more. They are still drawn because taking a page out of the LVGL
+  # -- list means rearranging pages that work — see docs/ROADMAP.md.
   # --
   # -- Resolved through the page index rather than by naming a page, because
   # -- naming one would mean this file knowing about a page only one firmware
@@ -774,8 +636,7 @@ script:
                       time: 300ms
 
   # -- The skin Home Assistant asks for, in the spelling docs/CONTRACT.md
-  # -- uses. Only the paired firmware calls this, from the config sensor;
-  # -- the classic firmware has no settings block and never does.
+  # -- uses. The transport half calls it out of the config sensor.
   # --
   # -- The select below stays the local fallback and the thing that actually
   # -- holds the value, exactly as config.ini is for the tablet: it restores
@@ -959,11 +820,10 @@ script:
   # ════════════════════════════════════════════════════════════
   # ROOM SLOTS
   # ════════════════════════════════════════════════════════════
-  # A button here knows only its slot number. What it is called and whether it
-  # is shown at all comes from the integration at runtime — an empty slot has
-  # no tile — and which entity is behind it is the transport half's business:
-  # a compile-time substitution in the classic firmware, a string read from the
-  # config sensor in the paired one.
+  # A button here knows only its slot number, and nothing fills one any more:
+  # contract version 6 stopped sending a panel `slots` and version 9 removed
+  # the block from the contract. The scripts stay because the seam names them
+  # and the page they belong to is still in the LVGL page list.
 
   - id: ui_load_album_art
     then:
@@ -992,24 +852,23 @@ script:
       - lambda: |-
           if (!id(ui_ready)) return;
 
-          auto hex = [](const std::string &s) {
-            unsigned long v = strtoul(s.c_str(), nullptr, 16);
+          auto hex = [](uint32_t v) {
             return lv_color_make((v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF);
           };
 
-          lv_color_t col_arc  = hex(id(color_arc).state);
-          lv_color_t col_ind  = hex(id(color_arc_indicator).state);
-          lv_color_t col_deco = hex(id(color_decoration).state);
-          lv_color_t col_ttl  = hex(id(color_title).state);
-          lv_color_t col_art  = hex(id(color_artist).state);
-          lv_color_t col_vol  = hex(id(color_volume).state);
-          lv_color_t col_btn  = hex(id(color_buttons).state);
-          lv_color_t col_flat = hex(id(color_flat_controls).state);
+          lv_color_t col_arc  = hex(id(theme_color_arc));
+          lv_color_t col_ind  = hex(id(theme_color_arc_indicator));
+          lv_color_t col_deco = hex(id(theme_color_decoration));
+          lv_color_t col_ttl  = hex(id(theme_color_title));
+          lv_color_t col_art  = hex(id(theme_color_artist));
+          lv_color_t col_vol  = hex(id(theme_color_volume));
+          lv_color_t col_btn  = hex(id(theme_color_buttons));
+          lv_color_t col_flat = hex(id(theme_color_flat_controls));
 
-          int arc_opa  = (int)id(arc_opacity).state;
-          int art_opa  = (int)id(album_art_opacity).state;
-          int deco_opa = (int)id(deco_opacity).state;
-          int btn_opa  = (int)id(btn_opacity).state;
+          int arc_opa  = id(theme_opacity_arc);
+          int art_opa  = id(theme_opacity_album_art);
+          int deco_opa = id(theme_opacity_decoration);
+          int btn_opa  = id(theme_opacity_buttons);
 
           // -------- Progress indicators --------
           lv_obj_t *arcs[] = { id(progress_arc), id(progress_arc_m) };
@@ -1570,35 +1429,49 @@ script:
           ESP_LOGD("slots", "Applied the room slots");
 
 # -------------------- DEVICE DIAGNOSTICS --------------------
+# All internal, and all measured rather than published: these used to be seven
+# named ESPHome entities, which is to say seven entities that existed only for
+# as long as the ESPHome integration did. Contract version 9 sends the same
+# seven readings to Home Assistant in the `diagnostics` block of the status
+# report instead, and they become `sensor.<panel>_heap_free` and the rest —
+# entities of the panel's own device, beside its battery and its Wi-Fi signal.
+#
+# The uptime sensor that used to sit here is gone rather than made internal:
+# the status report has carried `uptime_seconds` from `millis()` since
+# contract version 5, and a second source for the same fact is one that can
+# disagree with it.
+#
+# Loop Time is the longest single loop iteration in the last update interval
+# rather than an average, so one expensive frame shows up here.
 sensor:
-  # -- Uptime tells a stale "Reset Reason" apart from a device that is actually
-  # -- rebooting: the reset reason is carried over from the previous boot and
-  # -- stays there until the next one. --
-  - platform: uptime
-    name: "Media Controller Uptime"
-
-  # -- Stability diagnostics: heap/PSRAM/main-loop health.
-  # -- Loop Time is the longest single loop iteration in the last update
-  # -- interval, not an average, so single expensive frames show up there. --
   - platform: debug
     free:
-      name: "Media Controller Heap Free"
+      id: debug_heap_free
+      internal: true
     block:
-      name: "Media Controller Heap Max Block"
+      id: debug_heap_max_block
+      internal: true
     min_free:
-      name: "Media Controller Heap Min Free"
+      id: debug_heap_min_free
+      internal: true
     fragmentation:
-      name: "Media Controller Heap Fragmentation"
+      id: debug_heap_fragmentation
+      internal: true
     psram:
-      name: "Media Controller Free PSRAM"
+      id: debug_psram_free
+      internal: true
     loop_time:
-      name: "Media Controller Loop Time"
+      id: debug_loop_time
+      internal: true
 
 text_sensor:
-  # -- Last reboot reason: useful for distinguishing watchdog/memory/power resets --
+  # -- Why this device last restarted. Carried over from the previous boot and
+  # -- unchanged until the next one, which is what makes the uptime beside it
+  # -- worth reading with it. --
   - platform: debug
     reset_reason:
-      name: "Media Controller Reset Reason"
+      id: debug_reset_reason
+      internal: true
 
 font:
   - file: "gfonts://Roboto"
@@ -1624,6 +1497,101 @@ font:
 
 # -------------------- PARSERS AND UI STATE --------------------
 globals:
+  # ════════════════════════════════════════════════════════════
+  # THE THEME
+  # ════════════════════════════════════════════════════════════
+  # Eight colours as 0xRRGGBB and four opacities as 0-255. Home Assistant owns
+  # every one of them and sends them in the `theme` block of the config
+  # sensor; these are where the device keeps what it applied, so that a reboot
+  # while Home Assistant is down comes back looking the same instead of grey.
+  #
+  # They were ESPHome text and number entities until contract version 9. That
+  # made them entities of the *ESPHome* device rather than of the panel, which
+  # is exactly what removing the native API took away — see "Panel theme" in
+  # docs/CONTRACT.md. The initial values are the ones those entities shipped
+  # with, so a device upgraded to this version looks unchanged until Home
+  # Assistant sends a theme of its own.
+  #
+  # Writing one changes nothing on screen by itself: call apply_theme after.
+  - id: theme_color_arc
+    type: uint32_t
+    restore_value: true
+    initial_value: '0x1a1a35'
+
+  - id: theme_color_arc_indicator
+    type: uint32_t
+    restore_value: true
+    initial_value: '0x00cfff'
+
+  - id: theme_color_decoration
+    type: uint32_t
+    restore_value: true
+    initial_value: '0x00cfff'
+
+  - id: theme_color_title
+    type: uint32_t
+    restore_value: true
+    initial_value: '0xffffff'
+
+  - id: theme_color_artist
+    type: uint32_t
+    restore_value: true
+    initial_value: '0x5588cc'
+
+  - id: theme_color_volume
+    type: uint32_t
+    restore_value: true
+    initial_value: '0x334466'
+
+  - id: theme_color_buttons
+    type: uint32_t
+    restore_value: true
+    initial_value: '0x00cfff'
+
+  # -- The transport glyphs of the Minimal Ring and Cover Card layouts. Kept
+  # -- apart from the buttons colour because both layouts deliberately reserve
+  # -- the accent for the progress indicator and one play button, and render
+  # -- everything else in neutral grey. --
+  - id: theme_color_flat_controls
+    type: uint32_t
+    restore_value: true
+    initial_value: '0xd8dce6'
+
+  - id: theme_opacity_album_art
+    type: int
+    restore_value: true
+    initial_value: '255'
+
+  - id: theme_opacity_arc
+    type: int
+    restore_value: true
+    initial_value: '255'
+
+  - id: theme_opacity_decoration
+    type: int
+    restore_value: true
+    initial_value: '153'
+
+  - id: theme_opacity_buttons
+    type: int
+    restore_value: true
+    initial_value: '153'
+
+  # -- How long the backlight stays on with nothing playing and nobody
+  # -- touching the screen. 0 is never, which is what the contract says and
+  # -- what a hallway panel on mains power is usually set to.
+  # --
+  # -- Home Assistant owns it, in settings.screen_off_seconds. Until contract
+  # -- version 9 this device owned a "Screen Timeout" ESPHome number instead
+  # -- and ignored what Home Assistant sent, because two owners for one
+  # -- setting is a bug waiting to happen; that number went with the native
+  # -- API and this is the one owner left. The initial value is what that
+  # -- number defaulted to. --
+  - id: screen_off_seconds
+    type: uint32_t
+    restore_value: true
+    initial_value: '15'
+
   # Captureless function pointer: the same parser formerly provided by the
   # local playlist_parser.h, which ESPHome Git packages cannot resolve.
   - id: json_string_array_parser
@@ -1834,10 +1802,9 @@ globals:
     initial_value: '"player"'
 
   # Which LVGL page the room controls are on, as an index into the pages list.
-  # -1 means the four fixed buttons on page_switches, which is all the classic
-  # firmware can ever have. A firmware that builds its room page at runtime
-  # appends it to lvgl.pages and writes its index here at boot. See
-  # show_room_page and the header of this file.
+  # -1 means the four fixed buttons on page_switches, which nothing fills any
+  # more. The transport half appends its own room page and writes that index
+  # here at boot. See show_room_page and the header of this file.
   - id: room_page_index
     type: int
     restore_value: no

@@ -1,13 +1,13 @@
-"""Pure payload and slot-record structures.
+"""Pure payload and stored-record structures.
 
-This module deliberately has no Home Assistant imports, so the compatibility
-payloads, the stored shape of a room-control slot, and the version 1 migration
-can all be tested without a Home Assistant runtime.
+This module deliberately has no Home Assistant imports, so the payloads a
+client reads, the stored shape of a registry element, and the entry
+migrations can all be tested without a Home Assistant runtime.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 import json
 from typing import Any
@@ -99,76 +99,6 @@ class PlaylistPayload:
         }
 
 
-# Keys of one stored slot record. They appear in config entries on disk, so
-# they are part of the on-disk format and may not be renamed casually.
-SLOT_KEY_INDEX = "slot"
-SLOT_KEY_ENTITY = "entity"
-SLOT_KEY_DOMAIN = "domain"
-SLOT_KEY_LABEL = "label"
-SLOT_KEY_CONTROLS = "controls"
-SLOT_KEY_MIN_KELVIN = "min_kelvin"
-SLOT_KEY_MAX_KELVIN = "max_kelvin"
-
-
-@dataclass(frozen=True, slots=True)
-class SlotConfig:
-    """One configured room control of one client, as stored."""
-
-    index: int
-    target_entity_id: str
-    domain: str
-    label: str = ""
-    controls: tuple[str, ...] = ()
-    min_kelvin: int | None = None
-    max_kelvin: int | None = None
-
-    def as_stored(self) -> dict[str, Any]:
-        """Return the config-entry representation of this slot."""
-        stored: dict[str, Any] = {
-            SLOT_KEY_INDEX: self.index,
-            SLOT_KEY_ENTITY: self.target_entity_id,
-            SLOT_KEY_DOMAIN: self.domain,
-            SLOT_KEY_LABEL: self.label,
-            SLOT_KEY_CONTROLS: list(self.controls),
-        }
-        if self.min_kelvin is not None:
-            stored[SLOT_KEY_MIN_KELVIN] = self.min_kelvin
-        if self.max_kelvin is not None:
-            stored[SLOT_KEY_MAX_KELVIN] = self.max_kelvin
-        return stored
-
-    @classmethod
-    def from_stored(cls, stored: Mapping[str, Any]) -> SlotConfig | None:
-        """Read one stored slot, ignoring an incomplete record."""
-        entity_id = stored.get(SLOT_KEY_ENTITY)
-        index = stored.get(SLOT_KEY_INDEX)
-        if not entity_id or not isinstance(index, int):
-            return None
-        domain = stored.get(SLOT_KEY_DOMAIN) or str(entity_id).split(".")[0]
-        return cls(
-            index=index,
-            target_entity_id=str(entity_id),
-            domain=str(domain),
-            label=str(stored.get(SLOT_KEY_LABEL) or ""),
-            controls=tuple(stored.get(SLOT_KEY_CONTROLS) or ()),
-            min_kelvin=stored.get(SLOT_KEY_MIN_KELVIN),
-            max_kelvin=stored.get(SLOT_KEY_MAX_KELVIN),
-        )
-
-
-def stored_slots(source: Mapping[str, Any], key: str) -> list[SlotConfig]:
-    """Read every valid slot from an entry or subentry mapping."""
-    raw = source.get(key) or ()
-    slots = [
-        slot
-        for record in raw
-        if isinstance(record, Mapping)
-        and (slot := SlotConfig.from_stored(record)) is not None
-    ]
-    slots.sort(key=lambda slot: slot.index)
-    return slots
-
-
 def migrate_v2_title(title: str, legacy_prefix: str) -> str:
     """Drop the version 2 title prefix, and only when it is still intact.
 
@@ -180,67 +110,6 @@ def migrate_v2_title(title: str, legacy_prefix: str) -> str:
     if not title.startswith(legacy_prefix):
         return title
     return title[len(legacy_prefix):].strip() or title
-
-
-def migrate_v1_section(
-    section: Mapping[str, Any] | None,
-    slots_key: str,
-    player_key: str,
-    legacy_slots: Iterable[tuple[int, str, str]],
-    initial_controls: Callable[[int], tuple[str, ...]],
-) -> dict[str, Any]:
-    """Rewrite one version 1 data or options mapping into numbered slots.
-
-    Capabilities are seeded with the client's minimum and re-resolved from the
-    live target the first time the migrated entry is set up.
-    """
-    if not section:
-        return dict(section or {})
-
-    legacy = tuple(legacy_slots)
-    legacy_keys = {key for _, key, _ in legacy}
-    migrated: dict[str, Any] = {
-        key: value for key, value in section.items() if key not in legacy_keys
-    }
-    slots = [
-        SlotConfig(
-            index=index,
-            target_entity_id=str(section[legacy_key]),
-            domain=domain,
-            controls=initial_controls(index),
-        ).as_stored()
-        for index, legacy_key, domain in legacy
-        if section.get(legacy_key)
-    ]
-    if slots or player_key in migrated:
-        migrated[slots_key] = slots
-    return migrated
-
-
-@dataclass(frozen=True, slots=True)
-class SlotPayload:
-    """One room-control slot as a client reads it."""
-
-    slot: int
-    entity: str
-    label: str
-    controls: tuple[str, ...] = ()
-    min_kelvin: int | None = None
-    max_kelvin: int | None = None
-
-    def as_dict(self) -> dict[str, Any]:
-        """Return the client-facing slot object."""
-        payload: dict[str, Any] = {
-            "slot": self.slot,
-            "entity": self.entity,
-            "label": self.label,
-            "controls": list(self.controls),
-        }
-        if self.min_kelvin is not None:
-            payload["min_kelvin"] = self.min_kelvin
-        if self.max_kelvin is not None:
-            payload["max_kelvin"] = self.max_kelvin
-        return payload
 
 
 def room_state_number(value: Any) -> float | int | None:
@@ -336,11 +205,31 @@ def render_room_states(hass: Any, entries: Iterable[Any]) -> dict[str, list[Any]
     return states
 
 
+def migrate_v3_section(
+    section: Mapping[str, Any] | None,
+    dead_keys: Iterable[str],
+) -> dict[str, Any]:
+    """Return one stored data or options mapping with the slots removed.
+
+    Contract version 9 has no room-control slots, so the stored block and the
+    four version 1 keys that preceded it are dropped rather than carried
+    forward for the life of the entry. Everything else is copied through
+    untouched: this runs on a source entry, and the player it is bound to is
+    in the same mapping.
+    """
+    dead = set(dead_keys)
+    return {
+        key: value
+        for key, value in (section or {}).items()
+        if key not in dead
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class EntityPayload:
     """One registry element as a panel reads it.
 
-    Unlike a slot this names the real entity: a panel learns entity IDs at
+    It names the real entity: a panel learns entity IDs at
     runtime and needs no proxy, and an unbounded registry behind proxies would
     create an unbounded number of extra entities in Home Assistant.
     """
@@ -397,16 +286,12 @@ class EntityPayload:
 class ClientConfigPayload:
     """Everything one client device needs to draw its room controls.
 
-    A client reads either `slots` or `entities`, never both, and is sent only
-    the one it reads. `slots` is the classic ESP32 firmware's four numbered
-    proxy positions; `entities` is a panel's unbounded registry. `None` means
-    "this client has no such block" and the key is left out of the payload
-    entirely, which is how a client tells the two kinds apart.
+    `entities` is a panel's registry, and `None` means "this entry has no
+    such block": the key is left out of the payload entirely, which is how a
+    client tells a panel's config sensor from a source's.
     """
 
     profile: str = ""
-    slot_count: int | None = None
-    slots: tuple[SlotPayload, ...] | None = None
     entity_limit: int | None = None
     entities: tuple[EntityPayload, ...] | None = None
     # Panels only, and only those that draw more than one skin. It is the one
@@ -425,30 +310,31 @@ class ClientConfigPayload:
     # passed in, because this module imports nothing: 0 means the caller did
     # not name one, which is what a client reads as "older than mine".
     contract_version: int = 0
-    # Panels only. A client that owns no runtime settings — the ESP32 — gets
-    # neither key at all.
+    # Panels only. A source owns no runtime settings and gets neither key.
     settings: Mapping[str, Any] | None = None
     commands: Mapping[str, Any] | None = None
+    # Panels only, and only those whose profile says they draw with it. The
+    # tablet has none: its two skins carry their own palettes, so it would
+    # have nothing to apply a progress-ring colour to.
+    theme: Mapping[str, Any] | None = None
     # Panels only. The current state of every registry element, keyed by rid,
     # rendered by the integration because a panel cannot render it itself:
     # POST /api/template answers administrators only, and a panel token
     # belongs to a dedicated non-administrator user. The ESP32 panel reads
     # this block out of the same poll that carries the registry; any other
     # client ignores it, the way it ignores settings and commands it has no
-    # use for. Omitted for the classic ESP32 controller, which learns its
-    # four states over the native API instead.
+    # use for. Omitted for a source, which draws nothing.
     room_states: Mapping[str, Any] | None = None
 
     def as_attributes(self) -> dict[str, Any]:
         """Return the Home Assistant attributes of a config sensor.
 
-        Unconfigured slots are omitted rather than sent as nulls: a client
-        renders what it receives, in `slot` order. The three controller
-        entities are included so that a client needs no entity ID of its own:
-        a URL, a token, and its panel ID are enough to bootstrap.
+        The three controller entities are included so that a client needs no
+        entity ID of its own: a URL, a token, and its panel ID are enough to
+        bootstrap.
 
-        A block this client does not read is left out altogether, so a panel
-        never sees `slots` and the classic ESP32 never sees `entities`.
+        A block this entry has no use for is left out altogether, so a source
+        never carries `entities`, `settings`, `commands` or `room_states`.
         """
         payload: dict[str, Any] = {
             "profile": self.profile,
@@ -456,9 +342,6 @@ class ClientConfigPayload:
             "queue": self.queue_entity,
             "playlists": self.playlists_entity,
         }
-        if self.slots is not None:
-            payload["slot_count"] = self.slot_count or 0
-            payload["slots"] = [slot.as_dict() for slot in self.slots]
         if self.entities is not None:
             payload["entity_limit"] = self.entity_limit or 0
             payload["entities"] = [
@@ -478,11 +361,16 @@ class ClientConfigPayload:
         # the skin is not layout. It is assigned once, when the select is
         # added, and folding it in would spend a re-layout on a fact that
         # changes nothing on screen. Panels only, decided the same way every
-        # other panel-only key here is: a client that reads `slots` is not one.
+        # other panel-only key here is: an entry with no registry is not one.
         if self.entities is not None and self.skin_select_entity:
             payload["skin_select"] = self.skin_select_entity
         if self.settings is not None:
             payload["settings"] = dict(self.settings)
+        # Outside the revision, like settings: a colour is restyled onto
+        # widgets that already exist, and folding it into the checksum would
+        # rebuild a panel's room page to change the colour of a progress ring.
+        if self.theme is not None:
+            payload["theme"] = dict(self.theme)
         if self.commands is not None:
             payload["commands"] = dict(self.commands)
         # Also after the revision, for the same reason as settings and

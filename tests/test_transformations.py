@@ -167,33 +167,18 @@ class ClientConfigTests(unittest.TestCase):
 
     def _payload(self):
         return transformations.ClientConfigPayload(
-            profile="esp32_s3",
-            slot_count=6,
+            profile="source",
             player_entity="media_player.kitchen",
             queue_entity="sensor.controller_queue",
             playlists_entity="sensor.controller_playlists",
-            slots=(
-                transformations.SlotPayload(
-                    slot=1,
-                    entity="light.controller_slot_1",
-                    label="DESK LAMP",
-                    controls=("toggle", "brightness", "color_temp"),
-                    min_kelvin=2000,
-                    max_kelvin=6535,
-                ),
-                transformations.SlotPayload(
-                    slot=3,
-                    entity="switch.controller_slot_3",
-                    label="FAN",
-                    controls=("toggle",),
-                ),
-            ),
         )
 
-    def test_unconfigured_slots_are_omitted(self) -> None:
+    def test_a_source_carries_no_room_controls_of_any_kind(self) -> None:
+        """It has no screen, so it has nothing to draw a room control on."""
         attributes = self._payload().as_attributes()
-        self.assertEqual(attributes["slot_count"], 6)
-        self.assertEqual([slot["slot"] for slot in attributes["slots"]], [1, 3])
+        for key in ("slots", "slot_count", "entities", "entity_limit"):
+            with self.subTest(key=key):
+                self.assertNotIn(key, attributes)
 
     def test_controller_entities_travel_with_the_layout(self) -> None:
         # A client bootstraps from a URL, a token, and its panel ID only.
@@ -207,12 +192,10 @@ class ClientConfigTests(unittest.TestCase):
     def test_revision_changes_with_a_controller_entity(self) -> None:
         before = self._payload().as_attributes()["revision"]
         moved = transformations.ClientConfigPayload(
-            profile="esp32_s3",
-            slot_count=6,
+            profile="source",
             player_entity="media_player.bedroom",
             queue_entity="sensor.controller_queue",
             playlists_entity="sensor.controller_playlists",
-            slots=self._payload().slots,
         )
         self.assertNotEqual(before, moved.as_attributes()["revision"])
 
@@ -228,31 +211,13 @@ class ClientConfigTests(unittest.TestCase):
         """It is not layout, and must not restart a panel to redraw one."""
         before = self._payload().as_attributes()["revision"]
         after = transformations.ClientConfigPayload(
-            profile="esp32_s3",
-            slot_count=6,
+            profile="source",
             player_entity="media_player.kitchen",
             queue_entity="sensor.controller_queue",
             playlists_entity="sensor.controller_playlists",
             contract_version=9,
-            slots=self._payload().slots,
         ).as_attributes()["revision"]
         self.assertEqual(before, after)
-
-    def test_kelvin_bounds_only_where_they_apply(self) -> None:
-        slots = self._payload().as_attributes()["slots"]
-        self.assertEqual(slots[0]["min_kelvin"], 2000)
-        self.assertNotIn("min_kelvin", slots[1])
-        self.assertNotIn("max_kelvin", slots[1])
-
-    def test_a_controller_with_no_slots_configured_still_sends_the_block(
-        self,
-    ) -> None:
-        attributes = transformations.ClientConfigPayload(
-            profile="esp32_s3", slot_count=4, slots=()
-        ).as_attributes()
-        self.assertEqual(attributes["slots"], [])
-        self.assertEqual(attributes["slot_count"], 4)
-        self.assertNotIn("entities", attributes)
 
     def test_revision_is_stable_for_equal_configuration(self) -> None:
         first = self._payload().as_attributes()["revision"]
@@ -262,18 +227,10 @@ class ClientConfigTests(unittest.TestCase):
     def test_revision_changes_with_the_configuration(self) -> None:
         before = self._payload().as_attributes()["revision"]
         after = transformations.ClientConfigPayload(
-            profile="esp32_s3",
-            slot_count=6,
-            slots=(
-                transformations.SlotPayload(
-                    slot=1,
-                    entity="light.controller_slot_1",
-                    label="READING LAMP",
-                    controls=("toggle", "brightness", "color_temp"),
-                    min_kelvin=2000,
-                    max_kelvin=6535,
-                ),
-            ),
+            profile="source",
+            player_entity="media_player.kitchen",
+            queue_entity="sensor.controller_queue",
+            playlists_entity="sensor.other_playlists",
         ).as_attributes()["revision"]
         self.assertNotEqual(before, after)
 
@@ -313,22 +270,13 @@ class RegistryPayloadTests(unittest.TestCase):
         return transformations.ClientConfigPayload(**defaults)
 
     def _controller(self, **overrides):
-        """Build the payload the classic ESP32 firmware reads."""
+        """Build the payload a source publishes."""
         defaults = dict(
-            profile="esp32_s3",
-            slot_count=4,
+            profile="source",
             player_entity="media_player.kitchen",
             queue_entity="sensor.controller_queue",
             playlists_entity="sensor.controller_playlists",
-            contract_version=6,
-            slots=(
-                transformations.SlotPayload(
-                    slot=1,
-                    entity="light.controller_slot_1",
-                    label="DESK LAMP",
-                    controls=("toggle", "brightness"),
-                ),
-            ),
+            contract_version=9,
         )
         defaults.update(overrides)
         return transformations.ClientConfigPayload(**defaults)
@@ -340,28 +288,21 @@ class RegistryPayloadTests(unittest.TestCase):
         self.assertNotIn("slots", attributes)
         self.assertNotIn("slot_count", attributes)
 
-    def test_the_classic_esp32_is_sent_slots_and_no_entities(self) -> None:
+    def test_a_source_is_sent_neither_block(self) -> None:
+        """Contract version 9 removed the one client that read `slots`."""
         attributes = self._controller().as_attributes()
-        self.assertIn("slots", attributes)
-        self.assertIn("slot_count", attributes)
-        self.assertNotIn("entities", attributes)
-        self.assertNotIn("entity_limit", attributes)
+        for key in ("slots", "slot_count", "entities", "entity_limit"):
+            with self.subTest(key=key):
+                self.assertNotIn(key, attributes)
 
-    def test_the_classic_esp32_payload_is_otherwise_unchanged(self) -> None:
-        """Version 6 must be invisible to a device already in the field."""
+    def test_a_source_still_names_the_three_entities(self) -> None:
+        """A panel is pointed at these; removing the slots did not move them."""
         attributes = self._controller().as_attributes()
+        self.assertEqual(attributes["player"], "media_player.kitchen")
+        self.assertEqual(attributes["queue"], "sensor.controller_queue")
         self.assertEqual(
-            attributes["slots"],
-            [
-                {
-                    "slot": 1,
-                    "entity": "light.controller_slot_1",
-                    "label": "DESK LAMP",
-                    "controls": ["toggle", "brightness"],
-                }
-            ],
+            attributes["playlists"], "sensor.controller_playlists"
         )
-        self.assertEqual(attributes["slot_count"], 4)
 
     def test_an_element_carries_its_identity_and_its_domain(self) -> None:
         element = self._panel().as_attributes()["entities"][0]

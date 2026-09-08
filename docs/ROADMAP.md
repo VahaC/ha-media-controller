@@ -28,10 +28,14 @@ Planned shape:
    label, kind (`light` / `switch`), and enabled controls (`brightness`,
    `color_temperature`). Proxies are created from that list instead of from
    constants.
-2. **Capability-forwarding proxies.** `ControllerLight` mirrors
+2. **Capability-forwarding proxies.** The proxy light mirrors
    `supported_color_modes`, `color_temp_kelvin`, and the min/max Kelvin bounds
    of its target instead of declaring a fixed colour mode. This is a
    [contract](CONTRACT.md) change and requires a contract version bump.
+   *(Overtaken: contract version 6 replaced the proxies with a registry of
+   real entities, and version 9 removed the last of them. A client reads
+   `controls`, `min_kelvin` and `max_kelvin` off the element and calls the
+   real light.)*
 3. **A layout sensor.** `sensor.<controller>_panel_layout` carries the whole
    tile list in its attributes, the same mechanism the queue and playlists
    sensors already use:
@@ -107,10 +111,10 @@ paired from Home Assistant with a six-digit code, is handed a revocable token,
 and keeps no entity ID and no secret in the build. See
 [ESP32_PAIRED_CONTROLLER.md](ESP32_PAIRED_CONTROLLER.md).
 
-The classic firmware keeps its compile-time token so that devices already in the
-field are not disturbed; its
-[limitation](ESP32_CONTROLLER.md#rest-token-limitation) is now a documented
-property of that variant rather than an open problem.
+The classic firmware kept its compile-time token, so that devices already in
+the field were not disturbed. Contract version 9 removed that firmware
+altogether — it was built on the ESPHome native API, which is the dependency
+that version exists to remove — so the question no longer has two answers.
 
 Still outstanding: the paired firmware has passed `esphome config` and a full
 compile but has not run on the physical device. The payload-size, memory,
@@ -169,65 +173,58 @@ Still outstanding, and honestly outstanding:
 - **GitHub Pages has to be switched on once, by hand.** Settings → Pages →
   Source: GitHub Actions. The workflow is written and cannot set it.
 
-## 4. One interface, two transports — and now two capability sets
+## 4. One interface, one transport
 
-The two firmwares share
-[media-controller-ui.yaml](../firmware/media-controller-ui.yaml), and the seam
-between interface and transport is a list of names in its header: the `cmd_`
-scripts a widget calls, the three scripts that turn a payload into widgets, and
-the thirteen state ids the interface reads. It holds today because nothing in
-the interface names a Home Assistant entity or performs a Home Assistant call.
+**Settled.** There were two firmwares sharing
+[media-controller-ui.yaml](../firmware/media-controller-ui.yaml). Contract
+version 9 removed the classic one, because it was built on
+`platform: homeassistant` sensors and `homeassistant.service` calls and so
+required the ESPHome integration by construction. The split it existed for is
+worth keeping anyway, and this item records why.
 
-A widget that reaches for `homeassistant.service` directly, or a substitution
-that creeps into the interface package, would compile happily under the classic
-firmware and break the paired one. `.github/workflows/firmware.yml` now checks
-both: the interface package may contain no `homeassistant.` call and no
-substitution other than `asset_base_url`. `ha_url` used to be allowed there and
-no longer is — the interface names no address at all now, which is what let the
-same file be built into an image that has none.
+The seam between the interface package and the transport half is a list of
+names in the interface's header: the `cmd_` scripts a widget calls, the
+scripts that turn a payload into widgets, the `refresh_` scripts a page calls
+when it opens, the theme globals, and the state ids the interface reads. It
+holds because nothing in the interface names a Home Assistant entity or
+performs a Home Assistant call.
 
-What is still only a convention is the rest of the seam — the `cmd_` names, the
-three payload-to-widget scripts, and the thirteen state ids. Renaming one of
-them breaks the other firmware in a way nothing catches until it is compiled,
-which is why both firmwares are validated on every change to `firmware/**`.
+That rule is not bookkeeping. It is what let the same interface be compiled
+into an image that has **no Home Assistant address in it at all** — the
+factory image the web installer publishes — and it is what would let a second
+transport exist again without touching a widget.
+`.github/workflows/firmware.yml` enforces the half of it that can be
+enforced: the interface package may contain no `homeassistant.` call and no
+substitution other than `asset_base_url`. The rest — the `cmd_` names, the
+payload-to-widget scripts and the state ids — is still a convention, and
+renaming one now breaks a compile rather than the other firmware.
 
-### The two firmwares no longer differ only in transport
+### What the removal took with it
 
-Until contract version 6 the difference between them was exactly one thing:
-where the token and the entity IDs come from. Everything drawn was the same,
-which is what made one shared interface package possible in the first place.
+The classic firmware read `slots`: four numbered room controls backed by proxy
+entities, resolved while compiling. It could never have had the on-device
+grid, and that was a property of the hardware binding rather than a phase of
+work nobody had reached:
 
-Version 6 ends that. The classic firmware reads `slots`; the paired one is a
-panel and reads `entities`, an unbounded registry keyed by `rid`. The classic
-firmware **cannot** be given the registry, and this is a property of the
-hardware binding rather than a decision that could be revisited:
-
-- its four buttons resolve `${light1_entity}` and the service domain
-  (`light.toggle` versus `switch.toggle`) while compiling, so it cannot act on
-  an entity it learned at runtime;
-- the four buttons have absolute LVGL geometry and compile-time icon assets,
-  so there is no place to put a fifth;
-- it has no cache, so there is nothing for a user-arranged layout to live in
+- its four buttons resolved `${light1_entity}` and the service domain
+  (`light.toggle` versus `switch.toggle`) while compiling, so it could not act
+  on an entity it learned at runtime;
+- the four buttons had absolute LVGL geometry and compile-time icon assets, so
+  there was no place to put a fifth;
+- it had no cache, so there was nothing for a user-arranged layout to live in
   across a reboot.
 
-The consequence for the roadmap is that **the on-device grid — the phase
-`rid` exists for, in which the user arranges tiles on the panel itself and the
-arrangement is stored against those `rid`s — is a paired-firmware feature
-only**. Planning it as something both firmwares eventually get would be
-planning something that cannot be built.
+So the grid was always a paired-firmware feature, and planning it as something
+both would eventually get would have been planning something that could not be
+built. All of it has landed, and there is now only one client to have landed
+it on. See [ROOM_SLOTS.md](ROOM_SLOTS.md).
 
-That did not break the shared interface package, and it must not be allowed
-to. What the interface gained is one integer, `room_page_index`: which LVGL
-page the room controls are on. It defaults to the four fixed buttons the
-interface itself draws, and a firmware that builds its own room page appends
-that page and writes its index there at boot. Navigation resolves the page
-through the index instead of naming one, so the interface never learns which
-firmware it is running on and never names a page only one of them compiles.
+One thing outlived the removal without being cleaned up: the interface package
+still draws `page_switches`, the four fixed room buttons, and still declares
+the `cmd_slot_*` scripts that go with them. Nothing reaches that page —
+`room_page_index` points at the grid — and nothing fills those buttons, since
+a panel has been sent no `slots` block since contract version 6. Taking them
+out means rearranging an LVGL page list that works, on hardware nobody has
+regression-tested lately, for no user-visible gain; it is worth doing on a
+change that is already touching those pages, and not on its own.
 
-The grid page itself lives in `media-controller-paired.yaml`, for the same
-reason the pairing page does: the classic firmware can never have it.
-
-The order was: the tablet first, because it has a filesystem, a real JSON
-parser and a screen with room for a hundred tiles; the paired firmware second;
-the on-device grid last, on the paired firmware alone. All three have landed.
-See [ROOM_SLOTS.md](ROOM_SLOTS.md#the-registry-contract-version-6).

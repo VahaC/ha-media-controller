@@ -22,8 +22,12 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity import Entity
 
-from .const import CONF_PANEL_SETTINGS, panel_entity_unique_id
-from .panel_state import PanelSettings, PanelState
+from .const import (
+    CONF_PANEL_SETTINGS,
+    CONF_PANEL_THEME,
+    panel_entity_unique_id,
+)
+from .panel_state import PanelSettings, PanelState, PanelTheme
 
 
 @callback
@@ -35,13 +39,30 @@ def async_store_settings(
     """Persist the settings of one panel on its config entry.
 
     They are written to entry data, not options: an options update reloads the
-    entry, which would recreate every proxy and make the tablet re-read a
-    layout that did not change, for a value the panel picks up on its next
+    entry, which would recreate every entity it owns and make the panel re-read
+    a layout that did not change, for a value the panel picks up on its next
     poll anyway.
     """
     hass.config_entries.async_update_entry(
         entry,
         data={**entry.data, CONF_PANEL_SETTINGS: settings.as_stored()},
+    )
+
+
+@callback
+def async_store_theme(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    theme: PanelTheme,
+) -> None:
+    """Persist the theme of one panel on its config entry.
+
+    Entry data rather than options, for exactly the reason above: a person
+    dragging a colour picker would otherwise reload the entry on every step.
+    """
+    hass.config_entries.async_update_entry(
+        entry,
+        data={**entry.data, CONF_PANEL_THEME: theme.as_stored()},
     )
 
 

@@ -1,39 +1,39 @@
-# Room slots
+# The room registry
 
 Specification for moving room-control configuration out of client files and
-into Home Assistant. It implements [ROADMAP.md](ROADMAP.md) item 1 and replaces
-the four fixed room slots of integration `0.7.x`.
+into Home Assistant. It implements [ROADMAP.md](ROADMAP.md) item 1.
 
-Status: **superseded for panels, still current for the classic ESP32.** The
-slot model was implemented in integration `0.8.2` and firmware `0.8.0`. A
-panel announces itself, is added from the discovery card, and is handed its
-own access token, so nothing about it is configured on the tablet; all of that
-still stands.
+Status: **current, and the registry is now the only shape.**
 
-What no longer stands is the slot itself, for panels. Contract version 6
-replaces a panel's fixed slots with an unbounded **entity registry**, grouped
-by domain, addressing real entities rather than proxies. Decisions 1, 4 and 6
-below are rewritten accordingly and say which client they still apply to; 3
-and 8 are unchanged and still binding. The four slots of an ESP32 on the
-classic firmware are exactly what this document described and are not being
-changed.
+It got here in three steps, and the middle one is why this file is called what
+it is. Integration `0.7.x` configured room controls in each client's own file.
+Integration `0.8.2` and firmware `0.8.0` moved them into Home Assistant as four
+numbered **slots**, each backed by a proxy entity, because the firmware of the
+day resolved entity IDs while compiling and a proxy was the only stable name it
+could be flashed against. Contract version 6 replaced a panel's slots with an
+unbounded **entity registry** addressing real entities, and contract version 9
+removed the last slots along with the classic firmware that read them.
+
+So: **there are no slots and no proxy entities anywhere.** The sections below
+that describe them are kept as history, marked as such, because the reasoning
+is why the registry is shaped the way it is — and because an installation
+upgrading from an old version still has proxy rows to clean up.
 
 What is still out of scope here is moving the tablet-local settings —
 `[panel]` and `[camera]` — into Home Assistant; see
 [Still on the tablet](#still-on-the-tablet).
 
-Contract version: **7**. The payload is in [CONTRACT.md](CONTRACT.md), under
-**Registry entries**. Version 6 introduced the registry; version 7 wrote the
-first of the cards it was waiting for.
+Contract version: **9**. The payload is in [CONTRACT.md](CONTRACT.md), under
+**Registry entries**. Version 6 introduced the registry, version 7 wrote the
+first of the cards it was waiting for, and version 9 deleted `slots`.
 
 ## Goal
 
 Adding a client device asks which device it is and then asks which entities it
-should draw, without editing a file on the device. A panel gets a list grouped
-by domain that it can add to and remove from freely; an ESP32 on the classic
-firmware gets exactly the four slots its four buttons are flashed against.
-Each client then draws the controls the entity actually supports — a dimmable
-lamp gets a brightness control, a plug gets a toggle.
+should draw, without editing a file on the device. It gets a list grouped by
+domain that it can add to and remove from freely, and it then draws the
+controls the entity actually supports — a dimmable lamp gets a brightness
+control, a plug gets a toggle.
 
 ## Decisions
 
@@ -42,33 +42,39 @@ everything below.
 
 | # | Decision | Consequence |
 | --- | --- | --- |
-| 1 | The **classic ESP32 firmware** addresses proxy entities; a **panel** addresses the real entity | Rewritten in version 6 — see below |
+| 1 | Every client addresses the **real entity** | Rewritten in version 6 and again in version 9 — see below |
 | 2 | Client profiles are a **static registry** in the integration | A new client type is a code change, not a UI action |
-| 3 | ESP32 has no entry of its own | Its four slots stay on the controller config entry, where they already are |
-| 4 | A panel's room controls are an **unbounded registry grouped by domain**; the classic ESP32 keeps exactly four slots | Rewritten in version 6 — see below |
+| 3 | A client device is a config entry of its own | Superseded: it is, since panels arrived. A source now carries only the player it is bound to |
+| 4 | Room controls are an **unbounded registry grouped by domain** | Rewritten in version 6; version 9 made it the only shape — see below |
 | 5 | Every element has a stored label; empty falls back to `friendly_name` | The form stopped asking for one — a tile is named as Home Assistant names the entity |
 | 6 | The registry accepts **six groups**; `light`, `switch`, `climate` and `cover` have cards, `weather` and `sensor` are readings | Rewritten in version 6, extended one group at a time from version 7 — see below |
 | 7 | The integration **normalizes capabilities** | Clients render from a plain list and never parse `supported_color_modes` |
 | 8 | Legacy **entity IDs** are preserved | Flashed ESP32 devices keep working without a reflash |
 
-### Decision 1, rewritten: proxies are the classic firmware's alone
+### Decision 1, rewritten twice: there are no proxies
 
-The original decision said *both* clients address proxies, and it made a slot's
-domain permanent because of it. That was right while every client had slots
-flashed against them. It is now split in two.
+The original decision said every client addresses a proxy, and it made a slot's
+domain permanent because of it. That was right while every client had its room
+controls flashed against it.
 
-The **classic ESP32 firmware** keeps it, unchanged and for the original
-reason: `platform: homeassistant` and `homeassistant.service` resolve
-`${light1_entity}` and the service domain while compiling, so a proxy with a
-stable entity ID is the only thing a device in the field can follow a UI
-change through. Its slot domain is still fixed at creation.
-
-A **panel** does not, and never needed to. The tablet and the paired firmware
+Contract version 6 ended it for **panels**. The tablet and the paired firmware
 both read entity IDs out of the config sensor at runtime, so a proxy bought
 them nothing but an extra Home Assistant entity — and a registry with no upper
 bound would have meant an unbounded number of them, up to 100 per tablet, for
 no gain at all. A panel is handed the real entity and calls the ordinary
 service for its domain.
+
+Contract version 9 ended it everywhere, by removing the one client that still
+needed one. The classic ESP32 firmware resolved `${light1_entity}` and the
+service domain while compiling, so a proxy with a stable entity ID was the only
+thing it could follow a UI change through — and it reached Home Assistant over
+the ESPHome native API, which is the dependency that version exists to remove.
+Both went together.
+
+The proxies an installation already had are deleted from the entity registry
+the first time each entry loads on the version that removed them: a panel's on
+version 6, a source's on version 9. Anything that referenced one has to be
+pointed at the real entity.
 
 Capability normalization (decision 7) is unaffected and is what makes that
 safe: the client still renders from a plain `controls` list and still never
@@ -93,9 +99,6 @@ only ceiling is the client profile's `entity_limit`: 100 for the tablet, 64
 for the paired ESP32. They differ because the tablet's registry is parsed by a
 GTK application with a filesystem and never travels into a firmware image,
 while the ESP32's is parsed on the device by brace depth with no JSON library.
-
-The classic ESP32 keeps exactly four slots and the form that goes with them.
-Nothing about decision 4 changes for it.
 
 Every element carries a `rid`: eight hex characters, minted once, never
 changed while the element lives and never handed out again after it is
@@ -128,7 +131,11 @@ name. The cover card is available on the T560 and not yet on the paired ESP32;
 both clients still speak contract version 7 and neither breaks on the other's
 payload.
 
-### Why proxies and not direct entities — on the classic firmware
+### Why proxies existed at all — history
+
+This is why the model above was shaped the way it was, and it is kept because
+it is also the answer to "why can a panel have a grid and that firmware could
+not". Nothing here describes anything that still runs.
 
 ESPHome binds entity IDs at compile time, in both directions:
 
@@ -144,84 +151,69 @@ binary_sensor:
     data: {entity_id: ${light1_entity}}  # target out
 ```
 
-A proxy with a stable entity ID is the only way an ESP32 in the field can
-follow a slot change made in the Home Assistant UI. The cost is decision 1: a
-slot cannot change domain. Replacing a lamp with a plug means deleting the slot
-and creating a new one, and reflashing the ESP32 if the slot is one of its four.
+A proxy with a stable entity ID was the only way such a device could follow a
+slot change made in the Home Assistant UI, and the cost was decision 1: a slot
+could not change domain. Replacing a lamp with a plug meant deleting the slot,
+creating a new one, and reflashing.
 
-None of that applies to a panel, which is why a panel no longer has proxies.
-Both panels resolve everything at runtime — the entity ID and, in the paired
-firmware, the service domain read off the entity it was handed — so there is
-nothing to bind at compile time and nothing a proxy would make follow.
+None of that applies to a panel. Both panels resolve everything at runtime —
+the entity ID and the service domain, read off the entity they were handed — so
+there is nothing to bind at compile time and nothing a proxy would make follow.
+That is the whole difference, and it is why the classic firmware could never
+have had a grid.
 
 ## Client profiles
 
-A profile carries whichever of the two shapes its client reads. The classic
-ESP32 firmware has slots and constrains each of them individually, because its
-four LVGL buttons have different compile-time actions: buttons 1–2 carry
-`on_long_press_repeat` with `light.turn_on` / `brightness_pct`, buttons 3–4
-only `switch.toggle`. A panel has no slots at all and carries an
-`entity_limit` and one control ceiling for the whole registry, because every
-element of one panel is drawn the same way.
+A profile says how large a client's registry may be and what it can draw for
+one element. There is one ceiling per client rather than one per position,
+because every element of one panel is drawn the same way.
 
 ```python
-@dataclass(frozen=True, slots=True)
-class SlotSpec:
-    index: int
-    domains: tuple[str, ...]        # what the entity selector offers
-    controls: tuple[str, ...]       # what this client can draw at all
-
-
 @dataclass(frozen=True, slots=True)
 class ClientProfile:
     slug: str
     name: str                       # shown in the device-type step
-    slots: tuple[SlotSpec, ...]     # the classic ESP32's four; empty otherwise
-    entity_limit: int = 0           # registry size; 0 means "reads slots"
+    entity_limit: int = 0           # registry size; 0 means "not a client"
     controls: tuple[str, ...] = CONTROL_ORDER   # the registry's ceiling
+    has_theme: bool = False         # draws with the `theme` block
+    reports_diagnostics: bool = False
 
 
-ESP32_S3 = ClientProfile(
-    slug="esp32_s3",
-    name="ESP32-S3 controller",
-    slots=(
-        SlotSpec(1, ("light",),  ("toggle", "brightness")),
-        SlotSpec(2, ("light",),  ("toggle", "brightness")),
-        SlotSpec(3, ("switch",), ("toggle",)),
-        SlotSpec(4, ("switch",), ("toggle",)),
-    ),
-)
+# Not a client device: a source is where a Music Assistant player is bound and
+# where the queue and playlist sensors live. It draws nothing.
+SOURCE = ClientProfile(slug="source", name="Media player source", controls=())
 
 T560 = ClientProfile(
     slug="t560",
     name="T560 panel",
-    slots=(),
     entity_limit=100,
     controls=("toggle", "brightness", "color_temp"),
 )
 
-# The same board on the paired firmware, and the reason the two ESP32 profiles
-# cannot be one: this one resolves the entity ID and the service domain at
-# runtime, so it can have a registry, and the classic one cannot. No colour
-# temperature: there is no control on the screen to set one with.
+# The same board the classic firmware ran on. No colour temperature: there is
+# a tap and one long-press sweep per card, and the sweep is spent on
+# brightness. It is the only client with a theme and the only one that
+# reports diagnostics, because both are what contract version 9 moved off the
+# ESPHome native API.
 ESP32_S3_PANEL = ClientProfile(
     slug="esp32_s3_panel",
     name="ESP32-S3 panel",
-    slots=(),
     entity_limit=64,
     controls=("toggle", "brightness"),
+    has_theme=True,
+    reports_diagnostics=True,
 )
 ```
 
-The controls a client actually draws are `target_capabilities & ceiling`,
-where the ceiling is `spec.controls` for a slot and `profile.controls` for a
-registry element. A colour-temperature lamp in ESP32 slot 1 is toggled and
-dimmed there, and gets its full control set on the T560.
+The controls a client actually draws are `target_capabilities &
+profile.controls`. A colour-temperature lamp is toggled and dimmed on the
+ESP32 panel and gets its full control set on the T560.
 
-`CONTROLLER_PROFILE` is `ESP32_S3` and always has been; `PANEL_PROFILES` is
-`(T560, ESP32_S3_PANEL)`. A slug appearing in one does not appear in the other,
-which is what keeps `panel_profile("esp32_s3")` from ever resolving: the classic
-firmware is not a panel and cannot be added as one.
+`PANEL_PROFILES` is `(T560, ESP32_S3_PANEL)`. `SOURCE` is in `PROFILES` so a
+slug read back from storage resolves, and out of `PANEL_PROFILES` because it is
+not a device anybody adds — which is also what keeps `panel_profile("source")`
+and the long-gone `panel_profile("esp32_s3")` from resolving to something that
+would then be sent a registry.
 
 New profiles live in `custom_components/media_controller/profiles.py`.
 
@@ -229,28 +221,21 @@ New profiles live in `custom_components/media_controller/profiles.py`.
 
 | Client | What it stores | Where | Reason |
 | --- | --- | --- | --- |
-| ESP32-S3, classic firmware | Four slots, under `slots` | The controller config entry (`data` / `options`) | Its four proxies already exist there and it is compile-time bound to them |
-| T560, paired ESP32-S3, and later panels | A registry, under `entities`, with the retired rids beside it under `retired_rids` | One config entry per device | A panel announces itself over mDNS, and a discovery flow creates an entry — `async_step_zeroconf` exists on `ConfigFlow` and has no subentry equivalent |
+| T560, ESP32-S3 panel, and later panels | A registry, under `entities`, with the retired rids beside it under `retired_rids` | One config entry per device | A panel announces itself over mDNS, and a discovery flow creates an entry — `async_step_zeroconf` exists on `ConfigFlow` and has no subentry equivalent |
 
-A panel entry written under contract version 5 still carries a `slots` key.
-It is **not read and not migrated**: the room controls are chosen again as
-registry elements. See [Migration](#migration).
+A source stores no room controls at all. It stored four, under `slots`, until
+contract version 9 deleted them along with the classic firmware that read
+them; the version 4 entry migration removes the key and the proxy rows it left
+behind.
 
-The two ESP32 rows are the same hardware in different places, and that is
-deliberate: a device that is reflashed from the classic firmware to the paired
-one is paired as a new panel and picks its rooms again. Its old controller-level
-slots stay where they are until they are removed, so nothing breaks in the
-meantime and a reflash back is possible.
+A panel entry written under contract version 5 still carries a `slots` key of
+its own. It is **not read and not migrated**: the room controls were chosen
+again as registry elements. See [Migration](#migration).
 
 A panel entry stores which controller it reads. It never reaches into that
 controller's runtime: the three entity IDs it needs are shared through one
 `ControllerEntities` object per controller, seeded from the entity registry so
 that a panel can load before, or without, its controller.
-
-The controller-level slots are the ESP32's slots for historical reasons, and
-the documentation should say so plainly rather than pretending it is a general
-concept. The flows say so too: they are behind a named step in the source's
-options and are not asked for when a source is created.
 
 In the user interface a controller entry is a **media player source**, and its
 device is registered as a service so that Home Assistant lists it apart from
@@ -280,25 +265,14 @@ skipped and `controller` is shown directly.
 
 ### Source options flow
 
-A menu, because the two halves have different audiences:
+One question, because a source has one thing to change: which Music Assistant
+player it is bound to. There is no menu.
 
-```
-Music Assistant player                        → step `player`
-Room controls (classic-firmware ESP32 only)   → step `esp32_slots`
-```
-
-`esp32_slots` is the four-slot form above. Options are stored whole, so each
-step writes both halves — the one it asked about and the one it left alone —
-and an empty player is omitted rather than written, so editing slots can never
-unbind a source from its player.
-
-The second item is shown to everybody, including the majority who will never
-need it, and that is deliberate. It cannot be hidden until a slot exists,
-because the classic firmware is flashed with the entity IDs of the proxies
-that form creates — there is always zero of them when somebody needs it for
-the first time. Nor is it worth hiding behind Advanced Mode: flashing the
-classic firmware is a documented path, not an expert one. So the label names
-its audience instead.
+There was one until contract version 9. Beside the player it offered *Room
+controls (classic-firmware ESP32 only)*, a four-slot form for the only client
+that read them, and the label named its audience because the majority of
+people who saw it would never need it. That client is gone and so is the
+step.
 
 ### Panel discovery flow
 
@@ -399,19 +373,17 @@ toggle control is not coupled to capability discovery.
 
 ## Entities
 
-### Slot proxies
+### Slot proxies — removed
 
-One proxy per configured slot, in the domain fixed at creation. **A controller
-entry only**: a panel has no slots and no proxies, and the ones it used to own
-are deleted from the entity registry the first time it loads on contract
-version 6.
+There are none. They were one `light` or `switch` entity per configured slot,
+registered as `f"{owner_id}_slot_{n}"`, and every one of them is deleted from
+the entity registry the first time its entry loads on the version that removed
+it — a panel's on contract version 6, a source's on version 9.
 
-| | Value |
-| --- | --- |
-| Platform | `light` or `switch` |
-| `unique_id` | `f"{owner_id}_slot_{n}"`, where `owner_id` is the controller entry ID |
-| `translation_key` | `slot_1` … `slot_4` |
-| Display name | `Slot N` |
+Both spellings are looked for when they are deleted. Integration `0.8.2`
+registered `<entry>_light_1_entity` and the three beside it; the version after
+it renamed the same rows to `<entry>_slot_1`, and an installation that skipped
+straight past has only the first shape.
 
 ### Registry elements
 
@@ -420,18 +392,16 @@ sensor payload, and the client calls the real entity's own services. That is
 what makes the registry affordable: 100 tablet elements would otherwise be 100
 extra Home Assistant entities that nothing but the tablet would ever look at.
 
-The display name is deliberately not the user's label. Entity IDs are generated
-from the name at first registration and must stay stable for the ESP32, so the
-label lives only in the config payload, which is what the clients render. Users
-may rename proxies freely in the UI; nothing reads that name.
+The display name a client draws is the element's `name`, which lives only in
+the config payload. Nothing in Home Assistant carries it, because nothing in
+Home Assistant represents an element.
 
-`ControllerLight` stops declaring a fixed `ColorMode.BRIGHTNESS`. It builds
-`supported_color_modes` from the stored capability snapshot, mirrors
-`color_temp_kelvin` and the Kelvin bounds, and forwards `ATTR_COLOR_TEMP_KELVIN`
-on turn-on. This is the contract change that removes the current workaround
-where `desk_lamp` and `desk_led_strip` bypass the proxy and address the real
-light. Capabilities change only when the slot is saved, so the entry reloads
-rather than mutating a live entity's colour modes.
+Colour temperature is the one capability worth naming here, because it is why
+the proxies existed in their final form: a proxy light built its
+`supported_color_modes` from a stored snapshot so that a client could reach a
+lamp's colour temperature through it. A client now reads `controls`,
+`min_kelvin` and `max_kelvin` off the element and calls
+`light.turn_on` on the real entity, which needs no entity in between.
 
 ### Config sensor
 

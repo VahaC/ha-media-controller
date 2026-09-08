@@ -23,8 +23,18 @@
  * number is raised because the contract requires every client to declare
  * which revision it speaks, and this build does speak revision 8 — it
  * ignores the new command, which is exactly what the contract says an
- * unknown command must do. */
-#define T560_PANEL_CONTRACT_VERSION 8
+ * unknown command must do.
+ *
+ * Version 9 is the same situation once more, and needs no code change here
+ * either. It removed `slots`, which this panel has never read: it reads
+ * `entities`, and did so from version 6. It added a `theme` block, which is
+ * sent only to a client whose profile draws with one -- this tablet's two
+ * skins carry their own palettes, so it is sent none -- and a `diagnostics`
+ * block in the status report, which is optional and which this panel omits.
+ * A tablet on version 8 and one on version 9 therefore send and receive
+ * exactly the same bytes; the number is raised because the contract requires
+ * every client to declare which revision it speaks, and this build speaks 9. */
+#define T560_PANEL_CONTRACT_VERSION 9
 
 /* How many registry elements this panel will hold. The integration sends its
  * own `entity_limit` and the T560 profile's is the same number; this is the

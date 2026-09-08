@@ -120,20 +120,6 @@ FALLBACK_MAX_TEMP = 35.0
 FALLBACK_TEMP_STEP = 0.5
 
 
-@dataclass(frozen=True, slots=True)
-class SlotSpec:
-    """One room-control slot of a client device.
-
-    A profile is not a bare maximum: the ESP32 constrains each slot
-    individually, because its four LVGL buttons carry different compile-time
-    actions.
-    """
-
-    index: int
-    domains: tuple[str, ...]
-    controls: tuple[str, ...]
-
-
 # How a stale build of one client is replaced. "Rebuild it and copy it to the
 # tablet" and "flash it with ESPHome" are not the same instruction, so the
 # repair issue Home Assistant shows is chosen from this rather than written
@@ -148,11 +134,6 @@ class ClientProfile:
 
     slug: str
     name: str
-    # Fixed, numbered room slots backed by proxy entities. Only the classic
-    # ESP32 firmware has any: it resolves entity IDs and service domains while
-    # compiling, so a proxy is the only thing it can be flashed against. Every
-    # panel has an empty tuple here and an `entity_limit` instead.
-    slots: tuple[SlotSpec, ...]
     # The layouts this client draws, in the client's own vocabulary and in the
     # order it offers them; the first is what it falls back to. The names
     # travel in `player_skin` and mean nothing outside this client, which is
@@ -162,7 +143,7 @@ class ClientProfile:
     # that draws one interface.
     skins: tuple[str, ...] = ()
     # Clockwise display angles the client can apply together with touch input.
-    # Empty for the classic ESP32 because its select is supplied by ESPHome.
+    # Empty for a source, which draws nothing.
     rotations: tuple[int, ...] = ()
     # What kind of update a stale build of this client needs; see the
     # constants above. Every panel is checked the same way — they pair, poll
@@ -179,45 +160,48 @@ class ClientProfile:
     # travels into a firmware image, while the ESP32's is held by a device
     # whose config sensor it parses with no JSON library and bounded memory.
     entity_limit: int = 0
+    # Whether this client draws its player page with the `theme` block, and
+    # therefore whether Home Assistant creates the twelve entities that own
+    # it. False for the tablet, whose two skins carry palettes of their own
+    # and which would have nothing to apply a progress-ring colour to.
+    has_theme: bool = False
+    # Whether this client reports the `diagnostics` block. False means the
+    # seven diagnostic sensors are not created at all, rather than created
+    # and left unavailable for the life of the installation.
+    reports_diagnostics: bool = False
     # What this client can draw for a registry element at all, intersected
-    # with what the target entity actually supports. It is the registry's
-    # equivalent of SlotSpec.controls: the paired ESP32 has a tap and one
-    # long-press sweep per card, which it spends on brightness for a lamp and
+    # with what the target entity actually supports. The paired ESP32 has a
+    # tap and one long-press sweep per card, which it spends on brightness for a lamp and
     # on the setpoint for a thermostat, and has nothing left to set a colour
     # temperature with — so it is told about that one and not the others.
     controls: tuple[str, ...] = CONTROL_ORDER
 
     @property
-    def slot_count(self) -> int:
-        """Return how many room controls this client drives."""
-        return len(self.slots)
-
-    @property
     def has_registry(self) -> bool:
-        """Return whether this client reads `entities` rather than `slots`."""
+        """Return whether this client reads a registry of room entities."""
         return self.entity_limit > 0
 
     def knows_skin(self, skin: str) -> bool:
         """Return whether this client draws the named layout."""
         return skin in self.skins
 
-    def spec(self, index: int) -> SlotSpec | None:
-        """Return the specification of one slot, or None when out of range."""
-        for spec in self.slots:
-            if spec.index == index:
-                return spec
-        return None
 
-
-ESP32_S3 = ClientProfile(
-    slug="esp32_s3",
-    name="ESP32-S3 controller",
-    slots=(
-        SlotSpec(1, (LIGHT_DOMAIN,), (CONTROL_TOGGLE, CONTROL_BRIGHTNESS)),
-        SlotSpec(2, (LIGHT_DOMAIN,), (CONTROL_TOGGLE, CONTROL_BRIGHTNESS)),
-        SlotSpec(3, (SWITCH_DOMAIN,), (CONTROL_TOGGLE,)),
-        SlotSpec(4, (SWITCH_DOMAIN,), (CONTROL_TOGGLE,)),
-    ),
+# A source is not a client device. Nothing is flashed against it, it draws
+# nothing and it reads no registry; it exists because a Music Assistant player
+# needs somewhere to be bound, and it owns the queue and playlist sensors a
+# panel is pointed at. It carries a profile only because its config sensor is
+# built by the same code every panel's is.
+#
+# Contract version 8 had a second thing here: `esp32_s3`, four numbered room
+# slots backed by proxy entities, for a firmware that resolved entity IDs
+# while compiling. That firmware needed the ESPHome integration by
+# construction and is gone, and so is the profile.
+SOURCE = ClientProfile(
+    slug="source",
+    name="Media player source",
+    # Not the default vocabulary but none of it: a source has no screen, so
+    # asking what it can draw a light with has no answer.
+    controls=(),
 )
 
 # The tablet's two skins. "cassette" restyles the whole interface, not the
@@ -241,7 +225,6 @@ T560 = ClientProfile(
     name="T560 panel",
     skins=(SKIN_MODERN, SKIN_CASSETTE),
     update_kind=UPDATE_KIND_TABLET,
-    slots=(),
     entity_limit=100,
     controls=(
         CONTROL_TOGGLE,
@@ -253,14 +236,9 @@ T560 = ClientProfile(
     ),
 )
 
-# The same hardware as ESP32_S3, running the paired firmware instead. It is a
-# separate profile rather than a widening of ESP32_S3 because the two differ
-# in what they read at all: ESP32_S3 describes devices already in the field
-# whose buttons carry a compile-time entity ID and service domain, and this
-# one resolves both at runtime from what Home Assistant sends it.
-#
-# That is why it has a registry and the classic firmware cannot. The limit is
-# lower than the tablet's because the payload is parsed on the device itself,
+# The ESP32-S3-4848S040 running the paired firmware. Every room card it draws
+# is resolved at runtime from what Home Assistant sends it, which is what a
+# registry is for. The limit is lower than the tablet's because the payload is parsed on the device itself,
 # by brace depth and with no JSON library. Colour temperature is still absent:
 # the firmware has buttons, and its one gesture beyond a tap is a long press
 # that sweeps a value. It spends that gesture on brightness for a light and on
@@ -272,8 +250,11 @@ ESP32_S3_PANEL = ClientProfile(
     name="ESP32-S3 panel",
     skins=(SKIN_CLASSIC, SKIN_MINIMAL_RING, SKIN_COVER_CARD),
     update_kind=UPDATE_KIND_FIRMWARE,
-    slots=(),
     entity_limit=64,
+    # Both are what contract version 9 moved off the ESPHome native API and
+    # into this contract. This is the only client that has either.
+    has_theme=True,
+    reports_diagnostics=True,
     controls=(
         CONTROL_TOGGLE,
         CONTROL_BRIGHTNESS,
@@ -281,13 +262,13 @@ ESP32_S3_PANEL = ClientProfile(
     ),
 )
 
-# The controller config entry always carries the ESP32 slots; every other
-# client is a panel entry with a registry. Only panels are offered in the
-# panel flow.
-CONTROLLER_PROFILE = ESP32_S3
+# Every client device is a panel entry with a registry, and only panels are
+# offered in the panel flow. The source is in PROFILES so that a slug read
+# back from storage still resolves, and out of PANEL_PROFILES because it is
+# not a device anybody adds.
 PANEL_PROFILES: tuple[ClientProfile, ...] = (T560, ESP32_S3_PANEL)
 PROFILES: dict[str, ClientProfile] = {
-    profile.slug: profile for profile in (ESP32_S3, T560, ESP32_S3_PANEL)
+    profile.slug: profile for profile in (SOURCE, T560, ESP32_S3_PANEL)
 }
 
 
@@ -322,13 +303,13 @@ def order_controls(controls: Iterable[str]) -> tuple[str, ...]:
 
 def limit_controls(
     controls: Iterable[str],
-    ceiling: SlotSpec | ClientProfile | None,
+    ceiling: ClientProfile | None,
 ) -> tuple[str, ...]:
     """Intersect what the target supports with what the client can draw.
 
-    The ceiling is a slot specification for the classic ESP32, whose buttons
-    each carry their own compile-time action, and the client profile for a
-    registry element, where every element of one client is drawn the same way.
+    The ceiling is the client profile: every registry element of one client is
+    drawn the same way, so there is one answer per client rather than one per
+    card.
     """
     ordered = order_controls(controls)
     if ceiling is None:

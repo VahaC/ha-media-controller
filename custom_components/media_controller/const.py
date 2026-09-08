@@ -6,22 +6,25 @@ from homeassistant.const import Platform
 
 DOMAIN = "media_controller"
 
-# Sensor first: it creates the controller device that every panel device
-# references as its via_device.
-PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.LIGHT, Platform.SWITCH]
+# A source owns the config sensor and the two Music Assistant sensors, and
+# nothing else. Sensor first: it creates the controller device that every
+# panel device references as its via_device.
+PLATFORMS: list[Platform] = [Platform.SENSOR]
 
-# A panel is a device with a battery, a display, and settings of its own, so
-# it carries entities the ESP32 controller has no equivalent for.
+# A panel is a device with a display, a theme, and settings of its own, so it
+# carries entities a source has no equivalent for.
 PANEL_PLATFORMS: list[Platform] = [
     *PLATFORMS,
     Platform.BINARY_SENSOR,
     Platform.BUTTON,
     Platform.NUMBER,
     Platform.SELECT,
+    Platform.SWITCH,
+    Platform.TEXT,
     Platform.UPDATE,
 ]
 
-ENTRY_VERSION = 3
+ENTRY_VERSION = 4
 
 # Version 2 titled every source "Media Controller – <player>". The prefix said
 # nothing the integration page does not already say and made a source read like
@@ -39,9 +42,10 @@ ENTRY_TYPE_PANEL = "panel"
 
 CONF_PLAYER_ENTITY = "player_entity"
 
-# Room-control slots. See docs/ROOM_SLOTS.md. The keys inside one stored slot
-# record belong to the on-disk format and live in transformations.py.
-# Only a controller entry carries these; a panel carries a registry instead.
+# Contract version 9 removed room-control slots along with the classic
+# firmware that was their only reader. The key survives here because an entry
+# written before that still carries the block, and the migration has to know
+# what to delete.
 CONF_SLOTS = "slots"
 CONF_PROFILE = "profile"
 
@@ -71,6 +75,10 @@ CONF_HA_URL = "ha_url"
 # They are entry data rather than options: they are changed from entities, one
 # value at a time, and must not reload the entry or restart the tablet.
 CONF_PANEL_SETTINGS = "panel_settings"
+# The colours and opacities a panel draws its player page with, stored beside
+# the settings and for the same reason: they are changed from entities, one
+# value at a time, and must not reload the entry or restart the panel.
+CONF_PANEL_THEME = "panel_theme"
 
 # Where a new ESP32-S3 panel is installed from: a browser, a USB cable, and
 # no ESPHome. It is here rather than in strings.json because Home Assistant
@@ -116,8 +124,9 @@ CONF_FAN_ENTITY = "fan_entity"
 CONF_AC_ENTITY = "ac_entity"
 
 # Slot index, version 1 config key, and the domain the proxy was created in.
-# The domain cannot be re-derived from the target: a version 1 target may have
-# been removed from Home Assistant since.
+# Version 4 deletes all four; they are named here so that the migration can
+# find the entity-registry rows they left behind, which is the only thing they
+# are still good for.
 LEGACY_SLOTS: tuple[tuple[int, str, str], ...] = (
     (1, CONF_LIGHT_1_ENTITY, "light"),
     (2, CONF_LIGHT_2_ENTITY, "light"),
@@ -145,23 +154,14 @@ ATTR_ENTITY_ID = "entity_id"
 ATTR_QUEUE_ITEM_ID = "queue_item_id"
 
 
-def slot_entity_key(index: int) -> str:
-    """Return the config-flow field name holding a slot target."""
-    return f"slot_{index}_entity"
-
-
-def slot_label_key(index: int) -> str:
-    """Return the config-flow field name holding a slot label."""
-    return f"slot_{index}_label"
-
-
-def slot_translation_key(index: int) -> str:
-    """Return the entity translation key of a slot proxy."""
-    return f"slot_{index}"
-
-
 def slot_unique_id(owner_id: str, index: int) -> str:
-    """Return the proxy unique ID for one slot of one client."""
+    """Return the unique ID one removed slot proxy was registered under.
+
+    Nothing creates a proxy any more. This survives so that the version 4
+    migration can find the rows the ones that existed left in the entity
+    registry and delete them, rather than leaving a permanently unavailable
+    `light.<source>_slot_1` behind for the life of the installation.
+    """
     return f"{owner_id}_slot_{index}"
 
 

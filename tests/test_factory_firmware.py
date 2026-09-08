@@ -82,12 +82,33 @@ class FactoryEntrypointTests(unittest.TestCase):
     def test_every_device_gets_its_own_name(self) -> None:
         self.assertIn("name_add_mac_suffix: true", _read(FACTORY))
 
-    def test_the_api_key_is_per_device(self) -> None:
-        # `encryption:` with no `key:`. A key written here would be the same
-        # on every panel flashed from this image, which is not a key.
-        text = _read(FACTORY)
-        self.assertTrue(re.search(r"^api:\n\s+encryption:\s*$", text, re.M))
-        self.assertIsNone(re.search(r"^\s*key:", text, re.MULTILINE))
+    def test_no_shipped_firmware_declares_the_native_api(self) -> None:
+        # Contract version 9, and the whole of it rather than a tidy-up.
+        #
+        # `api:` is what defines USE_API; USE_API is what makes ESPHome's mDNS
+        # component publish `_esphomelib._tcp`; and that record is the only
+        # thing the ESPHome integration's zeroconf discovery looks for. No
+        # key, no record, and a panel that cannot appear in an integration it
+        # is supposed to have left.
+        #
+        # The failure mode this catches is quiet: a key put back by accident
+        # compiles, boots and works, and the only symptom is a panel turning
+        # up in ESPHome again. An owner of a package build may still add one
+        # in their own device YAML; these two files are what every panel from
+        # the web installer runs.
+        for config in (FACTORY, PAIRED):
+            with self.subTest(config=config.name):
+                self.assertIsNone(
+                    re.search(r"^api:", _read(config), re.MULTILINE)
+                )
+
+    def test_the_interface_publishes_no_entity_of_its_own(self) -> None:
+        # The twelve theme values and the seven diagnostics used to be named
+        # ESPHome entities, which is to say entities of the *ESPHome* device
+        # rather than of the panel. They travel over the contract now, and a
+        # `name:` that came back would put a second copy of one of them in
+        # Home Assistant for anybody who opted the native API back in.
+        self.assertIsNone(re.search(r"^\s+name:\s", _read(UI), re.MULTILINE))
 
     def test_the_toolchain_is_pinned(self) -> None:
         # Not a tidiness rule. ESPHome decides from its own defaults whether

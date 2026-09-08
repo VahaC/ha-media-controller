@@ -17,7 +17,9 @@ from homeassistant.const import (
     EntityCategory,
     PERCENTAGE,
     SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
+    UnitOfInformation,
     UnitOfTemperature,
+    UnitOfTime,
 )
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
@@ -28,7 +30,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from . import MediaControllerRuntime
 from .coordinator import PlaylistCoordinator, QueueCoordinator
 from .panel_entity import PanelEntity, PanelReadingEntity
-from .proxy import controller_device_info
+from .devices import controller_device_info
 from .profiles import capability_signature
 from .slots import ClientConfiguration, ControllerEntities
 from .transformations import PlaylistPayload, QueuePayload
@@ -54,6 +56,21 @@ async def async_setup_entry(
                 PanelTemperatureSensor(entry, runtime),
             ]
         )
+        # Only a client that reports them. A panel that never sends the
+        # block would otherwise carry seven sensors that are unavailable for
+        # the life of the installation, which says nothing and looks broken.
+        if runtime.client.profile.reports_diagnostics:
+            async_add_entities(
+                [
+                    PanelHeapFreeSensor(entry, runtime),
+                    PanelHeapMaxBlockSensor(entry, runtime),
+                    PanelHeapMinFreeSensor(entry, runtime),
+                    PanelHeapFragmentationSensor(entry, runtime),
+                    PanelPsramFreeSensor(entry, runtime),
+                    PanelLoopTimeSensor(entry, runtime),
+                    PanelResetReasonSensor(entry, runtime),
+                ]
+            )
         return
 
     controller = runtime.client.controller
@@ -396,3 +413,156 @@ class PanelTemperatureSensor(PanelReadingEntity, SensorEntity):
     def native_value(self) -> float | None:
         """Return the reported temperature."""
         return self._panel.status.temperature_c
+
+
+class _PanelDiagnosticSensor(PanelReadingEntity, SensorEntity):
+    """One reading of the optional diagnostics block.
+
+    Every one of them is unavailable until the key it reads actually arrives.
+    A client sends the parts of the block it can measure and omits the rest,
+    so a missing PSRAM figure and a panel that has not reported for three
+    minutes both correctly show nothing rather than a zero.
+    """
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    # The status field this reads, which is also the entity and translation key.
+    _status_key: str = ""
+
+    @property
+    def available(self) -> bool:
+        """Return whether this reading arrived in the last report."""
+        return (
+            super().available
+            and getattr(self._panel.status, self._status_key) is not None
+        )
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the reported value."""
+        return getattr(self._panel.status, self._status_key)
+
+
+class _PanelMemorySensor(_PanelDiagnosticSensor):
+    """A diagnostic reading measured in bytes."""
+
+    _attr_device_class = SensorDeviceClass.DATA_SIZE
+    _attr_native_unit_of_measurement = UnitOfInformation.BYTES
+    _attr_suggested_unit_of_measurement = UnitOfInformation.KIBIBYTES
+
+
+class PanelHeapFreeSensor(_PanelMemorySensor):
+    """How much heap the panel has free.
+
+    On an ESP32 this is the number that decides whether the next album art
+    download fits. It falls as the interface is used and comes back; one that
+    only ever falls is a leak.
+    """
+
+    _status_key = "heap_free"
+
+    def __init__(self, entry: ConfigEntry, runtime: Any) -> None:
+        """Initialize the free-heap sensor of one panel."""
+        super().__init__(entry, runtime, "heap_free")
+
+
+class PanelHeapMaxBlockSensor(_PanelMemorySensor):
+    """The largest single free block of heap.
+
+    Read beside the free heap rather than on its own: a device with plenty
+    free and no large block cannot satisfy one big allocation, which is what
+    an image decode is, and fails in a way a healthy total does not explain.
+    """
+
+    _status_key = "heap_max_block"
+
+    def __init__(self, entry: ConfigEntry, runtime: Any) -> None:
+        """Initialize the largest-free-block sensor of one panel."""
+        super().__init__(entry, runtime, "heap_max_block")
+
+
+class PanelHeapMinFreeSensor(_PanelMemorySensor):
+    """The least heap the panel has had free since it started.
+
+    A watermark rather than a current reading: it is what says how close a
+    device came to running out overnight, which nothing sampled once a minute
+    would ever catch.
+    """
+
+    _status_key = "heap_min_free"
+
+    def __init__(self, entry: ConfigEntry, runtime: Any) -> None:
+        """Initialize the minimum-free-heap sensor of one panel."""
+        super().__init__(entry, runtime, "heap_min_free")
+
+
+class PanelHeapFragmentationSensor(_PanelDiagnosticSensor):
+    """How fragmented the panel's heap is."""
+
+    _status_key = "heap_fragmentation"
+    _attr_native_unit_of_measurement = PERCENTAGE
+
+    def __init__(self, entry: ConfigEntry, runtime: Any) -> None:
+        """Initialize the heap-fragmentation sensor of one panel."""
+        super().__init__(entry, runtime, "heap_fragmentation")
+
+
+class PanelPsramFreeSensor(_PanelMemorySensor):
+    """How much PSRAM the panel has free.
+
+    The LVGL buffers and every decoded image live here, so this is the figure
+    that moves when a layout changes rather than when a list grows.
+    """
+
+    _status_key = "psram_free"
+
+    def __init__(self, entry: ConfigEntry, runtime: Any) -> None:
+        """Initialize the free-PSRAM sensor of one panel."""
+        super().__init__(entry, runtime, "psram_free")
+
+
+class PanelLoopTimeSensor(_PanelDiagnosticSensor):
+    """The longest single main-loop iteration the panel measured.
+
+    A maximum rather than an average, deliberately: an average over a second
+    of frames hides the one frame that took two hundred milliseconds, and that
+    frame is what a person feels as a gesture the panel ignored.
+    """
+
+    _status_key = "loop_time"
+    _attr_device_class = SensorDeviceClass.DURATION
+    _attr_native_unit_of_measurement = UnitOfTime.MILLISECONDS
+
+    def __init__(self, entry: ConfigEntry, runtime: Any) -> None:
+        """Initialize the loop-time sensor of one panel."""
+        super().__init__(entry, runtime, "loop_time")
+
+
+class PanelResetReasonSensor(PanelReadingEntity, SensorEntity):
+    """Why the panel last restarted.
+
+    Carried over from the previous boot, so it does not change until the next
+    one: read it together with the uptime sensor beside it, which is what
+    tells a stale reason from a device that is actually rebooting.
+
+    It has no state class and no unit, because it is a phrase rather than a
+    measurement, and it is worth keeping out of the recorder in an
+    installation with long history. The integration cannot do that itself;
+    see docs/INTEGRATION.md.
+    """
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, entry: ConfigEntry, runtime: Any) -> None:
+        """Initialize the reset-reason sensor of one panel."""
+        super().__init__(entry, runtime, "reset_reason")
+
+    @property
+    def available(self) -> bool:
+        """Return whether the panel reported a reason at all."""
+        return super().available and bool(self._panel.status.reset_reason)
+
+    @property
+    def native_value(self) -> str | None:
+        """Return the reported reason."""
+        return self._panel.status.reset_reason or None

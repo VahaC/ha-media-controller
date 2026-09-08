@@ -98,33 +98,11 @@
   },
   "options": {
     "step": {
-      "init": {
-        "title": "Media player source",
-        "description": "What would you like to change?",
-        "menu_options": {
-          "player": "Music Assistant player",
-          "esp32_slots": "Room controls (classic-firmware ESP32 only)"
-        }
-      },
       "player": {
         "title": "Music Assistant player",
         "description": "Move this source to another Music Assistant player. Every panel that plays from it follows. The integration reloads automatically.",
         "data": {
           "player_entity": "Music Assistant player"
-        }
-      },
-      "esp32_slots": {
-        "title": "Room controls (classic-firmware ESP32 only)",
-        "description": "These four room controls are read only by an ESP32 running the classic media-controller.yaml firmware. A T560 or a paired ESP32 carries room controls of its own, set on the panel itself. The {profile} drives up to {slot_count} of them. Leave a slot empty to hide that tile. Labels are optional and fall back to the entity name.",
-        "data": {
-          "slot_1_entity": "Slot 1",
-          "slot_1_label": "Slot 1 label",
-          "slot_2_entity": "Slot 2",
-          "slot_2_label": "Slot 2 label",
-          "slot_3_entity": "Slot 3",
-          "slot_3_label": "Slot 3 label",
-          "slot_4_entity": "Slot 4",
-          "slot_4_label": "Slot 4 label"
         }
       },
       "panel_init": {
@@ -148,33 +126,7 @@
     }
   },
   "entity": {
-    "light": {
-      "slot_1": {
-        "name": "Slot 1"
-      },
-      "slot_2": {
-        "name": "Slot 2"
-      },
-      "slot_3": {
-        "name": "Slot 3"
-      },
-      "slot_4": {
-        "name": "Slot 4"
-      }
-    },
     "switch": {
-      "slot_1": {
-        "name": "Slot 1"
-      },
-      "slot_2": {
-        "name": "Slot 2"
-      },
-      "slot_3": {
-        "name": "Slot 3"
-      },
-      "slot_4": {
-        "name": "Slot 4"
-      },
       "screen": {
         "name": "Screen"
       }
@@ -203,6 +155,27 @@
       },
       "temperature": {
         "name": "Temperature"
+      },
+      "heap_free": {
+        "name": "Heap free"
+      },
+      "heap_max_block": {
+        "name": "Heap largest free block"
+      },
+      "heap_min_free": {
+        "name": "Heap minimum free"
+      },
+      "heap_fragmentation": {
+        "name": "Heap fragmentation"
+      },
+      "psram_free": {
+        "name": "PSRAM free"
+      },
+      "loop_time": {
+        "name": "Loop time"
+      },
+      "reset_reason": {
+        "name": "Reset reason"
       }
     },
     "binary_sensor": {
@@ -230,6 +203,18 @@
       },
       "screen_brightness": {
         "name": "Screen brightness"
+      },
+      "opacity_album_art": {
+        "name": "Album art opacity"
+      },
+      "opacity_arc": {
+        "name": "Progress ring opacity"
+      },
+      "opacity_decoration": {
+        "name": "Decoration opacity"
+      },
+      "opacity_buttons": {
+        "name": "Buttons opacity"
       }
     },
     "select": {
@@ -266,6 +251,32 @@
       "firmware": {
         "name": "Firmware"
       }
+    },
+    "text": {
+      "color_arc": {
+        "name": "Progress ring colour"
+      },
+      "color_arc_indicator": {
+        "name": "Progress ring fill colour"
+      },
+      "color_decoration": {
+        "name": "Decoration colour"
+      },
+      "color_title": {
+        "name": "Title colour"
+      },
+      "color_artist": {
+        "name": "Artist colour"
+      },
+      "color_volume": {
+        "name": "Volume colour"
+      },
+      "color_buttons": {
+        "name": "Buttons colour"
+      },
+      "color_flat_controls": {
+        "name": "Flat controls colour"
+      }
     }
   },
   "services": {
@@ -285,7 +296,7 @@
     },
     "panel_contract_outdated_firmware": {
       "title": "{name} is running an old build",
-      "description": "This panel reports client contract {panel_contract}, and this version of Media Controller speaks contract {integration_contract}. The two no longer agree on what the config sensor carries, so the device ignores part of what Home Assistant sends it: the settings and the buttons on its device change nothing.\n\nInstall the current firmware over USB with the web installer at {installer_url}, then pair the panel again if it asks. The panel keeps its Wi-Fi credentials across an install. If this device was set up from an ESPHome package instead, installing it again from ESPHome Device Builder re-downloads the maintained firmware and changes nothing else.\n\nThis message clears itself once the panel reports the current contract."
+      "description": "This panel reports client contract {panel_contract}, and this version of Media Controller speaks contract {integration_contract}. The two no longer agree on what the config sensor carries, so the device ignores part of what Home Assistant sends it: the settings and the buttons on its device change nothing.\n\nInstall the current firmware over USB with the web installer at {installer_url}, then pair the panel again if it asks. The panel keeps its Wi-Fi credentials across an install. If this device was set up from an ESPHome package instead, run `esphome run` against your own device YAML: its `packages:` block re-downloads the maintained firmware and nothing in your configuration changes. A panel no longer appears in ESPHome Device Builder at all, because it no longer speaks the ESPHome native API.\n\nThis message clears itself once the panel reports the current contract."
     },
     "panel_never_reported_tablet": {
       "title": "{name} has never reported to Home Assistant",
@@ -293,7 +304,7 @@
     },
     "panel_never_reported_firmware": {
       "title": "{name} has never reported to Home Assistant",
-      "description": "This panel has not sent a single status report since it was set up, so its Battery, Screen, Page and settings entities stay unavailable and nothing Home Assistant sends it is applied. That is what a build from before the status endpoint existed does: it cannot report, and it does not read the settings and commands sent to it. This version of Media Controller speaks contract {integration_contract}.\n\nInstall the current firmware over USB with the web installer at {installer_url}, then pair the panel again if it asks. The panel keeps its Wi-Fi credentials across an install. If this device was set up from an ESPHome package instead, installing it again from ESPHome Device Builder re-downloads the maintained firmware and changes nothing else.\n\nIf the device is simply switched off, ignore this: it clears itself the next time the panel reports."
+      "description": "This panel has not sent a single status report since it was set up, so its Battery, Screen, Page and settings entities stay unavailable and nothing Home Assistant sends it is applied. That is what a build from before the status endpoint existed does: it cannot report, and it does not read the settings and commands sent to it. This version of Media Controller speaks contract {integration_contract}.\n\nInstall the current firmware over USB with the web installer at {installer_url}, then pair the panel again if it asks. The panel keeps its Wi-Fi credentials across an install. If this device was set up from an ESPHome package instead, run `esphome run` against your own device YAML: its `packages:` block re-downloads the maintained firmware and nothing in your configuration changes. A panel no longer appears in ESPHome Device Builder at all, because it no longer speaks the ESPHome native API.\n\nIf the device is simply switched off, ignore this: it clears itself the next time the panel reports."
     }
   }
 }

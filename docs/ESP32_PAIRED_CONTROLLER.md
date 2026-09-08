@@ -1,12 +1,18 @@
-# ESP32-S3 controller, paired
+# ESP32-S3 panel
 
-The same hardware and the same screens as the
-[classic firmware](ESP32_CONTROLLER.md), configured from Home Assistant instead
-of from a YAML file. You install it once with no entity IDs and no token; the
-device shows a six-digit code, Home Assistant discovers it and asks you to type
-that code, and you then choose the player and the room controls in the Home
-Assistant UI. Changing which lamp a button drives is a Home Assistant action,
-not a reinstall.
+A touchscreen panel for Home Assistant and Music Assistant, built for the
+ESP32-S3 480x480 ST7701S + GT911 board commonly sold as `ESP32-S3-4848S040`.
+
+It is configured from Home Assistant rather than from a YAML file. You install
+it once with no entity IDs and no token; the device shows a six-digit code,
+Home Assistant discovers it and asks you to type that code, and you then choose
+the player and the room controls in the Home Assistant UI. Changing which lamp
+a button drives is a Home Assistant action, not a reinstall.
+
+**The ESPHome integration is not involved at any point.** A panel does not
+appear in it, is never adopted, needs no encryption key, and contributes no
+entity through it. Everything you see in Home Assistant comes from
+`media_controller`. See [Home Assistant, and no ESPHome](#home-assistant-and-no-esphome).
 
 **The recommended way to install it is a browser.** Open
 <https://vahac.github.io/ha-media-controller/>, plug the board into the same computer with a USB cable, and
@@ -19,60 +25,145 @@ minted for them, and both read the [contract](CONTRACT.md) over the REST API.
 
 ## Which firmware to use
 
-All three are maintained, all three work against one Home Assistant at the same
-time, and they share every pixel of their interface. **Start with the factory
-image**; the two package builds are for people who already run ESPHome and want
-the device in their dashboard.
+There are two ways to install one firmware. **Start with the factory image**;
+the package build is for people who already run ESPHome and would rather keep
+this device beside their others.
 
-| | Factory image | [`media-controller-paired.yaml`](../firmware/media-controller-paired.yaml) | [`media-controller.yaml`](../firmware/media-controller.yaml) |
-| --- | --- | --- | --- |
-| How you install it | a web page and a USB cable | ESPHome, from a package | ESPHome, from a package |
-| What you configure first | nothing | Wi-Fi and an address, in YAML | Wi-Fi, an address, nine entity IDs and a token, in YAML |
-| Wi-Fi | typed into the installer page, over USB | `secrets.yaml` | `secrets.yaml` |
-| Where Home Assistant is | sent during pairing | `ha_url` in YAML | `ha_url` in YAML |
-| Setup in Home Assistant | a six-digit code shown on the screen | the same | copy the entity IDs into the YAML |
-| Changing a room control | Home Assistant UI | Home Assistant UI | reflash |
-| What a slot may hold | any light or switch | any light or switch | slots 1–2 a light, 3–4 a switch, fixed at compile time |
-| Token | minted at pairing, revoked when you remove the device | the same | in `secrets.yaml`, permanent, yours to manage |
-| Transport | REST, polled about once a second | the same | ESPHome native API, pushed |
-| State latency | up to one poll interval | up to one poll interval | immediate |
-| Updates | USB, from the same page | ESPHome, over the air | ESPHome, over the air |
-| In the ESPHome dashboard | after adoption, with a key of its own | yes | yes |
-| Interface | [`media-controller-ui.yaml`](../firmware/media-controller-ui.yaml) | the same file | the same file |
-
-The honest trade against the classic firmware is latency. It is told about a
-change; the paired firmware asks. Volume and the track position step rather
-than glide, exactly as they do on the tablet.
+| | Factory image | [`media-controller-paired.yaml`](../firmware/media-controller-paired.yaml) |
+| --- | --- | --- |
+| How you install it | a web page and a USB cable | ESPHome, from a package |
+| What you configure first | nothing | Wi-Fi and an address, in YAML |
+| Wi-Fi | typed into the installer page, over USB | `secrets.yaml` |
+| Where Home Assistant is | sent during pairing | `ha_url` in YAML |
+| Setup in Home Assistant | a six-digit code shown on the screen | the same |
+| Changing a room control | Home Assistant UI | the same |
+| Token | minted at pairing, revoked when you remove the device | the same |
+| Transport | REST, polled about once a second | the same |
+| Updates | over the air, from Home Assistant | the same, or `esphome run` |
+| In the ESPHome dashboard | no | no, unless you opt in |
+| Interface | [`media-controller-ui.yaml`](../firmware/media-controller-ui.yaml) | the same file |
 
 The factory image and the paired package are the **same firmware**. The factory
-image is that firmware plus four things a shipped binary needs and a personal
-one does not: an empty address, Wi-Fi over USB, a recovery access point, and an
-encryption key negotiated per device instead of written into the file. See
+image is that firmware plus three things a shipped binary needs and a personal
+one does not: an empty address, Wi-Fi over USB and a recovery access point. See
 [firmware/media-controller-factory.yaml](../firmware/media-controller-factory.yaml).
 
-Nothing about either package changed, and an already flashed device needs no
-attention.
+There used to be a third column here: `firmware/media-controller.yaml`, the
+classic firmware, which read nine entity IDs and a long-lived token out of
+substitutions and reached Home Assistant over the ESPHome native API. Contract
+version 9 removed it. See
+[Moving a classic device forward](#moving-a-classic-device-forward).
 
-### ESPHome, and who needs it
+### Home Assistant, and no ESPHome
 
-**You do not need ESPHome to install or run this firmware.** The factory image
-is a finished file; the web installer writes it to the board and hands it your
-Wi-Fi, and Home Assistant does the rest.
+**You do not need ESPHome to install or run this firmware, and a panel never
+appears in the ESPHome integration.**
+
+Both halves of that are new in contract version 9. Installing without ESPHome
+has been true since version 8 — the factory image is a finished file, the web
+installer writes it to the board and hands it your Wi-Fi, and Home Assistant
+does the rest. What was still true until version 9 is that a panel *also* spoke
+the ESPHome native API: it turned up in the ESPHome integration as a discovered
+device asking to be adopted, and about a dozen of the entities you saw came
+from there rather than from `media_controller`. So a panel's backlight had two
+owners, and an installation had a dependency on an integration it did not
+otherwise need.
+
+`api:` is gone from the firmware, and nothing suppresses discovery by hand.
+ESPHome publishes the `_esphomelib._tcp` mDNS record only when the native API
+is compiled in, and that record is the only thing the ESPHome integration's
+discovery looks for. No key, no record, nothing to find. What a panel does
+advertise is `_media-controller._tcp`, which is what this integration finds it
+by.
+
+Nothing was lost from Home Assistant. The twelve appearance values became the
+`theme` block of the contract and are now `text.<panel>_color_*` and
+`number.<panel>_opacity_*` on the panel's own device; the seven diagnostics
+became the `diagnostics` block of the status report and are now
+`sensor.<panel>_heap_free` and the rest. Both are described under
+[What Home Assistant gains](#what-home-assistant-gains).
+
+Two things were lost from ESPHome, and both are honest losses:
+
+- **adoption in ESPHome Device Builder.** A panel is installed from the web
+  installer and updated from Home Assistant instead; see
+  [Updating](#updating);
+- **the log stream in the ESPHome dashboard.** Logs still come out of UART0
+  over the USB-C port at 115200 baud, which is the same cable the device is
+  flashed with. `esphome logs firmware/media-controller-factory.yaml` reads
+  them over serial, and so does any terminal — `screen`, `picocom`, the
+  Arduino IDE's serial monitor. What is gone is reading them over the
+  network.
 
 ESPHome is still how the firmware is *built*. The image published by the
 installer is compiled by ESPHome in this repository's continuous integration,
 from [`media-controller-factory.yaml`](../firmware/media-controller-factory.yaml)
-and the two packages beside it. That is a maintainer's tool, in the same sense
-that a compiler is: it is not something a person installing a panel has to
-have, know about, or keep in step.
+and the package beside it. That is a maintainer's tool, in the same sense that
+a compiler is: it is not something a person installing a panel has to have,
+know about, or keep in step.
+
+### Keeping a package build in the ESPHome dashboard
+
+If you build this firmware as an ESPHome package and you want the device in
+your dashboard anyway, add the native API in **your own** device YAML, on top
+of the package:
+
+```yaml
+packages:
+  panel: github://VahaC/ha-media-controller/firmware/media-controller-paired.yaml@main
+
+# Opt-in. This is not part of the maintained package.
+api:
+  encryption:
+    key: !secret media_controller_api_key
+```
+
+Know what it does before you do it: the device starts publishing
+`_esphomelib._tcp` again, so the ESPHome integration discovers it and offers to
+adopt it, and you get a second Home Assistant device carrying entities beside
+the ones this contract already provides. Everything in this document keeps
+working; you are adding a second channel, not switching to one.
+
+The factory image cannot opt in — it is a published binary, and a key inside it
+would be the same key on every panel flashed from it.
+
+### Moving a classic device forward
+
+`firmware/media-controller.yaml` was built on `platform: homeassistant` sensors
+and `homeassistant.service` calls. That is the ESPHome integration by
+construction, so it could not survive a version whose whole point is that the
+integration is not needed, and contract version 9 removed it.
+
+A device still running it keeps running: nothing reaches out and stops it. What
+does stop is maintenance — the file is gone from this repository, so a
+`packages:` block that points at it no longer resolves once your ESPHome next
+refreshes the package.
+
+It is the same board. Install the factory image over USB from the web installer
+and the device becomes a paired panel, with everything in this document.
+
+Two things do not come across, and neither can:
+
+- **the room controls.** They were four numbered slots backed by proxy
+  entities — `light.<source>_slot_1` and the rest — and those proxies are
+  deleted from Home Assistant. Choose the same entities again in the panel's
+  options; they become registry elements, and you arrange them on a grid
+  instead of on four fixed buttons. Anything that referenced a proxy — an
+  automation, a script, a dashboard card — has to be pointed at the real
+  entity;
+- **the history of those proxies.** A deleted entity takes its recorder
+  history with it. If you want it, export it before you install.
+
+Everything else survives: the source config entry, the Music Assistant player
+it is bound to, the queue and playlist sensors, and every automation that uses
+them.
 
 ## Validation status
 
-Firmware 0.4.0 passes `esphome config` on ESPHome 2026.8.0, in all three
-shapes: the classic package, the paired package through a device wrapper, and
-the factory entrypoint. The **factory image compiles**, at 39.5% RAM and 24.5%
-of an 8 MB application partition, and the merged 2.0 MB image was scanned for
-addresses, tokens and placeholder credentials and carries none.
+Firmware 0.4.0 passes `esphome config` on ESPHome 2026.8.0, in both shapes:
+the paired package through a device wrapper, and the factory entrypoint. The
+**factory image compiles**, and the merged image was scanned for addresses,
+tokens and placeholder credentials and carries none.
 
 **None of it has run on the physical device.** Work through the
 [hardware checklist](#hardware-verification) before treating any of it as done.
@@ -105,9 +196,10 @@ you remove the device.
 <{INSTALLER_URL}>
 
 One image, the same for every board. It contains no Wi-Fi credentials, no Home
-Assistant address, no access token, no API encryption key and no update
-password, so it is not personal to anybody and nothing about publishing it
-leaks anything.
+Assistant address, no access token and no update password, so it is not
+personal to anybody and nothing about publishing it leaks anything. It has no
+ESPHome native API either, which is why a panel flashed from it never appears
+in the ESPHome integration.
 
 ### What you need
 
@@ -457,10 +549,9 @@ internal temperature once a minute.
 It also reports which version of the [contract](CONTRACT.md) it implements,
 and reads the integration's own out of the config sensor, so that neither half
 can be silently behind the other. If this device is the older one, Home
-Assistant raises a repair issue naming it and telling you to install it again
-from ESPHome Device Builder — its `packages:` block re-downloads the
-maintained firmware, so nothing in your own configuration changes. If Home
-Assistant is the older one, the device says so in its ESPHome log instead:
+Assistant raises a repair issue naming it and pointing at the web installer. If
+Home Assistant is the older one, the device says so in its serial log instead —
+see [the note on logs above](#home-assistant-and-no-esphome):
 
 ```text
 [W][config]: Home Assistant speaks contract 5 and this firmware needs 6:
@@ -471,15 +562,52 @@ The number is `contract_version` in the substitutions block. It is not a knob
 to turn per device: it says what this firmware understands, and changing it
 only makes the device lie about itself.
 
-Two contract features are deliberately not wired up:
+### The appearance of the player
 
-- **`screen_off_seconds`.** The device already owns a *Screen Timeout* number on
-  its ESPHome device, and its range (5–120 s) is narrower than the contract's.
-  Two owners for one setting is a bug waiting to happen, so `number.<panel>_screen_off`
-  does nothing here — use *Screen Timeout*. Neither of them applies while the
-  device is showing a pairing code; see [Pairing](#pairing).
-- **Battery.** It is mains powered, so the package does not report a battery
-  value. This is optional in the contract.
+Eight colours and four opacities, as `text.<panel>_color_*` and
+`number.<panel>_opacity_*` on the panel's device. A colour is `#RRGGBB`; an
+opacity is 0 – 255. They are the twelve values that used to be ESPHome
+entities, and they do exactly what they did.
+
+Home Assistant owns them and sends them in the `theme` block of the config
+sensor. The device applies them on the next poll and keeps what it applied in
+its own flash, so a reboot while Home Assistant is down comes back looking the
+same rather than grey. A value the device cannot parse leaves the colour it
+already has, rather than resetting it.
+
+Setting one restyles every layout at once — Classic, Minimal Ring and Cover
+Card share the palette — and costs no re-layout: a colour is not part of the
+configuration revision, so nothing is rebuilt and nothing flickers.
+
+### Diagnostics
+
+Seven readings, all under **Diagnostic** on the panel's device:
+
+| Entity | What it says |
+| --- | --- |
+| `sensor.<panel>_heap_free` | Free heap now. It falls as the interface is used and comes back; one that only ever falls is a leak |
+| `sensor.<panel>_heap_max_block` | The largest single free block. Plenty free with no large block is what an album-art decode fails on |
+| `sensor.<panel>_heap_min_free` | The least free heap since the device started — how close it came overnight |
+| `sensor.<panel>_heap_fragmentation` | How fragmented the heap is, as a percentage |
+| `sensor.<panel>_psram_free` | Free PSRAM: the LVGL buffers and every decoded image |
+| `sensor.<panel>_loop_time` | The **longest single** main-loop iteration in the last interval, not an average. This is the one that shows up as a gesture the panel ignored |
+| `sensor.<panel>_reset_reason` | Why the device last restarted. Carried over from the previous boot, so read it beside the uptime |
+
+They ride the status report the device already sends once a minute, so they
+cost no extra request. The T560 panel does not report them and does not get
+them: the entities exist only for a client that fills them.
+
+### The screen timeout
+
+`number.<panel>_screen_off` works. It did nothing on this firmware until
+contract version 9, because a *Screen Timeout* number on the device's ESPHome
+device owned the value and had a narrower range; that number is gone with the
+rest of them, and this is the only owner left. Zero means never, which is what
+a hallway panel on mains power usually wants. It does not apply while the
+device is showing a pairing code; see [Pairing](#pairing).
+
+**Battery** is the one contract field this device deliberately does not report.
+It is mains powered. The field is optional and the sensor stays unavailable.
 
 ## Room controls
 
@@ -511,23 +639,23 @@ Before anybody opens the editor the device lays the registry out for itself, as
 2 x 2 cards in registry order, so the page is useful the moment it is configured
 in Home Assistant rather than after a second, undiscoverable step.
 
-### Why only this firmware has a grid
+### Why a grid is possible at all
 
-The classic firmware never gets one, and this is a property of the variant
-rather than a phase of work that has not happened yet.
+Because nothing on this device is bound at compile time.
 
-ESPHome binds an entity ID at compile time in **both** directions: a
-`homeassistant` sensor names the entity it reads, and a `homeassistant.service`
-call names the entity it writes. A card that arrives at runtime carries an
-entity ID that was not in the image, so a classic device could neither read its
-state nor act on it. That is why the classic firmware has four numbered slots
-backed by proxy entities: a proxy is a compile-time name that Home Assistant can
-repoint behind it, and it is the only way that build can follow a change made in
-the Home Assistant UI.
+The classic firmware could never have had one, and that was a property of the
+build rather than a phase of work nobody had got to. ESPHome binds an entity ID
+while compiling in **both** directions: a `homeassistant` sensor names the
+entity it reads, and a `homeassistant.service` call names the entity it writes.
+A card that arrives at runtime carries an entity ID that was not in the image,
+so that firmware could neither read its state nor act on it — which is why it
+had four numbered slots backed by proxy entities, a proxy being a compile-time
+name Home Assistant can repoint behind.
 
-This firmware resolves both at runtime — it holds a token and calls the REST
-API — so a card it was never flashed with works. The classic firmware keeps its
-four fixed buttons and its `slots` payload, unchanged and un-deprecated.
+This firmware resolves both at runtime: it holds a token and calls the REST
+API, so a card it was never flashed with works. Contract version 9 removed the
+classic firmware and the slots with it, and the registry is now the only shape
+a room control has.
 
 ### The layout editor
 
@@ -871,5 +999,9 @@ ESPHome as it always was.
     190 LVGL objects created at once — and while the editor is open. If it
     stutters, raise **Update interval** on the panel device; Home Assistant
     owns it and no reflash is needed.
-17. A classic device on the same Home Assistant keeps working throughout: its
-    four buttons, its heading, its hint and its `slots` payload are untouched.
+17. Confirm the panel does **not** appear in the ESPHome integration. Check
+    **Settings → Devices & services** for a discovered ESPHome device while
+    the panel is on the network, and check ESPHome Device Builder for an
+    adoptable one. Dump the panel's mDNS records as well — `avahi-browse -art`
+    or `dns-sd -B _services._dns-sd._udp` — and confirm `_media-controller._tcp`
+    is there and `_esphomelib._tcp` is not.

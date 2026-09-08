@@ -1,11 +1,15 @@
 # Home Assistant integration
 
 `custom_components/media_controller` is the server side of this project. Both
-clients — the [ESP32-S3 controller](ESP32_CONTROLLER.md), the same board on the
-[paired firmware](ESP32_PAIRED_CONTROLLER.md), and the
+panels — the [ESP32-S3 panel](ESP32_PAIRED_CONTROLLER.md) and the
 [T560 panel](../clients/t560/README.md) — read the entities it publishes and
 call the services it registers. Nothing else in this repository works without
 it.
+
+Since contract version 9 it is also the **only** integration involved. An
+ESP32 panel no longer speaks the ESPHome native API, so it never appears in
+the ESPHome integration and contributes no entity through it; everything a
+user sees comes from here.
 
 The exact entity and service surface is specified in [CONTRACT.md](CONTRACT.md).
 
@@ -54,28 +58,24 @@ Until this repository is included in the default HACS catalog:
 
 Panels are added afterwards, and normally add themselves.
 
-An ESP32 running the **classic** firmware needs one more step, and only that
-device does: open *Configure* on the source and pick **Room controls
-(classic-firmware ESP32 only)**. The form states the limit — four slots, 1
-and 2 lights, 3 and 4 switches — and an empty slot hides that tile. Do this
-*before* flashing: the YAML is filled in with the entity IDs of the proxies
-this form creates. Every other client carries its room controls on its own
-panel entry, and this item in the menu can be ignored.
+A source has nothing else to configure. Its *Configure* asks the same one
+question, so that a source can be moved to another player without being
+deleted.
 
-The integration creates:
+The integration creates, for a source:
 
 - a bounded queue sensor;
 - a playlists sensor;
-- a config sensor per client, carrying its room-control layout;
-- one proxy entity per configured slot of a classic-firmware ESP32.
+- a config sensor.
 
-The proxy entities make room mappings changeable through Options Flow without
-reflashing the ESP32. A proxy whose source is unavailable is itself
-unavailable; the other controller functions continue working. Clearing a slot
-removes its proxy.
+And for each panel: a config sensor of its own, its readings, its settings,
+and — where its device type has them — its theme and its diagnostics. See
+[Panel settings, battery, and display](#panel-settings-battery-and-display) and the two sections after it.
 
-**Panels have no proxies.** They read entity IDs at runtime, so they are
-handed the real entity and call its own services. See
+**There are no proxy entities.** Every client reads entity IDs at runtime, so
+it is handed the real entity and calls its own services. A source had four
+proxies until contract version 9, for the classic ESP32 firmware that was
+removed in the same version; the entry migration deletes them. See
 [Room entities](#room-entities) below.
 
 ### Panels
@@ -182,7 +182,7 @@ There is no group for media players: a panel plays from the source chosen at
 the top of the same page, and that is the player it draws.
 
 Only the ceiling comes from the device type: 100 entities for a
-tablet, 64 for a paired ESP32. Only the tablet offers colour temperature.
+tablet, 64 for an ESP32 panel. Only the tablet offers colour temperature.
 
 Lights, switches and climate have cards on both panels. A thermostat is
 toggled with a tap and its setpoint is moved on the tablet's adjust sheet or
@@ -203,11 +203,62 @@ Sensors are drawn as a reading block on both panels: the name and the value
 with its unit — `21.5 °C` — the bare value where the entity reports no unit.
 A tap on it acts on nothing. See [ROOM_SLOTS.md](ROOM_SLOTS.md).
 
-The room controls of an ESP32 running the **classic** firmware are the exception
-to all of this. They are still four numbered slots, they live on the source
-entry itself, behind *Configure* → *Room controls (classic-firmware ESP32
-only)*, and they are backed by proxy entities, because that firmware resolves
-both the entity ID and the service domain at compile time.
+There is no exception to any of this any more. Until contract version 9 there
+was one: an ESP32 on the classic firmware had four numbered slots, stored on
+the source entry and backed by proxy entities, because that firmware resolved
+both the entity ID and the service domain while compiling. It also reached
+Home Assistant over the ESPHome native API, which is the dependency version 9
+removed, so both went together. Upgrading deletes the stored slots and the
+proxies; choose the same entities again on the panel.
+
+### The appearance of an ESP32 panel
+
+An ESP32 panel carries twelve more configuration entities: eight
+`text.<panel>_color_*` holding `#RRGGBB`, and four
+`number.<panel>_opacity_*` holding 0 - 255. They colour the player page, and
+setting one restyles all three of the panel's home layouts at once.
+
+They are new in contract version 9 and they are not new functionality: they
+are exactly the twelve values that used to be ESPHome entities on the panel's
+*ESPHome* device. Removing the ESPHome native API would have taken the only
+way to restyle the player with it, so they moved into the contract instead.
+The panel keeps what it applied in its own flash, so it comes back looking the
+same after a reboot with Home Assistant down.
+
+The T560 panel has none of them: its two skins carry their own palettes, so
+there is nothing to apply a progress-ring colour to.
+
+### What an ESP32 panel reports about itself
+
+Seven more diagnostic sensors, again moved rather than added:
+`heap_free`, `heap_max_block`, `heap_min_free`, `heap_fragmentation`,
+`psram_free`, `loop_time` and `reset_reason`. They ride the status report the
+panel already sends, so they cost no extra request, and they are what makes a
+panel that reboots at three in the morning diagnosable without a serial cable.
+
+`loop_time` is the longest **single** main-loop iteration in the last
+interval, not an average: that is the number a stutter shows up in.
+
+`reset_reason` is a phrase rather than a measurement, and it changes once per
+reboot. If your recorder keeps long history it is worth excluding — the
+integration cannot do that for you, because a whole entity is excluded from
+the recorder only in the recorder's own configuration:
+
+```yaml
+recorder:
+  exclude:
+    entity_globs:
+      - sensor.*_reset_reason
+```
+
+Everything the config sensors carry is already excluded from the recorder by
+the integration: the queue payload alone would be written on every track
+change, and a panel's room states move every time anything in the house is
+switched.
+
+A client that does not report a block gets none of the entities that read it,
+rather than a row of sensors that are unavailable for the life of the
+installation. That is why a T560 panel has neither set.
 
 ### Card names and icons
 
@@ -399,29 +450,24 @@ these are settings rather than commands.
 
 ### Capabilities
 
-The integration reads what the entity behind a slot or a room entity actually
+The integration reads what the entity behind a room element actually
 supports and publishes a plain control list — `toggle`, `brightness`,
 `color_temp` — in the config sensor. Clients draw from that list and never
 inspect `supported_color_modes` themselves. The list is also limited by what
-the client can draw: a colour-temperature lamp in an ESP32 slot is toggled and
-dimmed, and offers its full control set on the T560.
+the client can draw: a colour-temperature lamp is toggled and dimmed on an
+ESP32 panel, and offers its full control set on the T560.
 
-That is true of a panel's room entities as well, and it is what makes it safe
-for a panel to address the real entity rather than a proxy: the client still
-renders a plain list, and still works out nothing for itself.
+That is what makes it safe for a client to address the real entity with no
+proxy in between: it renders a plain list, and works out nothing for itself.
 
-Entity IDs are assigned by Home Assistant's entity registry. Open the new
-controller device and copy its actual entity IDs for the firmware substitutions.
-Do not assume the example IDs are the IDs Home Assistant chose.
+Entity IDs are assigned by Home Assistant's entity registry, and no client has
+to be told any of them: a panel is handed the three it needs — the player, the
+queue sensor and the playlists sensor — in its own config sensor, so a URL, a
+token and its panel ID are the whole of what it bootstraps from.
 
-The integration listens to the Music Assistant player selected in Config Flow.
-The ESPHome device also uses its `player_entity` substitution for native media
-state and control actions. If the selected player is changed later in Options
-Flow, update that substitution during the next ESPHome/OTA update as well.
-
-Changing which entity a slot points at needs no reflash: the ESP32 is bound to
-the slot proxy, and it reads the button labels and which buttons to show from
-the config sensor on every connection.
+Changing which entity a card points at, or moving a source to another Music
+Assistant player, therefore needs no reinstall on any client. The change is in
+the next payload each of them polls.
 
 ### Synchronization behavior
 
@@ -436,10 +482,10 @@ the config sensor on every connection.
   its Music Assistant queue item ID without replacing the queue.
 
 
-The T560 panel reads the same queue and playlists sensors and the proxy
-entities of its own panel entry over the Home Assistant REST API. It reads its
-own config sensor on every poll cycle, because that sensor is also how a
-request to turn the display off or to restart reaches it.
+The T560 panel reads the same queue and playlists sensors over the Home
+Assistant REST API, and the room entities of its own registry directly. It
+reads its own config sensor on every poll cycle, because that sensor is also
+how a request to turn the display off or to restart reaches it.
 
 ## Services
 
@@ -560,8 +606,8 @@ The update procedure, the rollback, and the USB recovery path are in
 protocol is **Panel firmware endpoint** in [CONTRACT.md](CONTRACT.md).
 
 Read [CONTRACT.md](CONTRACT.md) before changing the payload shape of the queue
-or playlists sensors, the proxy entity behavior, or a service signature. Those
-changes reach both clients.
+or playlists sensors, the config sensor, the status report, or a service
+signature. Those changes reach both clients.
 
 ## Development
 

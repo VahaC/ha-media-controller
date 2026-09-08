@@ -37,3 +37,4 @@ clients/t560/build/
 /.codex-temp-flash-camera-r14-p20-direct.cmd
 /r13-diagnose-staging
 /.codex*
+/.tmp-camera-r15

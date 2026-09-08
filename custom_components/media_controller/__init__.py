@@ -27,6 +27,7 @@ from .const import (
     CONF_ENTITIES,
     CONF_PANEL_ID,
     CONF_PANEL_SETTINGS,
+    CONF_PANEL_THEME,
     CONF_PLAYER_ENTITY,
     CONF_PROFILE,
     CONF_SLOTS,
@@ -55,10 +56,9 @@ from .coordinator import PlaylistCoordinator, QueueCoordinator
 from .entries import is_panel_entry
 from .music_assistant import MusicAssistantAdapter, MusicAssistantUnavailable
 from .profiles import (
-    CONTROL_TOGGLE,
-    CONTROLLER_PROFILE,
+    SOURCE,
     UPDATE_KIND_FIRMWARE,
-    limit_controls,
+    ClientProfile,
     panel_profile,
 )
 from .pairing import PairingStore
@@ -70,17 +70,21 @@ from .panel_firmware import (
 )
 from .panel_layout import async_setup_layout_endpoint
 from .panel_provision import async_deliver_bootstrap
-from .panel_state import PanelSettings, PanelState
+from .panel_state import (
+    THEME_COLOR_DEFAULTS,
+    THEME_OPACITY_DEFAULTS,
+    PanelSettings,
+    PanelState,
+    PanelTheme,
+)
 from .provision import PanelProvisionView
-from .proxy import controller_device_info, panel_device_info
+from .devices import controller_device_info, panel_device_info
 from .registry import RegistryEntry
 from .slots import (
     ClientConfiguration,
     ControllerEntities,
     resolve_entries,
-    resolve_slots,
     stored_entries,
-    stored_slots,
 )
 from .status import (
     PanelStatusView,
@@ -88,11 +92,7 @@ from .status import (
     async_unregister_panel,
 )
 from .tokens import async_revoke_panel_token
-from .transformations import (
-    SlotConfig,
-    migrate_v1_section,
-    migrate_v2_title,
-)
+from .transformations import migrate_v2_title, migrate_v3_section
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -149,13 +149,6 @@ def _configured_value(entry: ConfigEntry, key: str) -> Any:
     return entry.options.get(key, entry.data.get(key))
 
 
-def _entry_slots(entry: ConfigEntry) -> list[SlotConfig]:
-    """Return the slots of an entry, options overriding the original data."""
-    if CONF_SLOTS in entry.options:
-        return stored_slots(entry.options, CONF_SLOTS)
-    return stored_slots(entry.data, CONF_SLOTS)
-
-
 def _entry_registry(entry: ConfigEntry) -> list[RegistryEntry]:
     """Return the registry of a panel entry, options overriding data."""
     if CONF_ENTITIES in entry.options:
@@ -208,14 +201,14 @@ def _async_remove_orphaned_entities(
     client: ClientConfiguration,
     extra: set[tuple[str, str]] | None = None,
 ) -> None:
-    """Delete registry entries for slots that no longer exist.
+    """Delete rows this entry no longer has an entity for.
 
-    Clearing a slot must not leave a permanently unavailable proxy behind.
+    Anything left behind would sit permanently unavailable with no way to
+    remove it, which is what the room-control proxies of contract version 8
+    would otherwise do to every installation that ever had one.
     """
     expected: set[tuple[str, str]] = set(extra or ())
     expected.add(("sensor", f"{client.owner_id}_config"))
-    for slot in client.slots:
-        expected.add((slot.domain, slot_unique_id(client.owner_id, slot.index)))
 
     registry = er.async_get(hass)
     for registry_entry in list(
@@ -353,36 +346,14 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Downgrading is not supported; refuse rather than corrupt the entry.
         return False
 
-    if entry.version < 2:
-        _async_migrate_v1_slots(hass, entry)
     if entry.version < 3:
         _async_migrate_v2_title(hass, entry)
+    if entry.version < 4:
+        _async_migrate_v3_slots(hass, entry)
 
     if entry.version != ENTRY_VERSION:
         hass.config_entries.async_update_entry(entry, version=ENTRY_VERSION)
     return True
-
-
-@callback
-def _async_migrate_v1_slots(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Migrate the four named room controls to numbered slots."""
-
-    def initial_controls(index: int) -> tuple[str, ...]:
-        return limit_controls((CONTROL_TOGGLE,), CONTROLLER_PROFILE.spec(index))
-
-    _async_migrate_slot_unique_ids(hass, entry)
-    hass.config_entries.async_update_entry(
-        entry,
-        data=migrate_v1_section(
-            entry.data, CONF_SLOTS, CONF_PLAYER_ENTITY, LEGACY_SLOTS,
-            initial_controls,
-        ),
-        options=migrate_v1_section(
-            entry.options, CONF_SLOTS, CONF_PLAYER_ENTITY, LEGACY_SLOTS,
-            initial_controls,
-        ),
-    )
-    _LOGGER.info("Migrated %s to numbered room-control slots", entry.title)
 
 
 @callback
@@ -404,27 +375,50 @@ def _async_migrate_v2_title(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
 
 @callback
-def _async_migrate_slot_unique_ids(
-    hass: HomeAssistant,
-    entry: ConfigEntry,
-) -> None:
-    """Renumber the four version 1 proxies without changing their entity IDs.
+def _async_migrate_v3_slots(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Remove the room-control slots and the proxies they created.
 
-    The registry keeps each row, so `light.<controller>_light_1` and the rest
-    survive and flashed ESP32 devices need no reflash.
+    Contract version 9 deletes both, together with the classic firmware that
+    was the only thing that ever read them. Two things are left behind by an
+    entry that had any, and neither goes away on its own:
+
+    * the stored `slots` block, and — on an entry old enough — the four
+      version 1 keys that preceded it. Nothing reads either, so they are
+      dropped rather than carried forward for the life of the entry;
+    * one entity-registry row per proxy. Deleting the entity is not enough:
+      a row whose entity never comes back sits unavailable forever, and the
+      user cannot remove it while the config entry that owns it is loaded.
+
+    Both proxy naming schemes are looked for. Version 1 registered
+    `<entry>_light_1_entity`, version 2 renamed the same rows to
+    `<entry>_slot_1`, and an installation that skipped straight from 1 to
+    here has the first shape and never had the second.
     """
+    if is_panel_entry(entry):
+        return
+
     registry = er.async_get(hass)
     for index, legacy_key, domain in LEGACY_SLOTS:
-        legacy_unique_id = f"{entry.entry_id}_{legacy_key}"
-        entity_id = registry.async_get_entity_id(
-            domain, DOMAIN, legacy_unique_id
+        for unique_id in (
+            slot_unique_id(entry.entry_id, index),
+            f"{entry.entry_id}_{legacy_key}",
+        ):
+            entity_id = registry.async_get_entity_id(domain, DOMAIN, unique_id)
+            if entity_id is not None:
+                _LOGGER.info(
+                    "Removing the room-control proxy %s: contract version 9 "
+                    "has no slots",
+                    entity_id,
+                )
+                registry.async_remove(entity_id)
+
+    dead = {CONF_SLOTS, *(key for _, key, _ in LEGACY_SLOTS)}
+    data = migrate_v3_section(entry.data, dead)
+    options = migrate_v3_section(entry.options, dead)
+    if data != dict(entry.data) or options != dict(entry.options):
+        hass.config_entries.async_update_entry(
+            entry, data=data, options=options
         )
-        if entity_id is None:
-            continue
-        new_unique_id = slot_unique_id(entry.entry_id, index)
-        if registry.async_get_entity_id(domain, DOMAIN, new_unique_id):
-            continue
-        registry.async_update_entity(entity_id, new_unique_id=new_unique_id)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -438,7 +432,7 @@ async def _async_setup_controller(
     hass: HomeAssistant,
     entry: ConfigEntry,
 ) -> bool:
-    """Set up a controller: the Music Assistant side and the ESP32 slots."""
+    """Set up a source: the Music Assistant side and its three sensors."""
     player_entity = _configured_value(entry, CONF_PLAYER_ENTITY)
     try:
         adapter = MusicAssistantAdapter.from_player(hass, player_entity)
@@ -461,8 +455,7 @@ async def _async_setup_controller(
     client = ClientConfiguration(
         hass,
         entry.entry_id,
-        CONTROLLER_PROFILE,
-        resolve_slots(hass, CONTROLLER_PROFILE, _entry_slots(entry)),
+        SOURCE,
         _async_controller_entities(hass, entry),
     )
     runtime = MediaControllerRuntime(
@@ -487,9 +480,10 @@ async def _async_setup_controller(
 
 
 async def _async_setup_panel(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up a panel: its own proxies and its own config sensor."""
+    """Set up a panel: its own entities and its own config sensor."""
     # The controller can be changed in the panel's options, exactly like a
-    # slot, so the option wins over the one chosen when it was added.
+    # registry element, so the option wins over the one chosen when it was
+    # added.
     controller_entry_id = _configured_value(entry, CONF_CONTROLLER_ENTRY_ID)
     controller_entry = (
         hass.config_entries.async_get_entry(controller_entry_id)
@@ -504,17 +498,13 @@ async def _async_setup_panel(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     profile = panel_profile(entry.data.get(CONF_PROFILE))
     state = PanelState(
-        PanelSettings.from_stored(entry.data.get(CONF_PANEL_SETTINGS))
+        PanelSettings.from_stored(entry.data.get(CONF_PANEL_SETTINGS)),
+        PanelTheme.from_stored(entry.data.get(CONF_PANEL_THEME)),
     )
-    # A panel has no slots as of contract version 6. Any that a version 5
-    # entry still carries are deliberately not read: the room controls are
-    # chosen again as registry elements, and the proxies the slots created are
-    # removed below with every other orphan.
     client = ClientConfiguration(
         hass,
         entry.entry_id,
         profile,
-        (),
         _async_controller_entities(hass, controller_entry),
         state,
         resolve_entries(hass, profile, _entry_registry(entry)),
@@ -528,7 +518,7 @@ async def _async_setup_panel(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         time.monotonic(),
     )
     _async_remove_orphaned_entities(
-        hass, entry, client, _panel_own_entities(entry)
+        hass, entry, client, _panel_own_entities(entry, profile)
     )
 
     # The panel's own user is what the status endpoint checks a report
@@ -618,9 +608,15 @@ async def _async_setup_panel(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
-# The entities a panel device owns beyond its slot proxies and config sensor.
-# Each is (platform domain, unique-ID suffix); the suffix is also the entity
+# The entities a panel device owns beyond its config sensor. Each is
+# (platform domain, unique-ID suffix); the suffix is also the entity
 # translation key.
+#
+# This list is what `_async_remove_orphaned_entities` keeps: a row that is not
+# in it is deleted from the entity registry on every setup. Anything a panel
+# platform creates therefore has to be named here, including the entities only
+# some profiles get — a key that is missing costs the user their entity ID
+# customisations once per reload.
 PANEL_OWN_ENTITIES: tuple[tuple[str, str], ...] = (
     ("sensor", "battery"),
     ("sensor", "uptime"),
@@ -632,19 +628,49 @@ PANEL_OWN_ENTITIES: tuple[tuple[str, str], ...] = (
     ("switch", "screen"),
     ("button", "restart"),
     ("select", "page"),
+    ("select", "player_skin"),
+    ("select", "screen_rotation"),
     ("number", "poll_interval"),
     ("number", "playlist_poll_interval"),
     ("number", "screen_off"),
     ("number", "screen_brightness"),
+    ("update", "firmware"),
+)
+
+# The theme entities, for a profile that has a theme, and the diagnostic
+# sensors, for one that reports them. They are kept apart from the list above
+# because both are per-profile: a panel that has neither must not be left with
+# nineteen rows it will never fill, and one that has them must not have them
+# deleted as orphans.
+PANEL_THEME_ENTITIES: tuple[tuple[str, str], ...] = (
+    *(("text", key) for key in THEME_COLOR_DEFAULTS),
+    *(("number", key) for key in THEME_OPACITY_DEFAULTS),
+)
+PANEL_DIAGNOSTIC_ENTITIES: tuple[tuple[str, str], ...] = (
+    ("sensor", "heap_free"),
+    ("sensor", "heap_max_block"),
+    ("sensor", "heap_min_free"),
+    ("sensor", "heap_fragmentation"),
+    ("sensor", "psram_free"),
+    ("sensor", "loop_time"),
+    ("sensor", "reset_reason"),
 )
 
 
 @callback
-def _panel_own_entities(entry: ConfigEntry) -> set[tuple[str, str]]:
-    """Return the registry keys of the entities a panel owns itself."""
+def _panel_own_entities(
+    entry: ConfigEntry,
+    profile: ClientProfile,
+) -> set[tuple[str, str]]:
+    """Return the registry keys of the entities this panel owns itself."""
+    keys = list(PANEL_OWN_ENTITIES)
+    if profile.has_theme:
+        keys.extend(PANEL_THEME_ENTITIES)
+    if profile.reports_diagnostics:
+        keys.extend(PANEL_DIAGNOSTIC_ENTITIES)
     return {
         (domain, panel_entity_unique_id(entry.entry_id, key))
-        for domain, key in PANEL_OWN_ENTITIES
+        for domain, key in keys
     }
 
 

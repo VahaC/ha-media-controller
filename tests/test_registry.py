@@ -287,19 +287,19 @@ class LimitTests(unittest.TestCase):
         self.assertEqual(profiles.T560.entity_limit, 100)
         self.assertEqual(profiles.ESP32_S3_PANEL.entity_limit, 64)
 
-    def test_the_classic_controller_has_no_registry(self) -> None:
-        self.assertEqual(profiles.ESP32_S3.entity_limit, 0)
-        self.assertFalse(profiles.ESP32_S3.has_registry)
+    def test_a_source_has_no_registry(self) -> None:
+        self.assertEqual(profiles.SOURCE.entity_limit, 0)
+        self.assertFalse(profiles.SOURCE.has_registry)
         for profile in profiles.PANEL_PROFILES:
             with self.subTest(profile=profile.slug):
                 self.assertTrue(profile.has_registry)
 
-    def test_panels_no_longer_carry_slots(self) -> None:
-        for profile in profiles.PANEL_PROFILES:
+    def test_nothing_carries_slots_any_more(self) -> None:
+        """A registry is the only shape a room control has since version 9."""
+        for profile in profiles.PROFILES.values():
             with self.subTest(profile=profile.slug):
-                self.assertEqual(profile.slots, ())
-                self.assertEqual(profile.slot_count, 0)
-        self.assertEqual(profiles.ESP32_S3.slot_count, 4)
+                self.assertFalse(hasattr(profile, "slots"))
+        self.assertFalse(hasattr(profiles, "ESP32_S3"))
 
     def _fill(self, count: int):
         """Build a registry of `count` light elements."""

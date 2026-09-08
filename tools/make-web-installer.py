@@ -308,6 +308,16 @@ def check_configuration() -> list[str]:
             f"{FACTORY_YAML.name} must carry no API encryption key: a key "
             "shared by every copy of one image is not a key"
         )
+    # Contract version 9. `api:` is what defines USE_API, USE_API is what
+    # publishes the `_esphomelib._tcp` mDNS record, and that record is what
+    # makes a panel appear in the ESPHome integration. A shipped image that
+    # had one back would work perfectly and quietly undo the whole version.
+    if re.search(r"^api:", text, re.MULTILINE):
+        problems.append(
+            f"{FACTORY_YAML.name} must not declare the ESPHome native API: a "
+            "panel flashed from this image must not appear in the ESPHome "
+            "integration"
+        )
     if re.search(r"^\s*-\s*platform:\s*esphome\s*$", text, re.MULTILINE):
         problems.append(
             f"{FACTORY_YAML.name} must not enable ESPHome OTA: its password "

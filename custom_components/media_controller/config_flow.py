@@ -70,7 +70,6 @@ from .const import (
     CONF_PANEL_PORT,
     CONF_PLAYER_ENTITY,
     CONF_PROFILE,
-    CONF_SLOTS,
     DOMAIN,
     ENTRY_TYPE_CONTROLLER,
     ENTRY_TYPE_PANEL,
@@ -80,8 +79,6 @@ from .const import (
     ZEROCONF_PROP_PANEL_ID,
     ZEROCONF_PROP_PROFILE,
     panel_unique_id,
-    slot_entity_key,
-    slot_label_key,
 )
 from .entries import controller_entries, is_panel_entry
 from .music_assistant import MUSIC_ASSISTANT_DOMAIN
@@ -99,7 +96,6 @@ from .panel_provision import (
     async_verify_code,
 )
 from .profiles import (
-    CONTROLLER_PROFILE,
     PANEL_PROFILES,
     ClientProfile,
     panel_profile,
@@ -115,14 +111,7 @@ from .registry import (
     replace_group,
     stored_retired_rids,
 )
-from .slots import (
-    SlotConfig,
-    seed_registry_ids,
-    slots_from_input,
-    stored_entries,
-    stored_slots,
-    suggested_slot_values,
-)
+from .slots import seed_registry_ids, stored_entries
 from .tokens import async_create_panel_token, async_revoke_panel_token
 
 _LOGGER = logging.getLogger(__name__)
@@ -228,25 +217,6 @@ def _text_property(properties: dict[str, Any], key: str) -> str:
     if isinstance(value, bytes):
         value = value.decode("utf-8", "replace")
     return str(value or "").strip()
-
-
-def _slot_fields(profile: ClientProfile) -> dict[Any, Any]:
-    """Build one entity selector and one label field per slot.
-
-    Every slot of the profile is shown, so the form states the device's real
-    limit; an empty slot simply hides that tile.
-    """
-    fields: dict[Any, Any] = {}
-    for spec in profile.slots:
-        fields[vol.Optional(slot_entity_key(spec.index))] = (
-            selector.EntitySelector(
-                selector.EntitySelectorConfig(domain=list(spec.domains))
-            )
-        )
-        fields[vol.Optional(slot_label_key(spec.index))] = (
-            selector.TextSelector()
-        )
-    return fields
 
 
 # The order the registry form lists its groups in. Payload order lives in
@@ -501,22 +471,11 @@ def _entry_player_entity(entry: ConfigEntry) -> str | None:
     )
 
 
-def _controller_slots(entry: ConfigEntry) -> list[SlotConfig]:
-    """Return the ESP32 slots of a controller entry."""
-    if CONF_SLOTS in entry.options:
-        return stored_slots(entry.options, CONF_SLOTS)
-    return stored_slots(entry.data, CONF_SLOTS)
-
-
-def _stored_controller(
-    player_entity: str,
-    slots: list[SlotConfig],
-) -> dict[str, Any]:
-    """Build the stored shape of a controller configuration."""
+def _stored_controller(player_entity: str) -> dict[str, Any]:
+    """Build the stored shape of a source configuration."""
     return {
         CONF_ENTRY_TYPE: ENTRY_TYPE_CONTROLLER,
         CONF_PLAYER_ENTITY: player_entity,
-        CONF_SLOTS: [slot.as_stored() for slot in slots],
     }
 
 
@@ -636,7 +595,7 @@ class MediaControllerConfigFlow(
                 self._abort_if_unique_id_configured()
                 return self.async_create_entry(
                     title=_controller_title(self.hass, player_entity),
-                    data=_stored_controller(player_entity, []),
+                    data=_stored_controller(player_entity),
                 )
 
         return self.async_show_form(
@@ -1034,10 +993,8 @@ class MediaControllerConfigFlow(
         controller actually needs — which Music Assistant player — and creates
         it before carrying on to the room controls.
 
-        Only the player is asked for. A controller also carries four room slots
-        of its own, but those belong to an ESP32 on the classic firmware; a
-        controller created from here has none, and they can be filled later
-        from its own Configure.
+        Only the player is asked for, because a source has nothing else: the
+        room controls belong to the panel that draws them.
         """
         errors: dict[str, str] = {}
         if user_input is not None:
@@ -1115,7 +1072,7 @@ class MediaControllerConfigFlow(
         self._abort_if_unique_id_configured()
         return self.async_create_entry(
             title=_controller_title(self.hass, player_entity),
-            data=_stored_controller(player_entity, []),
+            data=_stored_controller(player_entity),
         )
 
     async def _async_registry_done(
@@ -1210,7 +1167,7 @@ class MediaControllerConfigFlow(
         """Replace a panel's token without touching its configuration.
 
         Reinstalling the application keeps the token file, so this is only
-        reached by a tablet that was wiped. Its device, its slots, and every
+        reached by a tablet that was wiped. Its device, its registry, and every
         entity ID stay exactly as they were.
         """
         if user_input is not None:
@@ -1280,45 +1237,19 @@ class MediaControllerConfigFlow(
 
 
 class MediaControllerOptionsFlow(OptionsFlowWithReload):
-    """Edit what a source plays, and the classic ESP32's room controls.
+    """Edit which Music Assistant player a source plays from.
 
-    The two are asked for separately. Everybody who has a source has a player;
-    almost nobody has a classic-firmware ESP32, and putting its four slots in
-    the same form as the player made every source look like a device with
-    buttons on it. The menu names who the second step is for.
-
-    Options are stored whole, so each step writes both halves: the one it just
-    asked about, and the one it left alone.
+    That is the whole of it. Contract version 8 had a second step here for the
+    four room-control slots of the classic ESP32 firmware; both are gone, and
+    a panel's room controls are edited on the panel.
     """
 
     async def async_step_init(
         self,
         user_input: dict[str, Any] | None = None,
     ) -> ConfigFlowResult:
-        """Offer the two things a source has."""
-        return self.async_show_menu(
-            step_id="init",
-            menu_options=["player", "esp32_slots"],
-        )
-
-    @callback
-    def _options(
-        self,
-        player_entity: str,
-        slots: list[SlotConfig],
-    ) -> dict[str, Any]:
-        """Build the whole options mapping from both halves.
-
-        An empty player is left out rather than written: the value stored when
-        the entry was created is then still what the setup reads, and a source
-        cannot be left bound to nothing by editing its slots.
-        """
-        data: dict[str, Any] = {
-            CONF_SLOTS: [slot.as_stored() for slot in slots]
-        }
-        if player_entity:
-            data[CONF_PLAYER_ENTITY] = player_entity
-        return data
+        """Ask the one question a source has."""
+        return await self.async_step_player()
 
     async def async_step_player(
         self,
@@ -1341,10 +1272,7 @@ class MediaControllerOptionsFlow(OptionsFlowWithReload):
                     unique_id=_controller_unique_id(registry_entry),
                 )
                 return self.async_create_entry(
-                    data=self._options(
-                        player_entity,
-                        _controller_slots(self.config_entry),
-                    )
+                    data={CONF_PLAYER_ENTITY: player_entity}
                 )
 
         current = {
@@ -1378,36 +1306,6 @@ class MediaControllerOptionsFlow(OptionsFlowWithReload):
             ):
                 return True
         return False
-
-    async def async_step_esp32_slots(
-        self,
-        user_input: dict[str, Any] | None = None,
-    ) -> ConfigFlowResult:
-        """Remap the room controls of a classic-firmware ESP32."""
-        current = _controller_slots(self.config_entry)
-        if user_input is not None:
-            slots = slots_from_input(
-                self.hass, CONTROLLER_PROFILE, user_input, current
-            )
-            return self.async_create_entry(
-                data=self._options(
-                    _entry_player_entity(self.config_entry) or "",
-                    slots,
-                )
-            )
-
-        return self.async_show_form(
-            step_id="esp32_slots",
-            data_schema=self.add_suggested_values_to_schema(
-                vol.Schema(_slot_fields(CONTROLLER_PROFILE)),
-                user_input or suggested_slot_values(current),
-            ),
-            description_placeholders={
-                "slot_count": str(CONTROLLER_PROFILE.slot_count),
-                "profile": CONTROLLER_PROFILE.name,
-            },
-        )
-
 
 class PanelOptionsFlow(RegistryFlowMixin, OptionsFlowWithReload):
     """Edit what one panel plays from and the room entities it draws, at once.

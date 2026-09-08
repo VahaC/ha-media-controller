@@ -1,28 +1,26 @@
 """Room-control configuration shared by the flows and the entities.
 
-Two shapes live here, one per kind of client.
+A **registry element** is one entry of a panel's entity list. It names the
+real entity, has no proxy of any kind, and is stored on the panel config
+entry. See `registry.py` and docs/CONTRACT.md.
 
-* A **slot** is a numbered position backed by a proxy entity. Only the classic
-  ESP32 firmware has any, because it resolves entity IDs and service domains
-  while compiling; they are stored on the controller config entry.
-* A **registry element** is one entry of a panel's unbounded entity list. It
-  names the real entity, has no proxy, and is stored on the panel config
-  entry. See `registry.py` and docs/CONTRACT.md.
+Contract version 8 had a second shape beside it: a numbered **slot** backed by
+a proxy entity, for a firmware that resolved entity IDs and service domains
+while compiling. Nothing reads one any more — see docs/ROOM_SLOTS.md — and the
+only trace left is the migration that deletes the proxies it created.
 
-Both are read back here into the object the proxies and the config sensor use.
-See docs/ROOM_SLOTS.md.
+What survives here is read back into the object the config sensor serves.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable
 from dataclasses import replace
 from typing import Any
 
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 
-from .const import slot_entity_key, slot_label_key
 from .contract import CONTRACT_VERSION
 from .icon_catalog import normalize_icon_id
 from .profiles import (
@@ -32,9 +30,7 @@ from .profiles import (
     CAP_MIN_KELVIN,
     CAP_MIN_TEMP,
     CAP_TEMP_STEP,
-    CONTROL_TOGGLE,
     ClientProfile,
-    capability_signature,
     limit_controls,
     normalize_capabilities,
 )
@@ -48,62 +44,16 @@ from .registry import (
 from .transformations import (
     ClientConfigPayload,
     EntityPayload,
-    SlotConfig,
-    SlotPayload,
     render_room_states,
-    stored_slots,
 )
 
 __all__ = [
     "ClientConfiguration",
     "ControllerEntities",
     "RegistryEntry",
-    "SlotConfig",
     "resolve_entries",
-    "resolve_slots",
-    "slots_from_input",
     "stored_entries",
-    "stored_slots",
-    "suggested_slot_values",
 ]
-
-
-def _resolve_capabilities(
-    hass: HomeAssistant,
-    slot: SlotConfig,
-    profile: ClientProfile,
-) -> SlotConfig:
-    """Refresh a slot's capabilities from the live target when it exists.
-
-    The stored snapshot is kept when the target is missing, so a slot still
-    renders correctly while the light it points at is unavailable.
-    """
-    state = hass.states.get(slot.target_entity_id)
-    if state is None:
-        return slot
-
-    capabilities = normalize_capabilities(slot.domain, state.attributes)
-    return replace(
-        slot,
-        controls=limit_controls(
-            capabilities[CAP_CONTROLS], profile.spec(slot.index)
-        ),
-        min_kelvin=capabilities.get(CAP_MIN_KELVIN),
-        max_kelvin=capabilities.get(CAP_MAX_KELVIN),
-    )
-
-
-def resolve_slots(
-    hass: HomeAssistant,
-    profile: ClientProfile,
-    slots: Iterable[SlotConfig],
-) -> list[SlotConfig]:
-    """Return the slots a client actually gets, capabilities refreshed."""
-    return [
-        _resolve_capabilities(hass, slot, profile)
-        for slot in slots
-        if profile.spec(slot.index) is not None
-    ]
 
 
 def seed_registry_ids(
@@ -199,70 +149,11 @@ def resolve_entries(
     return sort_entries(resolved)[: profile.entity_limit]
 
 
-def slots_from_input(
-    hass: HomeAssistant,
-    profile: ClientProfile,
-    user_input: Mapping[str, Any],
-    previous: Iterable[SlotConfig] = (),
-) -> list[SlotConfig]:
-    """Convert a submitted slot form into stored slot records."""
-    known = {slot.index: slot for slot in previous}
-    slots: list[SlotConfig] = []
-
-    for spec in profile.slots:
-        target = user_input.get(slot_entity_key(spec.index))
-        if not target:
-            continue
-        label = str(user_input.get(slot_label_key(spec.index)) or "").strip()
-        domain = str(target).split(".")[0]
-        state = hass.states.get(str(target))
-        if state is not None:
-            capabilities = normalize_capabilities(domain, state.attributes)
-            controls = limit_controls(capabilities[CAP_CONTROLS], spec)
-            min_kelvin = capabilities.get(CAP_MIN_KELVIN)
-            max_kelvin = capabilities.get(CAP_MAX_KELVIN)
-        elif (kept := known.get(spec.index)) is not None and (
-            kept.target_entity_id == target
-        ):
-            controls = kept.controls
-            min_kelvin = kept.min_kelvin
-            max_kelvin = kept.max_kelvin
-        else:
-            # A target that does not exist yet can still be toggled; the real
-            # capabilities are picked up the next time the entry is loaded.
-            controls = limit_controls((CONTROL_TOGGLE,), spec)
-            min_kelvin = None
-            max_kelvin = None
-
-        slots.append(
-            SlotConfig(
-                index=spec.index,
-                target_entity_id=str(target),
-                domain=domain,
-                label=label,
-                controls=controls,
-                min_kelvin=min_kelvin,
-                max_kelvin=max_kelvin,
-            )
-        )
-    return slots
-
-
-def suggested_slot_values(slots: Iterable[SlotConfig]) -> dict[str, Any]:
-    """Return current slot values as config-flow form suggestions."""
-    suggestions: dict[str, Any] = {}
-    for slot in slots:
-        suggestions[slot_entity_key(slot.index)] = slot.target_entity_id
-        if slot.label:
-            suggestions[slot_label_key(slot.index)] = slot.label
-    return suggestions
-
-
 class ControllerEntities:
     """The three entities every client of one controller reads.
 
     The queue and playlist sensors report their own entity IDs once Home
-    Assistant has assigned them, for the same reason the slot proxies do.
+    Assistant has assigned them, so a client needs no entity ID of its own.
     """
 
     def __init__(self, player_entity: str) -> None:
@@ -305,11 +196,11 @@ class ControllerEntities:
 
 
 class ClientConfiguration:
-    """The slots of one client device and the proxies they resolve to.
+    """What one config entry publishes in its config sensor.
 
-    Proxies report their own entity ID once Home Assistant has assigned one,
-    so the config sensor never has to guess a registry entity ID or depend on
-    the order in which platforms are set up.
+    Both kinds of entry have one. A panel's carries its registry, its settings
+    and its commands; a source's carries only the three entities every client
+    is pointed at, because a source draws nothing and applies nothing.
     """
 
     def __init__(
@@ -317,30 +208,22 @@ class ClientConfiguration:
         hass: HomeAssistant,
         owner_id: str,
         profile: ClientProfile,
-        slots: Iterable[SlotConfig],
         controller: ControllerEntities,
         panel: PanelState | None = None,
         entries: Iterable[RegistryEntry] = (),
     ) -> None:
-        """Initialize one client's configuration.
+        """Initialize one entry's configuration.
 
-        `panel` is the settings and command channel of a panel device. The
-        ESP32 controller has none: it applies nothing at runtime, so sending
-        it settings it cannot act on would only mislead a reader of the
-        payload.
-
-        `slots` and `entries` are the two shapes a client's room controls take
-        and no client has both: the classic ESP32 carries slots, and a panel
-        carries a registry.
+        `panel` is the settings and command channel of a panel device. A
+        source has none: it applies nothing at runtime, so sending it settings
+        it cannot act on would only mislead a reader of the payload.
         """
         self.hass = hass
         self.owner_id = owner_id
         self.profile = profile
-        self.slots: list[SlotConfig] = list(slots)
         self.entries: list[RegistryEntry] = list(entries)
         self.controller = controller
         self.panel = panel
-        self._proxy_entity_ids: dict[int, str] = {}
         # Reported by the skin select once Home Assistant has assigned it one,
         # the same way a proxy reports its own. A panel that offers a skin
         # picker on the device needs the entity ID to write to, and guessing
@@ -351,7 +234,7 @@ class ClientConfiguration:
 
     @callback
     def async_add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
-        """Subscribe to proxy, controller, and panel changes."""
+        """Subscribe to registry, controller, and panel changes."""
         self._listeners.append(listener)
         remove_controller = self.controller.async_add_listener(listener)
         remove_panel = (
@@ -370,15 +253,6 @@ class ClientConfiguration:
         return remove
 
     @callback
-    def async_set_proxy_entity_id(self, index: int, entity_id: str) -> None:
-        """Record the entity ID Home Assistant gave one slot proxy."""
-        if self._proxy_entity_ids.get(index) == entity_id:
-            return
-        self._proxy_entity_ids[index] = entity_id
-        for listener in list(self._listeners):
-            listener()
-
-    @callback
     def async_set_skin_select_entity_id(self, entity_id: str) -> None:
         """Record the entity ID Home Assistant gave this panel's skin select."""
         if self._skin_select_entity_id == entity_id:
@@ -389,18 +263,8 @@ class ClientConfiguration:
 
     @callback
     def async_refresh_target_capabilities(self, entity_id: str) -> None:
-        """Refresh one target's capabilities without recreating its proxy."""
-        refreshed: list[SlotConfig] = []
+        """Refresh one target's capabilities in place."""
         changed = False
-        for slot in self.slots:
-            updated = (
-                _resolve_capabilities(self.hass, slot, self.profile)
-                if slot.target_entity_id == entity_id
-                else slot
-            )
-            refreshed.append(updated)
-            changed = changed or updated != slot
-
         refreshed_entries: list[RegistryEntry] = []
         for entry in self.entries:
             updated_entry = (
@@ -413,7 +277,6 @@ class ClientConfiguration:
 
         if not changed:
             return
-        self.slots = refreshed
         self.entries = refreshed_entries
         for listener in list(self._listeners):
             listener()
@@ -458,18 +321,7 @@ class ClientConfiguration:
     @property
     def target_entity_ids(self) -> set[str]:
         """Return every entity whose capabilities this client depends on."""
-        return {slot.target_entity_id for slot in self.slots} | {
-            entry.target_entity_id for entry in self.entries
-        }
-
-    def _label(self, slot: SlotConfig) -> str:
-        """Return the tile label, falling back to the target's name."""
-        if slot.label:
-            return slot.label
-        state = self.hass.states.get(slot.target_entity_id)
-        if state is not None and state.name:
-            return state.name
-        return slot.target_entity_id
+        return {entry.target_entity_id for entry in self.entries}
 
     def _entry_name(self, entry: RegistryEntry) -> str:
         """Return the tile name, falling back to the entity's own name."""
@@ -479,6 +331,7 @@ class ClientConfiguration:
         if state is not None and state.name:
             return state.name
         return entry.target_entity_id
+
     def room_states(self) -> dict[str, list[Any]]:
         """Render the current state of every registry element, keyed by rid.
 
@@ -498,9 +351,9 @@ class ClientConfiguration:
     def payload(self) -> ClientConfigPayload:
         """Build what this client reads from its config sensor.
 
-        Exactly one of the two room-control blocks is filled in. A client is
-        never sent the one it does not read: a panel gets no `slots`, and the
-        classic ESP32 firmware gets no `entities`.
+        A source has no registry and is sent none: the block is left out
+        rather than sent empty, so a reader can tell "no room controls
+        configured" from "this entry has no room controls at all".
 
         The registry is resolved here, at serve time, rather than trusted
         from storage: stored controls go stale — a form stores none, and a
@@ -519,34 +372,21 @@ class ClientConfiguration:
         return ClientConfigPayload(
             settings=panel.get("settings"),
             commands=panel.get("commands"),
+            # Only a client that draws with it is sent it, so that a tablet
+            # is not handed twelve values it has nothing to apply.
+            theme=panel.get("theme") if self.profile.has_theme else None,
             room_states=self.room_states() if registry else None,
-            # Every client is told which protocol this integration speaks,
-            # panel or not. A client that has no use for it ignores it, which
-            # is what the classic ESP32 firmware does.
+            # Every entry is told which protocol this integration speaks,
+            # panel or not. An entry nothing reads ignores it.
             contract_version=CONTRACT_VERSION,
             profile=self.profile.slug,
-            slot_count=None if registry else self.profile.slot_count,
             player_entity=self.controller.player_entity,
             queue_entity=self.controller.queue_entity_id,
             playlists_entity=self.controller.playlists_entity_id,
-            slots=None
-            if registry
-            else tuple(
-                SlotPayload(
-                    slot=slot.index,
-                    entity=proxy_entity_id,
-                    label=self._label(slot),
-                    controls=slot.controls,
-                    min_kelvin=slot.min_kelvin,
-                    max_kelvin=slot.max_kelvin,
-                )
-                for slot in self.slots
-                if (proxy_entity_id := self._proxy_entity_ids.get(slot.index))
-            ),
             entity_limit=self.profile.entity_limit if registry else None,
             # Only a panel writes a skin, and only one that has a select to
-            # write to. The classic ESP32 controller is sent no settings at
-            # all and has nothing to do with this.
+            # write to. A source is sent no settings at all and has nothing
+            # to do with this.
             skin_select_entity=self._skin_select_entity_id if registry else "",
             entities=tuple(
                 EntityPayload(
