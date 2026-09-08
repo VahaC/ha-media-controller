@@ -40,7 +40,7 @@ substitutions:
   # an IP address if .local names are unreliable on your network.
   ha_url: "http://homeassistant.local:8123"
 
-  firmware_version: "0.6.7"
+  firmware_version: "0.6.8"
 
   # The version of docs/CONTRACT.md this firmware implements. firmware_version
   # says when this build shipped; this says what it understands, and it is the
@@ -3390,6 +3390,12 @@ script:
           condition:
             lambda: return !id(ha_token).empty();
           then:
+            # -- The diagnostics below are measured here rather than on the
+            # -- component's own clock, because measuring them stalls the
+            # -- display: see the debug component in the interface half. This
+            # -- sits inside the token check so that a device nobody has
+            # -- paired yet never pays for the reading at all. --
+            - component.update: dbg
             - http_request.post:
                 url: !lambda |-
                   return id(ha_base) + "/api/media_controller/panel_status";

@@ -126,8 +126,23 @@ network:
 logger:
 
 # -------------------- DEBUG / STABILITY DIAGNOSTICS --------------------
+# Read on demand rather than on a clock. update_platform_() opens with an
+# unconditional heap_caps_get_largest_free_block(), which walks every block of
+# every internal heap inside a critical section — interrupts off for as long as
+# the walk takes. The RGB panel above cannot survive that: its bounce buffer
+# holds 480x10 px, which at a 12 MHz pixel clock drains in about 400 us, so a
+# longer walk starves the refill and the frame shifts sideways until
+# esp_lcd_rgb_panel_restart() squares it up on the next VSYNC. On a five second
+# poll that is a visible twitch on the screen every five seconds.
+#
+# Nothing reads these oftener than once a minute in any case: the diagnostics
+# block rides report_status, which goes out every 60 s or on a page change. So
+# the poll is off and report_status takes the reading itself, immediately
+# before it builds the body — twelve times fewer stalls than the clock cost,
+# and a fresher number than the clock produced.
 debug:
-  update_interval: 5s
+  id: dbg
+  update_interval: never
 
 spi:
   clk_pin: GPIO48
