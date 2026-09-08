@@ -112,6 +112,13 @@ class PanelStatusView(HomeAssistantView):
     def __init__(self, hass: HomeAssistant) -> None:
         """Hold the objects the request needs; there is one view per setup."""
         self._hass = hass
+        # Panel ids already named in the log as belonging to nothing loaded.
+        # A panel reports every minute, so the first one is a warning and the
+        # rest are silent: this is a state somebody has to be told about --
+        # the panel is running, believes it is paired, and everything Home
+        # Assistant shows about it is frozen at the last report it accepted --
+        # but it must not become a line a minute for as long as it lasts.
+        self._unclaimed: set[str] = set()
 
     async def post(self, request: web.Request) -> web.Response:
         """Record a status report from the panel that owns this token."""
@@ -138,10 +145,19 @@ class PanelStatusView(HomeAssistantView):
         if error == STATUS_WRONG_PANEL:
             return self.json({"status": STATUS_WRONG_PANEL}, status_code=403)
         if registration is None:
+            if panel_id not in self._unclaimed:
+                self._unclaimed.add(panel_id)
+                _LOGGER.warning(
+                    "Panel %s is reporting, but no loaded entry claims that "
+                    "id; every report from it is being refused and what Home "
+                    "Assistant shows about that panel will not move",
+                    panel_id,
+                )
             return self.json(
                 {"status": STATUS_UNKNOWN_PANEL}, status_code=404
             )
 
+        self._unclaimed.discard(panel_id)
         registration.state.apply_report(payload)
         self._async_update_device(registration)
         return self.json({"status": STATUS_OK})
