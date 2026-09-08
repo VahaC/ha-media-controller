@@ -118,6 +118,19 @@ logger:
 # SSID — raises its own after ap_timeout and serves the portal, so it can be
 # given new credentials without being taken off the wall.
 wifi:
+  # ESPHome parks the radio between the access point's beacons by default,
+  # which makes every round trip wait for the next one. This device reads Home
+  # Assistant over blocking HTTP requests, and its display is an RGB panel the
+  # processor refreshes itself out of PSRAM: a request that waits on beacons
+  # holds the main loop, and a held main loop is a picture that visibly jumps.
+  # The panel is mains powered and has nothing to save by sleeping.
+  #
+  # It is set here rather than in the paired package because that package
+  # declares no `wifi:` at all -- the interface half leaves the door open to a
+  # build that reaches Home Assistant over Ethernet, and a package that
+  # declared Wi-Fi would nail it shut. A device YAML of one's own carries its
+  # own copy; see media-controller-paired.example.yaml.
+  power_save_mode: NONE
   ap:
     ssid: "Media Controller Setup"
     ap_timeout: 1min
