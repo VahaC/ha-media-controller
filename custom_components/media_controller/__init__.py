@@ -96,6 +96,10 @@ from .transformations import migrate_v2_title, migrate_v3_section
 
 _LOGGER = logging.getLogger(__name__)
 
+# There is no YAML for this domain: every controller and panel arrives
+# through the config flow. The schema says so, and rejects the key.
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
 
 # How often the panel's own entities are re-evaluated. Nothing changes on
 # this tick; it exists so that a tablet which stopped reporting becomes
