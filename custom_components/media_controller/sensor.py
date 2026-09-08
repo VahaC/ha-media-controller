@@ -28,6 +28,7 @@ from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import MediaControllerRuntime
+from .const import CONF_HOST
 from .coordinator import PlaylistCoordinator, QueueCoordinator
 from .panel_entity import PanelEntity, PanelReadingEntity
 from .devices import controller_device_info
@@ -70,6 +71,7 @@ async def async_setup_entry(
                     PanelLoopTimeSensor(entry, runtime),
                     PanelHttpTimeSensor(entry, runtime),
                     PanelParseTimeSensor(entry, runtime),
+                    PanelPushStateSensor(entry, runtime),
                     PanelResetReasonSensor(entry, runtime),
                 ]
             )
@@ -579,6 +581,45 @@ class PanelParseTimeSensor(_PanelDiagnosticSensor):
     def __init__(self, entry: ConfigEntry, runtime: Any) -> None:
         """Initialize the parse-time sensor of one panel."""
         super().__init__(entry, runtime, "parse_ms")
+
+
+class PanelPushStateSensor(PanelReadingEntity, SensorEntity):
+    """Whether this panel is being pushed to, and if not, what is missing.
+
+    The log says why a push was skipped, but it says it once and only when a
+    state actually changed, so a panel nobody is talking to and a panel that
+    was fixed five minutes ago look the same there. This does not: it is
+    derived from what Home Assistant knows right now and it is re-read every
+    time the panel reports.
+
+    - `pushing` -- a key was reported and there is an address to use;
+    - `no_key` -- the panel reports no push key. Either it runs a build from
+      before the push routes, or it is not paired, or the key never reached
+      the report;
+    - `no_address` -- a key, but nowhere to send it: the config entry carries
+      no host because the panel was not found over zeroconf, and no editor URL
+      has been reported either.
+    """
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = ["pushing", "no_key", "no_address"]
+
+    def __init__(self, entry: ConfigEntry, runtime: Any) -> None:
+        """Initialize the push-state sensor of one panel."""
+        super().__init__(entry, runtime, "push_state")
+
+    @property
+    def native_value(self) -> str:
+        """Return what is standing between this panel and a push."""
+        if not self._panel.status.push_key:
+            return "no_key"
+        if not (
+            self._entry.data.get(CONF_HOST)
+            or self._panel.status.editor_url
+        ):
+            return "no_address"
+        return "pushing"
 
 
 class PanelResetReasonSensor(PanelReadingEntity, SensorEntity):

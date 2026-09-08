@@ -180,6 +180,14 @@
       "parse_ms": {
         "name": "Parse time"
       },
+      "push_state": {
+        "name": "Push",
+        "state": {
+          "pushing": "Pushing",
+          "no_key": "No key reported",
+          "no_address": "No address"
+        }
+      },
       "reset_reason": {
         "name": "Reset reason"
       }

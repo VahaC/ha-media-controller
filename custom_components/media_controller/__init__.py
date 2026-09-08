@@ -678,6 +678,7 @@ PANEL_DIAGNOSTIC_ENTITIES: tuple[tuple[str, str], ...] = (
     ("sensor", "loop_time"),
     ("sensor", "http_ms"),
     ("sensor", "parse_ms"),
+    ("sensor", "push_state"),
     ("sensor", "reset_reason"),
 )
 
