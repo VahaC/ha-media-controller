@@ -195,6 +195,19 @@ display:
     vsync_pin: 17
     pclk_pin: 21
     pclk_frequency: 12MHz
+    # -- The shock absorber between the LCD peripheral and PSRAM. The stock
+    # -- driver hardcodes ten lines, which at 480 px and a 12 MHz pixel clock
+    # -- is about 400 microseconds of slack before a missed refill becomes a
+    # -- reset of the DMA channel -- and that reset is a frame that visibly
+    # -- jumps. Forty lines is four times the deadline, bought with about
+    # -- 75 kB of internal RAM for the two buffers.
+    # --
+    # -- This is the one lever that does not require knowing which stall was
+    # -- to blame. The work that overruns the deadline has several possible
+    # -- sources on this device and they were not separable from the outside;
+    # -- widening the deadline covers all of them at once. See
+    # -- components/st7701s/, which exists only for this option. --
+    bounce_buffer_lines: 40
     pclk_inverted: false
     hsync_pulse_width: 8
     hsync_front_porch: 10

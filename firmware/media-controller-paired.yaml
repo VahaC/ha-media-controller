@@ -40,7 +40,7 @@ substitutions:
   # an IP address if .local names are unreliable on your network.
   ha_url: "http://homeassistant.local:8123"
 
-  firmware_version: "0.6.12"
+  firmware_version: "0.6.13"
 
   # The version of docs/CONTRACT.md this firmware implements. firmware_version
   # says when this build shipped; this says what it understands, and it is the
@@ -78,6 +78,9 @@ external_components:
       - media_controller_grid
       - media_controller_provision
       - media_controller_push
+      # -- A fork of the stock display driver, and only for one option it does
+      # -- not offer: the size of the bounce buffer. See its header. --
+      - st7701s
 
 esphome:
   name: ${device_name}
@@ -616,6 +619,34 @@ globals:
     restore_value: true
     max_restore_data_length: 40
 
+  # -- A fingerprint of the last payload each parser was handed, so that an
+  # -- identical one can be dropped without being read.
+  # --
+  # -- This is the measurement acting on itself: a delivery costs about 48 ms
+  # -- of parsing and publishing, against 31 ms for the request that carried
+  # -- it, and the overwhelming majority of deliveries say exactly what the
+  # -- last one said. Home Assistant pushes on every state change of the
+  # -- config sensor, and that sensor moves whenever any room entity does --
+  # -- so the same thirteen kilobytes arrive again and again, are read from
+  # -- end to end, and change nothing. On a device whose display is refreshed
+  # -- out of PSRAM by the processor itself, those milliseconds are a picture
+  # -- that visibly jumps.
+  # --
+  # -- A 64-bit FNV-1a with the length beside it, rather than a copy: keeping
+  # -- the document would cost thirteen kilobytes of internal heap for the
+  # -- life of the device to save a comparison that a hash does in one pass.
+  # -- A collision would skip one update, and the next delivery -- a push
+  # -- within seconds, or the fallback poll within thirty -- corrects it.
+  - id: last_player_digest
+    type: uint64_t
+    restore_value: false
+    initial_value: "0"
+
+  - id: last_config_digest
+    type: uint64_t
+    restore_value: false
+    initial_value: "0"
+
   # -- The longest single payload application since the last status report:
   # -- the parse, plus every publish_state it makes and every widget update
   # -- those fire, because all of that runs inside the script and none of it
@@ -1011,6 +1042,27 @@ globals:
   # Each one is self-contained. A global's initial_value is emitted as a raw
   # C++ expression and is not a lambda ESPHome rewrites, so `id(...)` does not
   # work in here and one parser cannot call another.
+
+  # -- Whether this payload says anything the last one did not, and the
+  # -- remembering of it. A 64-bit FNV-1a over the bytes, with the length
+  # -- folded in so that a collision would have to agree on the size too.
+  # -- Zero is the "nothing seen yet" digest and never matches, so the first
+  # -- delivery after a boot is always read. --
+  - id: payload_digest_moved
+    type: bool (*)(const std::string &, uint64_t &)
+    restore_value: no
+    initial_value: |-
+      [](const std::string &payload, uint64_t &seen) -> bool {
+        uint64_t h = 1469598103934665603ULL;
+        for (unsigned char c : payload) {
+          h ^= c;
+          h *= 1099511628211ULL;
+        }
+        h ^= (uint64_t) payload.size() << 32;
+        if (h != 0 && h == seen) return false;
+        seen = h;
+        return true;
+      }
 
   # -- One field of an object, as text. A quoted value is unescaped; a bare
   # -- value (number, true, false, null) comes back as it was written, which
@@ -1641,6 +1693,13 @@ script:
     then:
       - lambda: id(parse_start_ms) = millis();
       - lambda: |-
+          // -- Nothing new to say: the same document read again would publish
+          //    the same values and redraw the same widgets. See the digest
+          //    globals for why that is worth a hash. --
+          if (!id(payload_digest_moved)(payload,
+                                        id(last_player_digest))) {
+            return;
+          }
           std::string state = id(json_field)(payload, "state");
           if (!state.empty() &&
               state != id(player_state).state) {
@@ -2040,6 +2099,15 @@ script:
           id(pending_attributes) = "";
           id(pending_commands) = "";
           id(layout_changed) = false;
+
+          // -- An identical document changes nothing, and the actions after
+          //    this one all read the three globals just cleared: with nothing
+          //    pending and no flag raised, every one of them is a no-op. So
+          //    returning here skips the whole cycle rather than half of it. --
+          if (!id(payload_digest_moved)(payload,
+                                        id(last_config_digest))) {
+            return;
+          }
 
           std::string attrs = id(json_object)(payload,
                                               "attributes");
@@ -3801,18 +3869,34 @@ interval:
           //    that costs, and only in the window where delivery has already
           //    failed.
           //
-          //    Both halves of the window are the same number on purpose: a
-          //    push is considered fresh for exactly as long as the fallback
-          //    would take to ask anyway, so there is no rate in between that
-          //    the device can settle into. last_push_ms is zero until the
-          //    first one lands, and that is checked rather than subtracted
-          //    from -- millis() is small enough during the first half minute
-          //    after boot that the arithmetic alone would read as fresh. --
-          const uint32_t PUSH_FRESH_MS = 30000;
+          //    The two windows are deliberately different sizes, and the
+          //    first version of this got that wrong in a way worth recording:
+          //    it trusted a push for exactly as long as the fallback interval,
+          //    so a panel went back to asking every second thirty seconds
+          //    after the last change. On a track that is playing steadily
+          //    nothing changes for minutes at a time, so that is most of the
+          //    time -- and the fast polling it fell back into is what was
+          //    being watched on the screen. Delivery working looks like
+          //    silence, and silence must not be read as failure.
+          //
+          //    So the trust window is minutes and the fallback rate is
+          //    seconds. A push inside the last five minutes means Home
+          //    Assistant is still there and still delivering, and a heartbeat
+          //    every thirty seconds is enough to notice when it stops.
+          //
+          //    last_push_ms is zero until the first one lands, and that is
+          //    checked rather than subtracted from -- millis() is small
+          //    enough early after a boot that the arithmetic alone would read
+          //    as recent. The interval is only ever slowed, never sped up: a
+          //    configuration that already asks less often than the fallback
+          //    is honoured as it stands. --
+          const uint32_t PUSH_TRUSTED_MS = 300000;
+          const uint32_t PUSH_FALLBACK_MS = 30000;
           uint32_t interval = id(poll_interval_ms);
           if (id(last_push_ms) != 0 &&
-              now - id(last_push_ms) < PUSH_FRESH_MS) {
-            interval = PUSH_FRESH_MS;
+              now - id(last_push_ms) < PUSH_TRUSTED_MS &&
+              interval < PUSH_FALLBACK_MS) {
+            interval = PUSH_FALLBACK_MS;
           }
 
           // -- The player first: it is the payload the eye is on, and it is
