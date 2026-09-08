@@ -88,6 +88,11 @@ class PanelPusher:
         self._cancel_player: Callable[[], None] | None = None
         self._tasks: set[asyncio.Task[None]] = set()
         self._pending: dict[str, asyncio.TimerHandle] = {}
+        # Why the last delivery was not attempted, so that the reason is
+        # logged when it changes and not once per state change. Every skip
+        # below is a silent no-op otherwise, and a push that never happens
+        # looks exactly like a push that happened and did nothing.
+        self._last_skip = ""
 
     # ------------------------------------------------------------ lifecycle
 
@@ -192,14 +197,37 @@ class PanelPusher:
         key = self._state.status.push_key
         if not key:
             # No key reported: an older build, or one that is not paired.
-            # It polls, and that is a complete answer rather than a problem.
+            # It polls, and that is a complete answer rather than a problem
+            # -- but it is worth saying once, because it is also what a panel
+            # that was meant to accept pushes looks like when it does not.
+            self._async_skip(
+                "no_key",
+                "Panel %s reported no push key, so it is being left to poll",
+                self._entry.title,
+            )
             return
         origin = self._async_origin()
         if not origin:
+            self._async_skip(
+                "no_address",
+                "No address for panel %s: the config entry carries no host "
+                "and no editor URL has been reported, so nothing can be "
+                "pushed to it",
+                self._entry.title,
+            )
             return
         current = self._hass.states.get(entity_id)
         if current is None:
+            self._async_skip(
+                "no_state", "No state to push for %s", entity_id
+            )
             return
+
+        if self._last_skip:
+            _LOGGER.info(
+                "Pushing to panel %s again", self._entry.title
+            )
+            self._last_skip = ""
 
         # Only the two fields the firmware reads. `State.as_dict()` would also
         # carry the context and both timestamps, which is a few hundred bytes
@@ -246,6 +274,20 @@ class PanelPusher:
         if parts.scheme not in ("http", "https") or not parts.hostname:
             return ""
         return f"{parts.scheme}://{parts.netloc}"
+
+    @callback
+    def _async_skip(self, reason: str, message: str, *args: object) -> None:
+        """Say why nothing was sent, once per reason rather than per change.
+
+        At warning level deliberately. Every one of these means the panel is
+        polling when this integration believed it would not have to, and a
+        panel that polls is the problem this module exists to remove -- so it
+        is not something to leave at debug for somebody to go looking for.
+        """
+        if self._last_skip == reason:
+            return
+        self._last_skip = reason
+        _LOGGER.warning(message, *args)
 
     async def _async_post(self, url: str, key: str, body: str) -> None:
         """Deliver one payload, or let the panel's fallback poll cover it."""
