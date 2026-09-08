@@ -18,7 +18,10 @@ where people already look, and it says three things:
   is upgraded. That is the compatibility half of the question, and it is why
   a firmware release is not simply "the newest file on the page";
 * **whether an install is under way**, which is a window rather than a
-  measurement: the device answers nothing at all while it writes flash.
+  measurement: the device answers nothing at all while it writes flash, so
+  Home Assistant waits without a percentage. The percentage exists — the
+  update client hands one to the panel about once a second — but only the
+  panel's own screen can show it, and it does.
 
 Pressing Install downloads the image *in Home Assistant*, checks it against
 its published SHA-256, and only then tells the panel a version is waiting. A
@@ -84,7 +87,21 @@ class PanelFirmwareUpdate(PanelEntity, UpdateEntity):
     """The firmware a panel is on, and the one it could be on."""
 
     _attr_device_class = UpdateDeviceClass.FIRMWARE
-    _attr_supported_features = UpdateEntityFeature.INSTALL
+    # PROGRESS is declared although this entity never reports a percentage,
+    # and that is the point of declaring it. Without the feature Home
+    # Assistant ignores `in_progress` below and substitutes a flag of its own
+    # that is true only while `async_install` is awaited -- which here means
+    # the seconds it takes to verify the image and leave the version in the
+    # config sensor. The panel has not been near the flash by then, so the
+    # dialog filled its bar and went back to offering the update while the
+    # device was still writing, and the next press was refused by the
+    # install service with "already in progress" -- the service asks this
+    # class, the display did not. Declaring PROGRESS makes both read the
+    # same window, and a window with no percentage is shown as the
+    # indeterminate spinner it should be.
+    _attr_supported_features = (
+        UpdateEntityFeature.INSTALL | UpdateEntityFeature.PROGRESS
+    )
 
     def __init__(
         self,
@@ -147,6 +164,18 @@ class PanelFirmwareUpdate(PanelEntity, UpdateEntity):
     def in_progress(self) -> bool:
         """Return whether an install asked for is still plausibly running."""
         return self._panel.update_in_progress()
+
+    @property
+    def update_percentage(self) -> None:
+        """Return no percentage, because there is none to return.
+
+        ESPHome writes the inactive application slot from the main loop: the
+        panel answers nothing at all while it does, so nobody in this house
+        knows how far along it is. Home Assistant draws an indeterminate
+        spinner for the whole window, which is the honest picture, and the
+        panel shows the same thing on its own glass for the same reason.
+        """
+        return None
 
     @property
     def release_url(self) -> str | None:

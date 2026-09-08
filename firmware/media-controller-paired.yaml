@@ -40,7 +40,7 @@ substitutions:
   # an IP address if .local names are unreliable on your network.
   ha_url: "http://homeassistant.local:8123"
 
-  firmware_version: "0.6.3"
+  firmware_version: "0.6.4"
 
   # The version of docs/CONTRACT.md this firmware implements. firmware_version
   # says when this build shipped; this says what it understands, and it is the
@@ -242,6 +242,32 @@ esphome:
 ota:
   - platform: http_request
     id: panel_ota
+    on_progress:
+      then:
+        - lambda: |-
+            // -- The only thing this device can still say while it writes,
+            //    and it can only say it to the person standing in front of
+            //    it: from the moment install_firmware calls the update
+            //    client the main loop is inside it, so LVGL's refresh timer
+            //    never runs and setting a widget would change nothing on the
+            //    glass. lv_refr_now pushes the frame out by hand instead --
+            //    the flush this display does is a copy into the framebuffer
+            //    and returns, so it is safe to ask for from here.
+            //
+            //    Home Assistant is told none of this. It cannot be: the
+            //    device answers no request at all until the write ends. See
+            //    custom_components/media_controller/update.py, which shows
+            //    the wait without a percentage for exactly that reason. --
+            int percent = (int) x;
+            if (percent < 0) percent = 0;
+            if (percent > 100) percent = 100;
+            if (percent == id(update_progress_shown)) return;
+            id(update_progress_shown) = percent;
+            char text[8];
+            snprintf(text, sizeof(text), "%d%%", percent);
+            lv_bar_set_value(id(bar_update_progress), percent, LV_ANIM_OFF);
+            lv_label_set_text(id(lbl_update_percent), text);
+            lv_refr_now(NULL);
     on_error:
       then:
         - lambda: |-
@@ -738,6 +764,16 @@ globals:
     type: int
     restore_value: false
     initial_value: "0"
+
+  # -- The last whole percent painted on the updating screen. The update
+  # -- client hands over a percentage about once a second and every repaint
+  # -- during a write is a repaint done by hand, so a value that has not
+  # -- moved is not drawn again. -1 is "nothing painted yet", which is what
+  # -- makes the first 0% reach the glass. --
+  - id: update_progress_shown
+    type: int
+    restore_value: false
+    initial_value: "-1"
 
   # -- The version this device is being moved to, written to flash before the
   # -- write starts so that the *next* boot can tell which of two things
@@ -3205,12 +3241,12 @@ script:
       # -- The screen has to say what is happening before the loop stops
       # -- running it. Everything after the delay below blocks: ESPHome writes
       # -- the inactive application slot from the main loop, feeding only the
-      # -- watchdog, so LVGL draws nothing, touch does nothing and this device
-      # -- answers nothing for the minute or so it takes. That is a property
-      # -- of the update client rather than a choice made here, and the only
-      # -- honest response to it is to leave a frame on the glass that says
-      # -- so -- which is also why that frame carries no progress bar. It
-      # -- could not move.
+      # -- watchdog, so LVGL's refresh timer never runs, touch does nothing
+      # -- and this device answers nothing for the minute or so it takes.
+      # -- What still moves is the bar on that frame, and only because the
+      # -- update client hands a percentage back about once a second and the
+      # -- on_progress trigger on the ota component above repaints the screen
+      # -- by hand. Nothing else on this device is redrawn in that window.
       # --
       # -- The screen is woken first for the same reason. A panel that was
       # -- asleep when the update started would otherwise spend the write
@@ -3226,6 +3262,13 @@ script:
           std::string hint = "Installing " + id(update_target_version) +
                              " - do not switch this off";
           lv_label_set_text(id(lbl_update_hint), hint.c_str());
+          // -- An empty bar rather than whatever a previous attempt left on
+          // -- it: this page is shown again on a retry, and a bar that
+          // -- started at the last failure's 60% would be a lie about the
+          // -- write that is only starting now. --
+          id(update_progress_shown) = -1;
+          lv_bar_set_value(id(bar_update_progress), 0, LV_ANIM_OFF);
+          lv_label_set_text(id(lbl_update_percent), "0%");
       - lvgl.page.show: page_updating
       # -- Long enough for LVGL to render the page above and for the target
       # -- version to reach flash. Both matter: the frame is what the person
@@ -3659,13 +3702,14 @@ lvgl:
             y: 60
 
     # -- The last frame this device draws before an update, and the one that
-    # -- stays on the glass for the whole write. Deliberately a sentence and
-    # -- not a progress bar: the main loop is inside the update client from
-    # -- the moment install_firmware calls it, so nothing here could be
-    # -- redrawn and a bar that never moved would read as a device that had
-    # -- hung. It is also why the wording is an instruction rather than a
-    # -- status -- pulling the power here is the one thing a person watching
-    # -- can do that makes matters worse. --
+    # -- stays on the glass for the whole write. The wording is an
+    # -- instruction rather than a status because pulling the power here is
+    # -- the one thing a person watching can do that makes matters worse, and
+    # -- a minute of an unchanging screen is exactly what makes somebody
+    # -- reach for the switch -- which is what the bar below is for. It is
+    # -- the only widget on this device that moves while the flash is being
+    # -- written, and it moves only because the ota component's on_progress
+    # -- repaints this page by hand. --
     - id: page_updating
       widgets:
         - label:
@@ -3689,3 +3733,32 @@ lvgl:
             text_color: 0x77779A
             align: CENTER
             y: 60
+
+        - bar:
+            id: bar_update_progress
+            width: 280
+            height: 8
+            align: CENTER
+            y: 108
+            min_value: 0
+            max_value: 100
+            value: 0
+            # -- No animation, and it matters here rather than being a
+            # -- preference: an animated bar is moved by an LVGL timer, and
+            # -- no timer runs during the write. It would sit at whatever
+            # -- fraction of the first step it managed. --
+            animated: false
+            radius: 4
+            bg_color: 0x1a1a35
+            bg_opa: COVER
+            indicator:
+              bg_color: 0x00cfff
+              radius: 4
+
+        - label:
+            id: lbl_update_percent
+            text: "0%"
+            text_font: roboto_16
+            text_color: 0x5588cc
+            align: CENTER
+            y: 134

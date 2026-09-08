@@ -50,12 +50,19 @@ REPORT_TIMEOUT_SECONDS = 180.0
 
 # How long an over-the-air update may be under way before Home Assistant
 # stops calling it "installing". It covers the whole of the slowest honest
-# path: downloading two megabytes over a tired Wi-Fi link, writing the
-# inactive application slot, rebooting, reconnecting, and the first status
-# report after that. Once it runs out, the update is simply pending again —
-# the panel is on the build it was on, which is what a failed update leaves
-# behind and what the rollback in the bootloader guarantees.
-UPDATE_TIMEOUT_SECONDS = 900.0
+# path: up to half a minute before the panel next reads its config sensor,
+# up to five manifest attempts thirty seconds apart, downloading two
+# megabytes over a tired Wi-Fi link while writing the inactive application
+# slot, rebooting, reconnecting, and the first status report after that.
+# Which is around five minutes at its worst, and this is that with room.
+#
+# It is a deadline rather than a guess in one direction: the entity says
+# "installing" for the whole of it and the install service refuses a second
+# press, so a panel whose update failed — the bootloader put the old image
+# back, and nothing reports that it did — cannot be told to try again until
+# this runs out. Once it does, the update is simply pending again, because
+# the panel is on the build it was on.
+UPDATE_TIMEOUT_SECONDS = 420.0
 
 # What a firmware version may look like in a command. It is written by Home
 # Assistant from the release index rather than by anybody typing, so this is

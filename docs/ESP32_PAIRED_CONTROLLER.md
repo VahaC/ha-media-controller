@@ -254,9 +254,19 @@ its Wi-Fi, its pairing, its token and its room layout, because an update
 writes the application and nothing else.
 
 It takes a couple of minutes. During the download the panel keeps working;
-during the write it shows **UPDATING** and stops responding to touch entirely,
-which is why that screen asks you not to switch it off. It restarts on its own
-and comes back on the new build.
+during the write it shows **UPDATING**, with a bar that fills as the image
+arrives, and stops responding to touch entirely — which is why that screen asks
+you not to switch it off. It restarts on its own and comes back on the new
+build.
+
+That bar is the only place a percentage appears. Home Assistant shows
+**Installing** for the whole of the update and shows it without one, because
+the panel answers nothing at all while it writes flash and so can tell nobody
+how far it has got; the number exists on the glass, in front of the person who
+might otherwise reach for the switch. In Home Assistant the spinner turns until
+the device comes back naming the new build, and the **Install** button stays
+out of reach until it does — or until seven minutes have passed, which is what
+a failed update looks like from here.
 
 Nothing about this needs a password, and the reason is worth stating: the
 panel is not listening for an update. It fetches one, and only after Home
