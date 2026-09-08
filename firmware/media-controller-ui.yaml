@@ -44,6 +44,16 @@
 #                                 appends it to lvgl.pages and writes its
 #                                 index here at boot; navigation then goes
 #                                 there instead. See show_room_page.
+#
+#                                 screen_keep_awake — set while what is on
+#                                 screen has to stay readable with nobody
+#                                 touching it. The sleep timeout below is
+#                                 skipped entirely while it is true. It is a
+#                                 flag rather than a longer timeout because
+#                                 the case it exists for is a device asking
+#                                 to be set up, and a screen that goes dark
+#                                 halfway through that hides the one thing
+#                                 the person is being asked to read.
 #   State this file reads.        media_title, media_artist, player_state,
 #                                 volume_level, media_position, media_duration,
 #                                 entity_picture, shuffle_state, repeat_state,
@@ -529,6 +539,9 @@ interval:
       - if:
           condition:
             lambda: |-
+              // -- A screen somebody is being asked to read never sleeps,
+              // -- however long they take to get to it. --
+              if (id(screen_keep_awake)) return false;
               bool is_playing = id(player_state).state == "playing";
               uint32_t timeout_ms = (uint32_t)(id(screen_timeout).state * 1000.0f);
               uint32_t elapsed = millis() - id(screen_last_active_ms);
@@ -1800,6 +1813,12 @@ globals:
     type: uint32_t
     restore_value: no
     initial_value: '0'
+
+  # -- Holds the backlight on regardless of the timeout. See the header. --
+  - id: screen_keep_awake
+    type: bool
+    restore_value: no
+    initial_value: 'false'
 
   # Restored text/number/select values are published while components are still
   # setting up. Every script that touches LVGL checks this first, and on_boot

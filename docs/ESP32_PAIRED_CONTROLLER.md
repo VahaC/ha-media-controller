@@ -256,9 +256,12 @@ A ready-made copy of the block above is in
    *Add this device in Home Assistant*.
 2. Home Assistant discovers it over mDNS — the device advertises
    `_media-controller._tcp.local.` with its MAC as the panel ID.
-   **Settings → Devices & Services** shows a new *ESP32-S3 panel* card; if it
-   does not appear, add **Media Controller** by hand and choose that device
-   type.
+   **Settings → Devices & Services** shows a new *ESP32-S3 panel* card. If
+   mDNS does not get through — a VLAN, a bridge that drops multicast — the
+   card still appears, a few seconds later: an unpaired device polls Home
+   Assistant for a token it does not have yet, and that poll carries the
+   same panel ID, so Home Assistant offers it from there instead. Nothing is
+   added by hand and no identifier is ever typed.
 
    If this is the first device in a fresh installation and no media player
    source exists yet, step 4 asks for the Music Assistant player and creates
@@ -271,6 +274,13 @@ A ready-made copy of the block above is in
 
 The code is generated once and kept in flash, so a reboot in the middle of the
 process does not change the digits you are reading.
+
+**The screen does not sleep while the code is up.** *Screen Timeout* is
+suspended for as long as the device is unpaired, and a device that was already
+asleep when its token was revoked lights up again by itself. A code nobody can
+read is not a code, and the person walking to the panel with a phone in their
+hand is not touching it. The normal timeout resumes the moment the device is
+paired, counted from then.
 
 ### Which way round it runs
 
@@ -426,7 +436,8 @@ Two contract features are deliberately not wired up:
 - **`screen_off_seconds`.** The device already owns a *Screen Timeout* number on
   its ESPHome device, and its range (5–120 s) is narrower than the contract's.
   Two owners for one setting is a bug waiting to happen, so `number.<panel>_screen_off`
-  does nothing here — use *Screen Timeout*.
+  does nothing here — use *Screen Timeout*. Neither of them applies while the
+  device is showing a pairing code; see [Pairing](#pairing).
 - **Battery.** It is mains powered, so the package does not report a battery
   value. This is optional in the contract.
 
@@ -744,8 +755,13 @@ ESPHome as it always was.
 
 1. The pairing code appears within a few seconds of boot, and is the same code
    after a reboot in the middle of pairing.
+1a. Set *Screen Timeout* to its minimum, leave the panel on the pairing page
+    untouched for twice that, and confirm the code is still lit. Then finish
+    pairing and confirm the screen starts sleeping again.
 2. Home Assistant discovers the device without being told its address, and the
-   card names it as an *ESP32-S3 panel*.
+   card names it as an *ESP32-S3 panel*. Block multicast between the panel and
+   Home Assistant and confirm the card still appears — from the panel's own
+   poll — within a few seconds.
 2a. Type a wrong code. The form says so, no Home Assistant user appears under
     **Settings → People**, and no token is created. Do it five times and
     confirm the device refuses for five minutes and says so, then accepts the

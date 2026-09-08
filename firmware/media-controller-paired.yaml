@@ -1063,6 +1063,25 @@ script:
                 }
             - script.execute: ui_sync_pairing
             - lvgl.page.show: page_pairing
+            # -- The code is only useful while it can be read. Nobody is
+            # -- touching a device that has not been set up yet, so the
+            # -- inactivity timeout would take the screen away a minute in
+            # -- and leave the person looking for a code on a black panel.
+            # -- Cleared where the code stops mattering, which is both
+            # -- ways round: accept_bootstrap when Home Assistant pushed the
+            # -- token, poll_pairing when this device collected it. --
+            - lambda: id(screen_keep_awake) = true;
+            # -- And a device that was already asleep when its token was
+            # -- revoked has to come back: forget_token reaches here too.
+            # -- Resumed the way the wake-up touch does it, because sleep is
+            # -- the only thing that pauses LVGL and resuming a running one
+            # -- would be saying something that is not true. --
+            - light.turn_on: backlight
+            - if:
+                condition:
+                  lvgl.is_paused:
+                then:
+                  - lvgl.resume:
       # -- Outside the branch above, because it has to run in both cases: this
       # -- is the one place that tells the provisioning endpoint what state
       # -- the device is in. Boot reaches it, and so does forget_token, which
@@ -1088,6 +1107,9 @@ script:
           id(pairing_code) = "";
           id(pairing_hint) = "";
           id(last_pairing_status) = 200;
+          // -- Paired: the screen goes back to its normal timeout. --
+          id(screen_keep_awake) = false;
+          id(screen_last_active_ms) = millis();
           // -- The grid component was handed this at boot, when a factory
           //    device had no address to build it out of. It is the one thing
           //    installed into that component that depends on where Home
@@ -1165,6 +1187,12 @@ script:
                   id(config_entity) = entity;
                   id(auth_header) = "Bearer " + token;
                   id(pairing_code) = "";
+                  // -- The other end of what show_start_page set: there is no
+                  //    code on screen to keep readable any more, so the normal
+                  //    timeout applies again, counted from now rather than
+                  //    from whenever this device was last touched. --
+                  id(screen_keep_awake) = false;
+                  id(screen_last_active_ms) = millis();
                   // -- Closes the provisioning endpoint, exactly as pairing
                   //    the other way round does. Both directions end in a
                   //    stored token, so both have to say so: an endpoint left
