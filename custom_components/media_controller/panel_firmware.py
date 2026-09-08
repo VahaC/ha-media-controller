@@ -102,6 +102,14 @@ IMAGE_CONTENT_TYPE = "application/octet-stream"
 INDEX_TIMEOUT = ClientTimeout(total=30)
 IMAGE_TIMEOUT = ClientTimeout(total=180)
 
+# How close together two "check for updates" requests have to be before the
+# second is answered with the first one's result. Home Assistant asks every
+# update entity at once, so an installation with four panels would otherwise
+# ask the installer site for the same few hundred bytes four times in the
+# same second. It is short enough that a person pressing the button again
+# because the first answer surprised them still gets a fresh read.
+INDEX_CHECK_COALESCE_SECONDS = 30.0
+
 # How much of a download is read at a time. The body is read in pieces rather
 # than in one call because a stream returns what has arrived, not what was
 # asked for: a single read of two megabytes comes back short and would leave
@@ -142,6 +150,12 @@ class FirmwareIndex:
         self._images: dict[str, PreparedImage] = {}
         self._listeners: list[Any] = []
         self._lock = asyncio.Lock()
+        # When the index was last asked for -- asked, not read successfully,
+        # because an installation that cannot reach the site must not retry
+        # once per panel per button press. Both of these belong to
+        # `async_check_now`; the six-hourly timer needs neither.
+        self._checked_at: float | None = None
+        self._check_lock = asyncio.Lock()
 
     # ----------------------------------------------------------- listeners
 
@@ -175,6 +189,7 @@ class FirmwareIndex:
         """
         url = urljoin(INSTALLER_URL, INDEX_FILENAME)
         session = async_get_clientsession(self._hass)
+        self._checked_at = time.monotonic()
         try:
             async with session.get(url, timeout=INDEX_TIMEOUT) as response:
                 response.raise_for_status()
@@ -189,6 +204,28 @@ class FirmwareIndex:
         self.loaded = True
         if changed:
             self._notify()
+
+    async def async_check_now(self) -> None:
+        """Read the index because a person asked, not because six hours passed.
+
+        The timer is right for a background poll and wrong for the person who
+        has just published a build and is looking at the update dialog: until
+        this existed, the only thing that re-read the index sooner was
+        restarting Home Assistant, because the reader is started in
+        `async_setup` and survives a config entry being reloaded.
+
+        Home Assistant's `homeassistant.update_entity` -- what **Check for
+        updates** calls -- reaches this through every panel's update entity
+        at once, which is what the coalescing window is for.
+        """
+        async with self._check_lock:
+            if (
+                self._checked_at is not None
+                and time.monotonic() - self._checked_at
+                < INDEX_CHECK_COALESCE_SECONDS
+            ):
+                return
+            await self.async_refresh()
 
     def offer(
         self,

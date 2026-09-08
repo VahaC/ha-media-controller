@@ -127,6 +127,20 @@ class PanelFirmwareUpdate(PanelEntity, UpdateEntity):
         """Redraw when what is published changes."""
         self.async_write_ha_state()
 
+    async def async_update(self) -> None:
+        """Re-read what is published, because somebody asked it to be.
+
+        This entity is not polled -- it is written whenever the panel reports
+        or the release index moves -- but **Check for updates** in
+        Settings → Updates calls `homeassistant.update_entity`, and that
+        forces a refresh even on an entity that says it does not poll. It is
+        the only thing a person can press after publishing a build, since the
+        index is otherwise read when Home Assistant starts and every six
+        hours after that. Asking every panel at once is coalesced into one
+        request by the index.
+        """
+        await self._index.async_check_now()
+
     # ------------------------------------------------------------- reading
 
     @property

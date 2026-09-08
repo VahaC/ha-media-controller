@@ -253,6 +253,12 @@ device page and appears under **Settings → Updates** like anything else. Press
 its Wi-Fi, its pairing, its token and its room layout, because an update
 writes the application and nothing else.
 
+What is published is read when Home Assistant starts and every six hours
+after that, so a build released in between is not visible immediately. **Check
+for updates**, in the overflow menu of Settings → Updates, reads it again on
+the spot; reloading the integration does not, because the reader belongs to
+the installation rather than to any one panel.
+
 It takes a couple of minutes. During the download the panel keeps working;
 during the write it shows **UPDATING**, with a bar that fills as the image
 arrives, and stops responding to touch entirely — which is why that screen asks
