@@ -195,19 +195,24 @@ display:
     vsync_pin: 17
     pclk_pin: 21
     pclk_frequency: 12MHz
-    # -- The shock absorber between the LCD peripheral and PSRAM. The stock
-    # -- driver hardcodes ten lines, which at 480 px and a 12 MHz pixel clock
-    # -- is about 400 microseconds of slack before a missed refill becomes a
-    # -- reset of the DMA channel -- and that reset is a frame that visibly
-    # -- jumps. Forty lines is four times the deadline, bought with about
-    # -- 75 kB of internal RAM for the two buffers.
+    # -- The shock absorber between the LCD peripheral and PSRAM: ten lines
+    # -- at 480 px and a 12 MHz pixel clock is about 400 microseconds of slack
+    # -- before a missed refill becomes a reset of the DMA channel, and that
+    # -- reset is a frame that visibly jumps.
     # --
-    # -- This is the one lever that does not require knowing which stall was
-    # -- to blame. The work that overruns the deadline has several possible
-    # -- sources on this device and they were not separable from the outside;
-    # -- widening the deadline covers all of them at once. See
-    # -- components/st7701s/, which exists only for this option. --
-    bounce_buffer_lines: 40
+    # -- Ten is the stock value and it is back deliberately. Forty was tried,
+    # -- on the theory that a wider deadline would cover whichever stall was
+    # -- to blame without having to identify it. It changed nothing that could
+    # -- be seen, and it cost about 75 kB of internal RAM for the two buffers:
+    # -- free heap fell from 172 to 114 kB, the minimum from 134 to 52, the
+    # -- largest free block from 82 to 34, and fragmentation went from 47% to
+    # -- 70%. On a device that has been resetting on a watchdog, that is not a
+    # -- neutral price for no effect.
+    # --
+    # -- The option stays because the fork now exists and the number is worth
+    # -- reaching for again if the cause turns out to be a burst this would
+    # -- actually cover. See components/st7701s/. --
+    bounce_buffer_lines: 10
     pclk_inverted: false
     hsync_pulse_width: 8
     hsync_front_porch: 10
@@ -782,6 +787,28 @@ script:
   - id: ui_sync_progress
     then:
       - lambda: |-
+          // ══════════════════════════════════════════════════════════════
+          // TEMPORARY -- DIAGNOSTIC ONLY -- REMOVE BEFORE RELEASE
+          //
+          // Everything else has been eliminated by measurement: the network
+          // (HTTP 30 ms, and the poll is now a 30 s heartbeat), the parse
+          // (48 ms down to 2), the debug component's heap walk, and a bounce
+          // buffer four times the stock size. The screen still jumps, and it
+          // jumps about every two seconds -- which for a three-minute track
+          // is exactly how often one percent of it elapses, and therefore how
+          // often this script actually changes anything on the glass.
+          //
+          // So this returns before drawing. If the jumping stops while a
+          // track is playing, the cause is the redraw this script triggers
+          // and nothing else, and the next change is aimed at the area it
+          // invalidates. If the jumping continues, the redraw is innocent and
+          // what is left is the panel timing itself.
+          //
+          // Nothing else is disabled: the position still advances, the poll
+          // and the push still run, every other widget still updates.
+          return;
+          // ══════════════════════════════════════════════════════════════
+
           if (!id(ui_ready)) return;
           float dur = id(media_duration).state;
           int progress = 0;
