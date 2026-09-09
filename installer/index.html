@@ -6,346 +6,1313 @@
     <title>Media Controller — ESP32 panel installer</title>
     <meta
       name="description"
-      content="Install the Media Controller firmware on an ESP32-S3-4848S040 touch panel from your browser, over USB."
+      content="Install the Media Controller firmware on an ESP32-S3-4848S040 touch panel from your browser, over USB. No ESPHome, no YAML, no config file."
     />
-    <link rel="icon" href="data:," />
+    <meta name="color-scheme" content="dark" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Media Controller — ESP32 panel installer" />
+    <meta
+      property="og:description"
+      content="Flash the Media Controller firmware onto an ESP32-S3-4848S040 touch panel straight from the browser, over USB."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap"
+      rel="stylesheet"
+    />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='3' fill='%230c140c'/%3E%3Cpath d='M6 9l6 7-6 7' fill='none' stroke='%234ade80' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M16 23h10' stroke='%234ade80' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E"
+    />
     <style>
+      /* ============================================================
+         TOKENS — lifted from the VahaC Terminal theme (vahac.com)
+         ============================================================ */
       :root {
-        color-scheme: light dark;
-        --bg: #f6f7fb;
-        --panel: #ffffff;
-        --ink: #16181d;
-        --muted: #5b6270;
-        --line: #dfe3ec;
-        --accent: #0a7ea4;
-        --warn-bg: #fff6e5;
-        --warn-line: #e8c37a;
-        --warn-ink: #6b4a06;
-        --code-bg: #eef1f7;
+        --bg: #080d08;
+        --bg-surface: #0c140c;
+        --bg-card: #0e1a0e;
+        --bg-hover: #111f11;
+        --bg-code: #060c06;
+
+        --green: #4ade80;
+        --green-dim: #2db85a;
+        --green-faint: rgba(74, 222, 128, 0.08);
+        --green-glow: 0 0 6px rgba(74, 222, 128, 0.25),
+          0 0 16px rgba(74, 222, 128, 0.1);
+        --green-glow-sm: 0 0 5px rgba(74, 222, 128, 0.2);
+
+        --amber: #d4960a;
+        --amber-dim: #a97800;
+        --amber-glow: 0 0 6px rgba(212, 150, 10, 0.3);
+
+        --cyan: #22b8c8;
+        --cyan-hover: #4dd0e1;
+
+        --text: #bdd4bd;
+        --text-bright: #dff0df;
+        --text-dim: #7fa07f;
+        --text-muted: #628a62;
+
+        --border: #182e18;
+        --border-bright: #234f23;
+
+        --error: #e05555;
+
+        --font-mono: "JetBrains Mono", "Fira Code", "Cascadia Code",
+          "Courier New", monospace;
+
+        --space-1: 0.25rem;
+        --space-2: 0.5rem;
+        --space-3: 0.75rem;
+        --space-4: 1rem;
+        --space-5: 1.25rem;
+        --space-6: 1.5rem;
+        --space-8: 2rem;
+        --space-10: 2.5rem;
+        --space-12: 3rem;
+
+        --container-max: 1000px;
+        --radius: 2px;
+        --transition: 140ms ease;
+        --scanline-opacity: 0.035;
       }
-      @media (prefers-color-scheme: dark) {
-        :root {
-          --bg: #14161b;
-          --panel: #1c1f26;
-          --ink: #e9ecf2;
-          --muted: #a3abbb;
-          --line: #2c313b;
-          --accent: #4cc2e0;
-          --warn-bg: #2e2612;
-          --warn-line: #6d5a26;
-          --warn-ink: #f0d9a4;
-          --code-bg: #23272f;
+
+      /* ============================================================
+         RESET & BASE
+         ============================================================ */
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      html {
+        font-size: 16px;
+        scroll-behavior: smooth;
+        scroll-padding-top: 80px;
+        overflow-x: clip;
+        scrollbar-width: thin;
+        scrollbar-color: var(--green-dim) var(--bg-surface);
+      }
+
+      ::-webkit-scrollbar {
+        width: 6px;
+        height: 6px;
+      }
+      ::-webkit-scrollbar-track {
+        background: var(--bg-surface);
+      }
+      ::-webkit-scrollbar-thumb {
+        background: var(--green-dim);
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: var(--green);
+      }
+
+      body {
+        background: var(--bg);
+        color: var(--text);
+        font-family: var(--font-mono);
+        font-size: 0.95rem;
+        line-height: 1.7;
+        min-height: 100vh;
+        position: relative;
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+      }
+
+      /* CRT scanlines */
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        background: repeating-linear-gradient(
+          0deg,
+          transparent,
+          transparent 2px,
+          rgba(0, 0, 0, var(--scanline-opacity)) 2px,
+          rgba(0, 0, 0, var(--scanline-opacity)) 4px
+        );
+        pointer-events: none;
+        z-index: 9999;
+      }
+
+      /* Vignette */
+      body::after {
+        content: "";
+        position: fixed;
+        inset: 0;
+        background: radial-gradient(
+          ellipse at center,
+          transparent 60%,
+          rgba(0, 0, 0, 0.45) 100%
+        );
+        pointer-events: none;
+        z-index: 9998;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        html {
+          scroll-behavior: auto;
+        }
+        *,
+        *::before,
+        *::after {
+          animation-duration: 0.01ms !important;
+          animation-iteration-count: 1 !important;
+          transition-duration: 0.01ms !important;
         }
       }
-      * {
-        box-sizing: border-box;
+
+      a {
+        color: var(--cyan);
+        text-decoration: none;
+        transition: color var(--transition);
       }
-      body {
-        margin: 0;
-        padding: 0 1rem 4rem;
-        background: var(--bg);
-        color: var(--ink);
-        font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-          Helvetica, Arial, sans-serif;
+      a:hover {
+        color: var(--cyan-hover);
       }
-      main {
-        max-width: 46rem;
-        margin: 0 auto;
+
+      :focus-visible {
+        outline: 2px solid var(--green);
+        outline-offset: 2px;
       }
-      header {
-        padding: 3rem 0 1.5rem;
+
+      ul,
+      ol {
+        list-style: none;
       }
-      h1 {
-        margin: 0 0 0.35rem;
-        font-size: 1.9rem;
-        line-height: 1.2;
+
+      strong,
+      b {
+        color: var(--text-bright);
+        font-weight: 700;
       }
-      h2 {
-        margin: 2.5rem 0 0.75rem;
-        font-size: 1.2rem;
-      }
+
+      h1,
+      h2,
       h3 {
-        margin: 1.5rem 0 0.4rem;
-        font-size: 1rem;
+        font-family: var(--font-mono);
+        font-weight: 700;
+        color: var(--green);
+        line-height: 1.3;
+        letter-spacing: -0.02em;
       }
-      p,
-      li {
-        color: var(--ink);
+
+      p {
+        margin-bottom: var(--space-4);
       }
-      .lede {
-        color: var(--muted);
-        font-size: 1.05rem;
-        margin: 0;
+      p:last-child {
+        margin-bottom: 0;
       }
-      section {
-        background: var(--panel);
-        border: 1px solid var(--line);
-        border-radius: 12px;
-        padding: 1.25rem 1.5rem;
-        margin: 1rem 0;
-      }
+
       code,
       kbd {
-        background: var(--code-bg);
-        border-radius: 4px;
-        padding: 0.1em 0.35em;
-        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-        font-size: 0.9em;
+        font-family: var(--font-mono);
+        font-size: 0.88em;
       }
-      a {
-        color: var(--accent);
+
+      code {
+        background: var(--bg-code);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        color: var(--green);
+        padding: 0.1em 0.4em;
       }
-      ol,
-      ul {
-        padding-left: 1.3rem;
+
+      kbd {
+        background: var(--bg-hover);
+        border: 1px solid var(--border-bright);
+        border-bottom-width: 2px;
+        border-radius: var(--radius);
+        color: var(--text-bright);
+        padding: 0.05em 0.45em;
+        white-space: nowrap;
       }
-      ol li,
-      ul li {
-        margin: 0.3rem 0;
+
+      [hidden] {
+        display: none !important;
       }
-      .install {
+
+      @keyframes blink {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0;
+        }
+      }
+
+      @keyframes fadeIn {
+        from {
+          opacity: 0;
+          transform: translateY(6px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      .container {
+        max-width: var(--container-max);
+        margin: 0 auto;
+        padding: 0 var(--space-6);
+        width: 100%;
+      }
+
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+
+      /* ============================================================
+         PROMPT LINE
+         ============================================================ */
+      .prompt-line {
+        display: flex;
+        align-items: baseline;
+        flex-wrap: wrap;
+        font-size: 0.8rem;
+        color: var(--text-dim);
+      }
+      .prompt-user {
+        color: var(--green);
+        font-weight: 700;
+      }
+      .prompt-dir {
+        color: var(--cyan);
+      }
+      .prompt-char {
+        color: var(--text-bright);
+        margin: 0 0.4em;
+      }
+      .prompt-cmd {
+        color: var(--amber);
+      }
+
+      .cursor {
+        display: inline-block;
+        width: 0.55em;
+        height: 1.05em;
+        background: var(--green);
+        vertical-align: text-bottom;
+        margin-left: 0.15em;
+        animation: blink 1s step-end infinite;
+      }
+
+      /* ============================================================
+         HEADER
+         ============================================================ */
+      .site-header {
+        border-bottom: 1px solid var(--border);
+        background: rgba(12, 20, 12, 0.9);
+        backdrop-filter: blur(6px);
+        position: sticky;
+        top: 0;
+        z-index: 100;
+      }
+
+      .header-inner {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: var(--space-6);
+        max-width: var(--container-max);
+        margin: 0 auto;
+        padding: var(--space-3) var(--space-6);
+      }
+
+      .site-branding {
+        display: flex;
+        align-items: center;
+        gap: var(--space-3);
+        min-width: 0;
+      }
+
+      .site-mark {
+        width: 34px;
+        height: 34px;
+        flex-shrink: 0;
+        border: 1px solid var(--border-bright);
+        border-radius: var(--radius);
+        background: var(--bg-card);
+        display: grid;
+        place-items: center;
+        color: var(--green);
+        filter: drop-shadow(var(--green-glow-sm));
+      }
+      .site-mark svg {
+        width: 18px;
+        height: 18px;
+      }
+
+      .site-title-link {
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+        min-width: 0;
+      }
+      .site-title {
+        font-size: 0.95rem;
+        font-weight: 700;
+        color: var(--green);
+        text-shadow: var(--green-glow-sm);
+        letter-spacing: 0.05em;
+        line-height: 1.2;
+      }
+      .site-title-link:hover .site-title {
+        color: var(--text-bright);
+      }
+      .site-description {
+        font-size: 0.68rem;
+        color: var(--text-muted);
+        letter-spacing: 0.03em;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .site-description::before {
+        content: "// ";
+        color: var(--border-bright);
+      }
+
+      .site-nav {
+        display: flex;
+        align-items: center;
+        gap: var(--space-4);
+        flex-wrap: wrap;
+        justify-content: flex-end;
+      }
+      .site-nav a {
+        font-size: 0.75rem;
+        color: var(--text-dim);
+        letter-spacing: 0.04em;
+        white-space: nowrap;
+        transition: color var(--transition);
+      }
+      .site-nav a::before {
+        content: "> ";
+        color: var(--green-dim);
+      }
+      .site-nav a:hover {
+        color: var(--green);
+      }
+
+      @media (max-width: 780px) {
+        .site-nav {
+          display: none;
+        }
+      }
+
+      /* ============================================================
+         HERO
+         ============================================================ */
+      .hero {
+        background: linear-gradient(180deg, var(--bg-surface) 0%, var(--bg) 100%);
+        padding: var(--space-12) 0 var(--space-10);
+        border-bottom: 1px dashed var(--border);
+      }
+
+      .hero__prompt {
+        margin-bottom: var(--space-4);
+      }
+
+      .hero__title {
+        font-size: clamp(1.6rem, 4.2vw, 2.6rem);
+        color: var(--green);
+        text-shadow: var(--green-glow);
+        margin-bottom: var(--space-4);
+      }
+
+      .hero__subtitle {
+        font-size: 1rem;
+        color: var(--text);
+        max-width: 60ch;
+        margin-bottom: var(--space-6);
+      }
+
+      .hero__ctas {
         display: flex;
         flex-wrap: wrap;
+        gap: var(--space-3);
         align-items: center;
-        gap: 1rem;
-        margin: 1.25rem 0 0.25rem;
       }
-      .version {
-        color: var(--muted);
+
+      .hero__stats {
+        display: flex;
+        gap: var(--space-6);
+        flex-wrap: wrap;
+        margin-top: var(--space-8);
+        padding-top: var(--space-5);
+        border-top: 1px dashed var(--border);
+        font-size: 0.75rem;
+        color: var(--text-muted);
+      }
+      .hero__stat span {
+        color: var(--green);
+        font-weight: 700;
+      }
+
+      /* ============================================================
+         BUTTONS
+         ============================================================ */
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        gap: var(--space-2);
+        font-family: inherit;
+        font-size: 0.85rem;
+        font-weight: 700;
+        line-height: 1.4;
+        padding: 0.7em 1.2em;
+        border: 1px solid var(--border-bright);
+        border-radius: var(--radius);
+        background: var(--bg-card);
+        color: var(--text-bright);
+        text-decoration: none;
+        cursor: pointer;
+        transition: border-color var(--transition), color var(--transition),
+          background var(--transition), box-shadow var(--transition),
+          transform var(--transition);
+      }
+      .btn::before {
+        content: "> ";
+        color: var(--green);
+      }
+      .btn:hover,
+      .btn:focus-visible {
+        border-color: var(--green);
+        color: var(--green);
+        box-shadow: var(--green-glow-sm);
+        transform: translateY(-1px);
+      }
+
+      .btn--primary {
+        background: linear-gradient(
+          180deg,
+          rgba(74, 222, 128, 0.18),
+          rgba(74, 222, 128, 0.06)
+        );
+        border-color: var(--green);
+        color: var(--green);
+      }
+      .btn--primary:hover,
+      .btn--primary:focus-visible {
+        background: var(--green);
+        color: var(--bg);
+        box-shadow: var(--green-glow);
+      }
+      .btn--primary:hover::before,
+      .btn--primary:focus-visible::before {
+        color: var(--bg);
+      }
+
+      .btn--ghost {
+        background: transparent;
+      }
+
+      .btn[disabled],
+      .btn[aria-disabled="true"] {
+        opacity: 0.45;
+        cursor: not-allowed;
+        transform: none;
+      }
+
+      /* ============================================================
+         TERMINAL WINDOWS (content sections)
+         ============================================================ */
+      main {
+        padding: var(--space-10) 0 var(--space-12);
+      }
+
+      .sections {
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-8);
+      }
+
+      .term {
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        overflow: hidden;
+        scroll-margin-top: 80px;
+        animation: fadeIn 0.35s ease both;
+        transition: border-color var(--transition), box-shadow var(--transition);
+      }
+      .term:hover {
+        border-color: var(--border-bright);
+      }
+
+      .term--accent {
+        border-color: var(--green-dim);
+        box-shadow: 0 0 22px rgba(74, 222, 128, 0.06);
+      }
+
+      .term__chrome {
+        background: #1a2a1a;
+        padding: var(--space-2) var(--space-4);
+        display: flex;
+        align-items: center;
+        gap: var(--space-4);
+        border-bottom: 1px solid var(--border);
+      }
+
+      .term__dots {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+        flex-shrink: 0;
+      }
+      .term__dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+      }
+      .dot-red {
+        background: #ff5555;
+        box-shadow: 0 0 4px rgba(255, 85, 85, 0.5);
+      }
+      .dot-yellow {
+        background: #ffb000;
+        box-shadow: 0 0 4px rgba(255, 176, 0, 0.5);
+      }
+      .dot-green {
+        background: #00ff41;
+        box-shadow: 0 0 4px rgba(0, 255, 65, 0.5);
+      }
+
+      .term__path {
+        color: var(--text-dim);
+        font-size: 0.72rem;
+        letter-spacing: 0.05em;
+        flex: 1;
+        text-align: center;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .term__body {
+        padding: var(--space-6);
+      }
+
+      .term__title {
+        font-size: clamp(1.1rem, 2.2vw, 1.4rem);
+        color: var(--green);
+        text-shadow: var(--green-glow-sm);
+        margin-bottom: var(--space-5);
+        padding-bottom: var(--space-3);
+        border-bottom: 1px dashed var(--border);
+      }
+      .term__title::before {
+        content: "## ";
+        color: var(--text-muted);
+      }
+
+      .term__subtitle {
         font-size: 0.9rem;
+        color: var(--amber);
+        text-shadow: var(--amber-glow);
+        margin: var(--space-6) 0 var(--space-3);
+        letter-spacing: 0.02em;
       }
+      .term__subtitle::before {
+        content: "### ";
+        color: var(--text-muted);
+      }
+
+      /* ============================================================
+         LISTS
+         ============================================================ */
+      .steps {
+        counter-reset: step;
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-3);
+        margin-bottom: var(--space-5);
+      }
+      .steps li {
+        counter-increment: step;
+        position: relative;
+        padding-left: 2.6rem;
+      }
+      .steps li::before {
+        content: "[" counter(step) "]";
+        position: absolute;
+        left: 0;
+        top: 0;
+        color: var(--amber);
+        font-weight: 700;
+        font-size: 0.85rem;
+      }
+
+      .bullets {
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-2);
+        margin-bottom: var(--space-4);
+      }
+      .bullets li {
+        position: relative;
+        padding-left: 1.4rem;
+      }
+      .bullets li::before {
+        content: "-";
+        position: absolute;
+        left: 0;
+        top: 0;
+        color: var(--green-dim);
+        font-weight: 700;
+      }
+
+      /* ============================================================
+         FACTS STRIP
+         ============================================================ */
+      .facts {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: var(--space-4);
+        margin-bottom: var(--space-5);
+      }
+      .fact {
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--bg);
+        padding: var(--space-4);
+      }
+      .fact__key {
+        font-size: 0.68rem;
+        color: var(--text-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        margin-bottom: var(--space-1);
+      }
+      .fact__val {
+        font-size: 0.9rem;
+        color: var(--text-bright);
+        font-weight: 700;
+        word-break: break-word;
+      }
+      .fact__val--green {
+        color: var(--green);
+      }
+
+      /* ============================================================
+         NOTICES
+         ============================================================ */
       .notice {
-        background: var(--warn-bg);
-        border: 1px solid var(--warn-line);
-        color: var(--warn-ink);
-        border-radius: 10px;
-        padding: 1rem 1.25rem;
-        margin: 1rem 0;
+        border: 1px solid var(--amber-dim);
+        border-left-width: 3px;
+        border-radius: var(--radius);
+        background: rgba(212, 150, 10, 0.06);
+        padding: var(--space-4) var(--space-5);
+        margin-bottom: var(--space-5);
+        font-size: 0.88rem;
       }
-      .notice p:first-child {
-        margin-top: 0;
+      .notice__head {
+        color: var(--amber);
+        font-weight: 700;
+        letter-spacing: 0.03em;
+        margin-bottom: var(--space-2);
+      }
+      .notice__head::before {
+        content: "! ";
       }
       .notice p:last-child {
         margin-bottom: 0;
       }
       .notice a {
-        color: inherit;
-      }
-      [hidden] {
-        display: none !important;
-      }
-      footer {
-        color: var(--muted);
-        font-size: 0.85rem;
-        margin-top: 3rem;
-        text-align: center;
-      }
-      button.plain {
-        font: inherit;
-        color: var(--accent);
-        background: none;
-        border: 0;
-        padding: 0;
-        cursor: pointer;
+        color: var(--amber);
         text-decoration: underline;
+      }
+
+      .notice--error {
+        border-color: var(--error);
+        background: rgba(224, 85, 85, 0.07);
+      }
+      .notice--error .notice__head {
+        color: var(--error);
+      }
+      .notice--error a {
+        color: var(--error);
+      }
+
+      /* ============================================================
+         INSTALL ROW
+         ============================================================ */
+      .install-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: var(--space-4);
+        padding: var(--space-5);
+        border: 1px dashed var(--border-bright);
+        border-radius: var(--radius);
+        background: var(--bg);
+      }
+
+      .build {
+        display: flex;
+        align-items: center;
+        gap: var(--space-2);
+        font-size: 0.78rem;
+        color: var(--text-dim);
+      }
+      .build__label {
+        color: var(--text-muted);
+      }
+      .build__value {
+        color: var(--green);
+        font-weight: 700;
+        border: 1px solid var(--border-bright);
+        background: var(--green-faint);
+        border-radius: var(--radius);
+        padding: 0 var(--space-2);
+      }
+
+      esp-web-install-button {
+        --esp-tools-button-color: var(--green);
+        --esp-tools-button-text-color: var(--bg);
+      }
+
+      .slot-msg {
+        font-size: 0.8rem;
+        color: var(--text-muted);
+      }
+      .slot-msg::before {
+        content: "x ";
+        color: var(--error);
+      }
+
+      /* ============================================================
+         FOOTER
+         ============================================================ */
+      .site-footer {
+        border-top: 1px solid var(--border);
+        background: var(--bg-surface);
+        padding: var(--space-8) 0 var(--space-6);
+      }
+
+      .footer-inner {
+        max-width: var(--container-max);
+        margin: 0 auto;
+        padding: 0 var(--space-6);
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-4);
+      }
+
+      .footer-nav {
+        display: flex;
+        gap: var(--space-5);
+        flex-wrap: wrap;
+        padding-bottom: var(--space-4);
+        border-bottom: 1px dashed var(--border);
+      }
+      .footer-nav a {
+        font-size: 0.75rem;
+        color: var(--text-muted);
+      }
+      .footer-nav a::before {
+        content: "> ";
+        color: var(--green-dim);
+      }
+      .footer-nav a:hover {
+        color: var(--green);
+      }
+
+      .footer-bottom {
+        display: flex;
+        justify-content: space-between;
+        gap: var(--space-4);
+        flex-wrap: wrap;
+        align-items: center;
+      }
+      .footer-copy {
+        font-size: 0.72rem;
+        color: var(--text-muted);
+      }
+      .footer-copy a {
+        color: var(--text-muted);
+      }
+      .footer-copy a:hover {
+        color: var(--green);
+      }
+
+      .footer-system-info {
+        display: flex;
+        gap: var(--space-4);
+        flex-wrap: wrap;
+        font-size: 0.68rem;
+        color: var(--text-muted);
+      }
+      .footer-system-info span::before {
+        content: "// ";
+        color: var(--border-bright);
+      }
+
+      /* ============================================================
+         RESPONSIVE
+         ============================================================ */
+      @media (max-width: 680px) {
+        .container,
+        .header-inner,
+        .footer-inner {
+          padding-left: var(--space-4);
+          padding-right: var(--space-4);
+        }
+        .term__body {
+          padding: var(--space-5) var(--space-4);
+        }
+        .hero {
+          padding: var(--space-8) 0 var(--space-6);
+        }
+        .hero__ctas .btn {
+          width: 100%;
+          justify-content: center;
+        }
+        .install-row {
+          padding: var(--space-4);
+        }
+        .steps li {
+          padding-left: 2.2rem;
+        }
       }
     </style>
   </head>
   <body>
-    <main>
-      <header>
-        <h1>Media Controller panel installer</h1>
-        <p class="lede">
-          Install the touch-panel firmware on an ESP32-S3 board from this page,
-          over a USB cable. No ESPHome, no YAML and no configuration file.
-        </p>
-      </header>
-
-      <section>
-        <h2>What this installs</h2>
-        <p>
-          One firmware image for the <strong>ESP32-S3-4848S040</strong> — the
-          4-inch 480×480 board with an ST7701S display and a GT911 touchscreen.
-          It is the only board this image is built for. Flashing it onto
-          anything else will not damage the board, but nothing will be drawn on
-          the screen.
-        </p>
-        <p>
-          The image is identical for every panel. It contains no Wi-Fi
-          password, no Home Assistant address and no access token: those are
-          added afterwards, on your own machine and on your own network.
-        </p>
-      </section>
-
-      <section>
-        <h2>Install</h2>
-
-        <div id="unsupported" class="notice" hidden>
-          <p><strong>This browser cannot flash a device.</strong></p>
-          <p>
-            Installing needs Web Serial, which today means desktop
-            <strong>Google Chrome</strong>, <strong>Microsoft Edge</strong> or
-            <strong>Opera</strong>. Safari, Firefox and every browser on iOS
-            and Android do not have it. Open this page in one of the three and
-            the button below will appear.
-          </p>
-        </div>
-
-        <div id="insecure" class="notice" hidden>
-          <p><strong>This page is not on a secure connection.</strong></p>
-          <p>
-            Web Serial is only available over <code>https://</code> (or on
-            <code>localhost</code>). Open the published copy of this page
-            instead of a local file or a plain <code>http://</code> address.
-          </p>
-        </div>
-
-        <ol>
-          <li>
-            Connect the panel to
-            <strong>the computer you are reading this on</strong> with a USB-C
-            data cable. The cable has to carry data — a charge-only cable will
-            power the panel and show up as nothing.
-          </li>
-          <li>Press <strong>Connect</strong> and pick the serial port.</li>
-          <li>
-            Choose <strong>Install Media Controller</strong> and confirm
-            erasing the device. The first install takes about a minute.
-          </li>
-          <li>
-            When it finishes, the same dialog offers
-            <strong>Wi-Fi</strong>. Enter your network and password there.
-          </li>
-        </ol>
-
-        <div class="install">
-          <esp-web-install-button id="install"></esp-web-install-button>
-          <span class="version" id="version-line">Loading the firmware manifest…</span>
-        </div>
-        <p class="version" id="manifest-error" hidden>
-          The firmware manifest could not be loaded, so there is nothing to
-          install from this page. Please open an issue.
-        </p>
-      </section>
-
-      <section>
-        <h2>Wi-Fi</h2>
-        <p>
-          The credentials you type into the Wi-Fi step travel down the USB
-          cable to the panel and nowhere else. They are not sent to this site,
-          to GitHub, or to any build server: this page never uploads anything,
-          and the firmware it installs was built without them.
-        </p>
-        <p>
-          The panel stores them itself and reconnects on its own after a power
-          cut.
-        </p>
-
-        <h3>If the network changes later</h3>
-        <p>
-          A panel that cannot reach its network raises its own access point,
-          <strong>Media Controller Setup</strong>, after about a minute. Join
-          it from a phone and a page opens where you can enter the new network.
-          You can also plug the panel back into a computer and use the
-          <strong>Connect</strong> button above, which offers the Wi-Fi step
-          again without reinstalling anything.
-        </p>
-      </section>
-
-      <section>
-        <h2>Home Assistant</h2>
-        <ol>
-          <li>
-            Once the panel joins your network it shows a
-            <strong>six-digit code</strong> on its screen and announces itself.
-          </li>
-          <li>
-            Home Assistant offers it under
-            <strong>Settings → Devices &amp; services</strong>. Open it and
-            type the six digits.
-          </li>
-          <li>
-            Home Assistant then sends the panel its own address, an access
-            token created for that panel alone, and the entity it should read.
-            Nothing is typed on the panel itself.
-          </li>
-        </ol>
-        <p>
-          The <strong>Media Controller</strong> integration has to be installed
-          in Home Assistant first — through HACS — and a media player source
-          configured. See the
+    <header class="site-header">
+      <div class="header-inner">
+        <div class="site-branding">
+          <span class="site-mark" aria-hidden="true">
+            <svg viewBox="0 0 32 32" fill="none">
+              <path
+                d="M6 9l6 7-6 7"
+                stroke="currentColor"
+                stroke-width="3"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+              <path
+                d="M16 23h10"
+                stroke="currentColor"
+                stroke-width="3"
+                stroke-linecap="round"
+              />
+            </svg>
+          </span>
           <a
-            href="https://github.com/VahaC/ha-media-controller#readme"
-            rel="noreferrer"
-            >repository README</a
-          >.
-        </p>
-      </section>
-
-      <section>
-        <h2>If the panel is not offered</h2>
-        <h3>No serial port in the list</h3>
-        <ul>
-          <li>Try another USB-C cable. Charge-only cables are common.</li>
-          <li>
-            On Windows, install the driver for the board's USB-to-serial chip
-            (CH340 or CP210x) and unplug and replug the panel.
-          </li>
-          <li>
-            Close anything else holding the port — an ESPHome dashboard, a
-            serial monitor, the Arduino IDE.
-          </li>
-        </ul>
-
-        <h3>The port is there but the install fails to start</h3>
-        <p>Put the board into its download mode by hand:</p>
-        <ol>
-          <li>Hold <kbd>BOOT</kbd> down.</li>
-          <li>Press and release <kbd>RESET</kbd>.</li>
-          <li>Release <kbd>BOOT</kbd>.</li>
-          <li>Press <strong>Connect</strong> again.</li>
-        </ol>
-        <p>
-          Both buttons are on the back of the board. After a successful install
-          the panel restarts on its own; if it does not, press
-          <kbd>RESET</kbd> once.
-        </p>
-
-        <h3>Nothing on the screen after installing</h3>
-        <p>
-          Give it fifteen seconds — the display initialises after the rest of
-          the firmware. If it stays dark, the board is probably not an
-          ESP32-S3-4848S040.
-        </p>
-      </section>
-
-      <section>
-        <h2>Updating</h2>
-        <p>
-          Updates are installed the same way: connect the panel over USB and
-          press <strong>Install</strong> again. There is deliberately no
-          over-the-air update in this image — an update password compiled into
-          a file anybody can download would protect nothing.
-        </p>
-        <p>
-          Installing over an existing panel keeps its Wi-Fi credentials and its
-          Home Assistant pairing, so it comes back on its own. Choosing
-          <strong>erase device</strong> clears both, and the panel then shows a
-          new pairing code.
-        </p>
-      </section>
-
-      <footer>
-        <p>
-          <a
+            class="site-title-link"
             href="https://github.com/VahaC/ha-media-controller"
             rel="noreferrer"
-            >VahaC/ha-media-controller</a
           >
-          · This page runs entirely in your browser.
-        </p>
-      </footer>
-    </main>
+            <span class="site-title">media-controller</span>
+            <span class="site-description">ESP32 panel installer</span>
+          </a>
+        </div>
+
+        <nav class="site-nav" aria-label="Sections">
+          <a href="#install">install</a>
+          <a href="#wifi">wifi</a>
+          <a href="#home-assistant">home-assistant</a>
+          <a href="#troubleshooting">troubleshooting</a>
+          <a href="https://github.com/VahaC/ha-media-controller" rel="noreferrer"
+            >github</a
+          >
+        </nav>
+      </div>
+    </header>
+
+    <div>
+      <section class="hero">
+        <div class="container">
+          <div class="prompt-line hero__prompt">
+            <span class="prompt-user">vahac@homelab</span>
+            <span class="prompt-sep">:</span>
+            <span class="prompt-dir">~/ha-media-controller</span>
+            <span class="prompt-char">$</span>
+            <span class="prompt-cmd">./flash --board esp32-s3-4848s040</span>
+            <span class="cursor" aria-hidden="true"></span>
+          </div>
+
+          <h1 class="hero__title">Flash the panel from your browser</h1>
+
+          <p class="hero__subtitle">
+            Install the Media Controller touch-panel firmware on an ESP32-S3
+            board over a USB cable. No ESPHome, no YAML and no configuration
+            file — the whole thing happens on this page.
+          </p>
+
+          <div class="hero__ctas">
+            <a class="btn btn--primary" href="#install">Install firmware</a>
+            <a
+              class="btn btn--ghost"
+              href="https://github.com/VahaC/ha-media-controller"
+              rel="noreferrer"
+              >Read the docs</a
+            >
+          </div>
+
+          <div class="hero__stats">
+            <span class="hero__stat">Board <span>ESP32-S3-4848S040</span></span>
+            <span class="hero__stat">Display <span>480×480 ST7701S</span></span>
+            <span class="hero__stat">Touch <span>GT911</span></span>
+            <span class="hero__stat"
+              >Build <span id="hero-version">…</span></span
+            >
+          </div>
+        </div>
+      </section>
+
+      <main>
+        <div class="container">
+          <div class="sections">
+            <!-- ============ INSTALL ============ -->
+            <section class="term term--accent" id="install">
+              <div class="term__chrome">
+                <span class="term__dots" aria-hidden="true">
+                  <span class="term__dot dot-red"></span>
+                  <span class="term__dot dot-yellow"></span>
+                  <span class="term__dot dot-green"></span>
+                </span>
+                <span class="term__path">~/install</span>
+              </div>
+              <div class="term__body">
+                <h2 class="term__title">Install</h2>
+
+                <div id="unsupported" class="notice notice--error" hidden>
+                  <p class="notice__head">This browser cannot flash a device</p>
+                  <p>
+                    Installing needs Web Serial, which today means desktop
+                    <strong>Google Chrome</strong>,
+                    <strong>Microsoft Edge</strong> or
+                    <strong>Opera</strong>. Safari, Firefox and every browser on
+                    iOS and Android do not have it. Open this page in one of the
+                    three and the button below will appear.
+                  </p>
+                </div>
+
+                <div id="insecure" class="notice notice--error" hidden>
+                  <p class="notice__head">
+                    This page is not on a secure connection
+                  </p>
+                  <p>
+                    Web Serial is only available over <code>https://</code> (or
+                    on <code>localhost</code>). Open the published copy of this
+                    page instead of a local file or a plain
+                    <code>http://</code> address.
+                  </p>
+                </div>
+
+                <ol class="steps">
+                  <li>
+                    Connect the panel to
+                    <strong>the computer you are reading this on</strong> with a
+                    USB-C data cable. The cable has to carry data — a
+                    charge-only cable will power the panel and show up as
+                    nothing.
+                  </li>
+                  <li>Press <strong>Connect</strong> and pick the serial port.</li>
+                  <li>
+                    Choose <strong>Install Media Controller</strong> and confirm
+                    erasing the device. The first install takes about a minute.
+                  </li>
+                  <li>
+                    When it finishes, the same dialog offers
+                    <strong>Wi-Fi</strong>. Enter your network and password
+                    there.
+                  </li>
+                </ol>
+
+                <div class="install-row">
+                  <esp-web-install-button id="install-button">
+                    <button class="btn btn--primary" slot="activate">
+                      Connect and install
+                    </button>
+                    <span class="slot-msg" slot="unsupported"
+                      >Web Serial is missing in this browser.</span
+                    >
+                    <span class="slot-msg" slot="not-allowed"
+                      >Web Serial needs an https:// page.</span
+                    >
+                  </esp-web-install-button>
+
+                  <span class="build" id="version-line">
+                    <span class="build__label">firmware</span>
+                    <span class="build__value" id="version-value">loading…</span>
+                  </span>
+                </div>
+
+                <p class="slot-msg" id="manifest-error" hidden>
+                  The firmware manifest could not be loaded, so there is nothing
+                  to install from this page. Please
+                  <a
+                    href="https://github.com/VahaC/ha-media-controller/issues"
+                    rel="noreferrer"
+                    >open an issue</a
+                  >.
+                </p>
+              </div>
+            </section>
+
+            <!-- ============ WHAT THIS INSTALLS ============ -->
+            <section class="term" id="what">
+              <div class="term__chrome">
+                <span class="term__dots" aria-hidden="true">
+                  <span class="term__dot dot-red"></span>
+                  <span class="term__dot dot-yellow"></span>
+                  <span class="term__dot dot-green"></span>
+                </span>
+                <span class="term__path">~/firmware --info</span>
+              </div>
+              <div class="term__body">
+                <h2 class="term__title">What this installs</h2>
+
+                <div class="facts">
+                  <div class="fact">
+                    <div class="fact__key">Board</div>
+                    <div class="fact__val fact__val--green">
+                      ESP32-S3-4848S040
+                    </div>
+                  </div>
+                  <div class="fact">
+                    <div class="fact__key">Panel</div>
+                    <div class="fact__val">4″ 480×480 · ST7701S</div>
+                  </div>
+                  <div class="fact">
+                    <div class="fact__key">Touch</div>
+                    <div class="fact__val">GT911 capacitive</div>
+                  </div>
+                  <div class="fact">
+                    <div class="fact__key">Secrets in the image</div>
+                    <div class="fact__val">none</div>
+                  </div>
+                </div>
+
+                <p>
+                  One firmware image for the
+                  <strong>ESP32-S3-4848S040</strong> — the 4-inch 480×480 board
+                  with an ST7701S display and a GT911 touchscreen. It is the
+                  only board this image is built for. Flashing it onto anything
+                  else will not damage the board, but nothing will be drawn on
+                  the screen.
+                </p>
+                <p>
+                  The image is identical for every panel. It contains no Wi-Fi
+                  password, no Home Assistant address and no access token: those
+                  are added afterwards, on your own machine and on your own
+                  network.
+                </p>
+              </div>
+            </section>
+
+            <!-- ============ WIFI ============ -->
+            <section class="term" id="wifi">
+              <div class="term__chrome">
+                <span class="term__dots" aria-hidden="true">
+                  <span class="term__dot dot-red"></span>
+                  <span class="term__dot dot-yellow"></span>
+                  <span class="term__dot dot-green"></span>
+                </span>
+                <span class="term__path">~/network --wifi</span>
+              </div>
+              <div class="term__body">
+                <h2 class="term__title">Wi-Fi</h2>
+                <p>
+                  The credentials you type into the Wi-Fi step travel down the
+                  USB cable to the panel and nowhere else. They are not sent to
+                  this site, to GitHub, or to any build server: this page never
+                  uploads anything, and the firmware it installs was built
+                  without them.
+                </p>
+                <p>
+                  The panel stores them itself and reconnects on its own after a
+                  power cut.
+                </p>
+
+                <h3 class="term__subtitle">If the network changes later</h3>
+                <p>
+                  A panel that cannot reach its network raises its own access
+                  point, <strong>Media Controller Setup</strong>, after about a
+                  minute. Join it from a phone and a page opens where you can
+                  enter the new network. You can also plug the panel back into a
+                  computer and use the <strong>Connect</strong> button above,
+                  which offers the Wi-Fi step again without reinstalling
+                  anything.
+                </p>
+              </div>
+            </section>
+
+            <!-- ============ HOME ASSISTANT ============ -->
+            <section class="term" id="home-assistant">
+              <div class="term__chrome">
+                <span class="term__dots" aria-hidden="true">
+                  <span class="term__dot dot-red"></span>
+                  <span class="term__dot dot-yellow"></span>
+                  <span class="term__dot dot-green"></span>
+                </span>
+                <span class="term__path">~/pair --home-assistant</span>
+              </div>
+              <div class="term__body">
+                <h2 class="term__title">Home Assistant</h2>
+                <ol class="steps">
+                  <li>
+                    Once the panel joins your network it shows a
+                    <strong>six-digit code</strong> on its screen and announces
+                    itself.
+                  </li>
+                  <li>
+                    Home Assistant offers it under
+                    <strong>Settings → Devices &amp; services</strong>. Open it
+                    and type the six digits.
+                  </li>
+                  <li>
+                    Home Assistant then sends the panel its own address, an
+                    access token created for that panel alone, and the entity it
+                    should read. Nothing is typed on the panel itself.
+                  </li>
+                </ol>
+                <p>
+                  The <strong>Media Controller</strong> integration has to be
+                  installed in Home Assistant first — through HACS — and a media
+                  player source configured. See the
+                  <a
+                    href="https://github.com/VahaC/ha-media-controller#readme"
+                    rel="noreferrer"
+                    >repository README</a
+                  >.
+                </p>
+              </div>
+            </section>
+
+            <!-- ============ TROUBLESHOOTING ============ -->
+            <section class="term" id="troubleshooting">
+              <div class="term__chrome">
+                <span class="term__dots" aria-hidden="true">
+                  <span class="term__dot dot-red"></span>
+                  <span class="term__dot dot-yellow"></span>
+                  <span class="term__dot dot-green"></span>
+                </span>
+                <span class="term__path">~/dmesg | grep -i error</span>
+              </div>
+              <div class="term__body">
+                <h2 class="term__title">If the panel is not offered</h2>
+
+                <h3 class="term__subtitle">No serial port in the list</h3>
+                <ul class="bullets">
+                  <li>Try another USB-C cable. Charge-only cables are common.</li>
+                  <li>
+                    On Windows, install the driver for the board's
+                    USB-to-serial chip (CH340 or CP210x) and unplug and replug
+                    the panel.
+                  </li>
+                  <li>
+                    Close anything else holding the port — an ESPHome dashboard,
+                    a serial monitor, the Arduino IDE.
+                  </li>
+                </ul>
+
+                <h3 class="term__subtitle">
+                  The port is there but the install fails to start
+                </h3>
+                <p>Put the board into its download mode by hand:</p>
+                <ol class="steps">
+                  <li>Hold <kbd>BOOT</kbd> down.</li>
+                  <li>Press and release <kbd>RESET</kbd>.</li>
+                  <li>Release <kbd>BOOT</kbd>.</li>
+                  <li>Press <strong>Connect</strong> again.</li>
+                </ol>
+                <p>
+                  Both buttons are on the back of the board. After a successful
+                  install the panel restarts on its own; if it does not, press
+                  <kbd>RESET</kbd> once.
+                </p>
+
+                <h3 class="term__subtitle">
+                  Nothing on the screen after installing
+                </h3>
+                <p>
+                  Give it fifteen seconds — the display initialises after the
+                  rest of the firmware. If it stays dark, the board is probably
+                  not an ESP32-S3-4848S040.
+                </p>
+              </div>
+            </section>
+
+            <!-- ============ UPDATING ============ -->
+            <section class="term" id="updating">
+              <div class="term__chrome">
+                <span class="term__dots" aria-hidden="true">
+                  <span class="term__dot dot-red"></span>
+                  <span class="term__dot dot-yellow"></span>
+                  <span class="term__dot dot-green"></span>
+                </span>
+                <span class="term__path">~/update --usb</span>
+              </div>
+              <div class="term__body">
+                <h2 class="term__title">Updating</h2>
+                <p>
+                  Updates are installed the same way: connect the panel over USB
+                  and press <strong>Install</strong> again. There is
+                  deliberately no over-the-air update in this image — an update
+                  password compiled into a file anybody can download would
+                  protect nothing.
+                </p>
+                <p>
+                  Installing over an existing panel keeps its Wi-Fi credentials
+                  and its Home Assistant pairing, so it comes back on its own.
+                  Choosing <strong>erase device</strong> clears both, and the
+                  panel then shows a new pairing code.
+                </p>
+              </div>
+            </section>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <footer class="site-footer">
+      <div class="footer-inner">
+        <nav class="footer-nav" aria-label="Footer">
+          <a href="#install">install</a>
+          <a href="#what">firmware</a>
+          <a href="#wifi">wifi</a>
+          <a href="#home-assistant">home-assistant</a>
+          <a href="#troubleshooting">troubleshooting</a>
+          <a href="#updating">updating</a>
+        </nav>
+
+        <div class="footer-bottom">
+          <p class="footer-copy">
+            <a
+              href="https://github.com/VahaC/ha-media-controller"
+              rel="noreferrer"
+              >VahaC/ha-media-controller</a
+            >
+            ·
+            <a href="https://vahac.com" rel="noreferrer">vahac.com</a>
+          </p>
+          <div class="footer-system-info">
+            <span>runs entirely in your browser</span>
+            <span>nothing is uploaded</span>
+          </div>
+        </div>
+      </div>
+    </footer>
 
     <script
       type="module"
@@ -356,7 +1323,9 @@
       // published page always names one specific version rather than whatever
       // happens to be at a fixed path.
       const versionLine = document.getElementById("version-line");
-      const button = document.getElementById("install");
+      const versionValue = document.getElementById("version-value");
+      const heroVersion = document.getElementById("hero-version");
+      const button = document.getElementById("install-button");
 
       if (!window.isSecureContext) {
         document.getElementById("insecure").hidden = false;
@@ -373,10 +1342,12 @@
           const build = (data.builds || [])[0];
           if (!build) throw new Error("no builds");
           button.setAttribute("manifest", build.manifest);
-          versionLine.textContent = `Firmware ${build.version}`;
+          versionValue.textContent = build.version;
+          heroVersion.textContent = build.version;
         })
         .catch(() => {
           versionLine.hidden = true;
+          heroVersion.textContent = "unknown";
           document.getElementById("manifest-error").hidden = false;
         });
     </script>
