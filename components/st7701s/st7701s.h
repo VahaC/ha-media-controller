@@ -161,14 +161,14 @@ class ST7701S final : public display::Display,
    * priority level with the VSYNC interrupt, which therefore cannot run until
    * the memcpy finishes -- and the VSYNC interrupt is where a restart of the
    * DMA channel has to happen if it is to be invisible. It has only the
-   * vertical back porch to do it in: ten lines, 650 us at 8 MHz.
+   * vertical back porch to do it in: ten lines, 430 us at 12 MHz.
    *
    * So the buffer trades one deadline against another. It widens the refill
    * deadline in proportion to its size and narrows, by the same proportion,
    * the odds that VSYNC is serviced while there is still back porch left. The
-   * total bytes copied per frame do not change either way. Ten lines is 320 us
-   * of memcpy against 650 us of back porch, and that is the side of the trade
-   * this panel wants. */
+   * total bytes copied per frame do not change either way. Ten lines is about
+   * 300 us of memcpy against 430 us of back porch, and that is the side of the
+   * trade this panel wants. */
   uint16_t bounce_buffer_lines_ = 10;
   /* Whether to ask the RGB driver to restart its DMA channel every main-loop
    * iteration, which is what upstream does unconditionally.
@@ -178,7 +178,7 @@ class ST7701S final : public display::Display,
    * single-frame desyncs itself, as in: if this interrupt is late enough, the
    * display will shift as the LCD controller already read out the first data
    * bytes, and resetting DMA will re-send those." The interrupt has only the
-   * vertical back porch to be on time in -- ten lines, about 650 us at 8 MHz
+   * vertical back porch to be on time in -- ten lines, about 430 us at 12 MHz
    * -- and it shares its priority level with the DMA end-of-frame interrupt,
    * whose bounce-buffer memcpy runs for as long as the bounce buffer is big.
    * So asking for a restart on every frame is asking, thirty times a second,

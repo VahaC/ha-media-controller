@@ -138,7 +138,7 @@ logger:
 # heap_caps_get_largest_free_block(), which walks every block of every internal
 # heap inside a critical section — interrupts off for as long as the walk
 # takes. The RGB panel above cannot survive that: its bounce buffer holds
-# 480x10 px, which at the 8 MHz pixel clock set above drains in about 600 us,
+# 480x10 px, which at the 12 MHz pixel clock set above drains in about 430 us,
 # so a longer walk starves the refill. The panel recovers on its own — the
 # driver counts the bounce-buffer EOFs it should have seen in a frame and
 # restarts the DMA channel when they are short — but that restart is a shifted
@@ -146,16 +146,16 @@ logger:
 #
 # This is the last known stall on the device, and it is measured rather than
 # argued about. With the walk riding report_status, once a minute, the panel
-# reported one desync per five reports over two hours: the walk overruns the
-# 600 us deadline often enough to matter and not every time, which is what a
-# walk whose length follows the fragmentation would do. Riding the report also
-# put it on the worst possible schedule — a report goes out on a page change,
-# so touching the screen ran the walk while somebody was looking at it.
+# appeared to report one desync per five reports. That turned out to be a flaw
+# in the counter rather than the walk — it is counted inside the VSYNC
+# interrupt now, and the figure went to zero and stayed there — so the walk
+# has never been shown to cost a frame at all.
 #
-# Five minutes is the trade. It is a fifth of the stalls and none of them are
-# tied to a touch, against heap figures in the report that can be up to five
-# minutes old. They are watched as a trend and none of them moves in seconds,
-# so the staleness costs nothing that the freshness was buying.
+# The interval stays at five minutes anyway. Riding the report put the walk on
+# the worst schedule available: a report goes out on a page change, so touching
+# the screen ran a critical section while somebody was looking at the glass.
+# The price is heap figures up to five minutes old, and they are watched as a
+# trend and move in hours.
 debug:
   id: dbg
   update_interval: 5min
@@ -209,23 +209,32 @@ display:
     hsync_pin: 16
     vsync_pin: 17
     pclk_pin: 21
-    # -- Lowered from 12 MHz, and this is the pixel clock doing three jobs at
-    # -- once. It sets how fast the bounce buffer drains. It sets how much of
-    # -- the PSRAM bus the display itself is using: 480x480 at two bytes is
-    # -- 460 kB a frame, about 21 MB/s at 12 MHz and 14 at 8, all of it read
-    # -- by the processor in an interrupt. And it sets the length of the
-    # -- vertical back porch in real time -- ten lines, 650 us at 8 MHz and
-    # -- 430 at 12 -- which is the entire window the VSYNC interrupt has to
-    # -- land in if a restart of the DMA channel is to be invisible.
+    # -- The pixel clock does three jobs at once. It sets how fast the bounce
+    # -- buffer drains. It sets how much of the PSRAM bus the display itself
+    # -- is using: 480x480 at two bytes is 460 kB a frame, about 21 MB/s at
+    # -- 12 MHz and 14 at 8, all of it read by the processor in an interrupt.
+    # -- And it sets the length of the vertical back porch in real time --
+    # -- ten lines, 430 us at 12 MHz and 650 at 8 -- which is the entire
+    # -- window the VSYNC interrupt has to land in if a restart of the DMA
+    # -- channel is to be invisible.
     # --
     # -- It is paid for in refresh rate: nominally about 45 Hz at 12 MHz and
     # -- 30 at 8. Nominally, because the peripheral divides a 160 MHz PLL and
-    # -- takes what that lands on. The `Display FPS` sensor in the status
-    # -- report measures what it actually got, so raising this is now a
-    # -- change with a number on the other end of it: raise it, watch
-    # -- `Display desyncs` on the same report, and stop where that leaves
-    # -- zero. --
-    pclk_frequency: 8MHz
+    # -- takes what that lands on; at 8 MHz the division was exact and the
+    # -- panel measured 30.4 Hz against 30.4 calculated.
+    # --
+    # -- Raised back to 12 on measurement rather than on hope. At 8 the panel
+    # -- ran for hours at zero desyncs with 160 us of frame jitter against a
+    # -- 647 us back porch -- a fourfold margin, and nothing else left to
+    # -- spend it on. Twelve halves both sides of that: the back porch becomes
+    # -- 432 us and the bounce refill has to finish 9600 bytes inside it,
+    # -- which is on the order of 300. The margin is real but it is no longer
+    # -- generous.
+    # --
+    # -- So this is the one number in the block to revisit if `Display
+    # -- desyncs` stops reading zero. It is the first thing to lower, before
+    # -- anything else here is touched. --
+    pclk_frequency: 12MHz
     # -- Ten is the stock value and it is back deliberately. Forty was tried,
     # -- on the theory that a wider refill deadline would cover whichever
     # -- stall was to blame without having to identify it. It changed nothing
@@ -237,7 +246,7 @@ display:
     # -- It changed nothing because the two halves of the trade cancel. The
     # -- refill is a memcpy out of PSRAM inside the DMA end-of-frame
     # -- interrupt, and the buffer size is its length: forty lines is 38 kB,
-    # -- about a millisecond, against a 650 us back porch. The VSYNC interrupt
+    # -- about a millisecond, against a 430 us back porch. The VSYNC interrupt
     # -- cannot run while that memcpy does -- same priority level -- so a
     # -- buffer that is four times wider is also four times likelier to be
     # -- holding the processor when the back porch runs out. Same bytes per
