@@ -575,6 +575,7 @@ class DiagnosticsReportTests(unittest.TestCase):
         "parse_ms": 12,
         "display_fps": 30.4,
         "display_desyncs": 0,
+        "display_flushes": 214,
         "display_jitter_us": 180,
         "reset_reason": "Software reset CPU",
     }
@@ -596,6 +597,7 @@ class DiagnosticsReportTests(unittest.TestCase):
         self.assertEqual(status.parse_ms, 12)
         self.assertEqual(status.display_fps, 30.4)
         self.assertEqual(status.display_desyncs, 0)
+        self.assertEqual(status.display_flushes, 214)
         self.assertEqual(status.display_jitter_us, 180)
         self.assertEqual(status.reset_reason, "Software reset CPU")
 
@@ -606,6 +608,7 @@ class DiagnosticsReportTests(unittest.TestCase):
         status = self._status({"heap_free": 1024})
         self.assertIsNone(status.display_fps)
         self.assertIsNone(status.display_desyncs)
+        self.assertIsNone(status.display_flushes)
         self.assertIsNone(status.display_jitter_us)
 
     def test_a_desync_count_of_zero_is_a_reading(self) -> None:
@@ -621,11 +624,13 @@ class DiagnosticsReportTests(unittest.TestCase):
                 self.GOOD,
                 display_fps=241,
                 display_desyncs=100001,
+                display_flushes=1000001,
                 display_jitter_us=1000001,
             )
         )
         self.assertIsNone(status.display_fps)
         self.assertIsNone(status.display_desyncs)
+        self.assertIsNone(status.display_flushes)
         self.assertIsNone(status.display_jitter_us)
 
     def test_negative_display_readings_are_discarded(self) -> None:

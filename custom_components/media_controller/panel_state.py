@@ -200,6 +200,7 @@ LOOP_TIME_MAX_MS = 60000.0
 # them the client is broken and the reading is not a discovery.
 DISPLAY_FPS_MAX = 240.0
 DISPLAY_DESYNCS_MAX = 100000.0
+DISPLAY_FLUSHES_MAX = 1000000.0
 DISPLAY_JITTER_MAX_US = 1000000.0
 RESET_REASON_MAX_LENGTH = 64
 
@@ -614,6 +615,10 @@ class PanelStatus:
     # to the same fate.
     display_fps: float | None = None
     display_desyncs: float | None = None
+    # Regions the client copied into its display over the window. The
+    # denominator for `display_desyncs`: desyncs in a window that had no
+    # flushes in it did not come from anything the client drew.
+    display_flushes: float | None = None
     display_jitter_us: float | None = None
     reset_reason: str = ""
 
@@ -684,6 +689,8 @@ class PanelStatus:
                                  DISPLAY_FPS_MAX),
             display_desyncs=_bounded(diagnostics.get("display_desyncs"), 0,
                                      DISPLAY_DESYNCS_MAX),
+            display_flushes=_bounded(diagnostics.get("display_flushes"), 0,
+                                     DISPLAY_FLUSHES_MAX),
             display_jitter_us=_bounded(diagnostics.get("display_jitter_us"), 0,
                                        DISPLAY_JITTER_MAX_US),
             reset_reason=_reset_reason(diagnostics.get("reset_reason")),

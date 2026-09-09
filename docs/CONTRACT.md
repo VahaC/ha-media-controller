@@ -1166,6 +1166,7 @@ another's battery level.
     "parse_ms": 12,
     "display_fps": 30.4,
     "display_desyncs": 0,
+    "display_flushes": 214,
     "display_jitter_us": 180,
     "reset_reason": "Software reset CPU"
   }
@@ -1186,11 +1187,12 @@ another's battery level.
   are maxima over the window rather than averages, and both are reset when
   reported: an average hides the one exchange that took two seconds, and that
   exchange is the whole question.
-- `display_fps`, `display_desyncs` and `display_jitter_us` describe a
-  display the client refreshes itself out of its own memory, and a client
-  whose screen is refreshed by hardware it does not manage omits all three.
-  They are a window measurement like `http_ms`: reset when reported, so each
-  one covers the interval since the last report rather than the whole uptime.
+- `display_fps`, `display_desyncs`, `display_flushes` and
+  `display_jitter_us` describe a display the client refreshes itself out of
+  its own memory, and a client whose screen is refreshed by hardware it does
+  not manage omits all four. They are a window measurement like `http_ms`:
+  reset when reported, so each one covers the interval since the last report
+  rather than the whole uptime.
 
   `display_desyncs` is the one worth an alert. It counts the frames whose
   transfer had to be restarted, and on a panel that composes its own picture
@@ -1204,6 +1206,10 @@ another's battery level.
   `display_fps` is measured rather than declared — a client that divides a
   clock to make its pixel clock does not get the frequency it asked for — so
   it is the only honest answer to what a timing change bought.
+  `display_flushes` counts the regions the client copied into its display, and
+  it is there to be read against `display_desyncs`: a window with desyncs and
+  no flushes in it did not get them from anything the client drew, which is
+  the first fork in the road when chasing one.
 
 - `push_key` says that this client serves the push routes and what it wants
   on them. It is the client's own secret, minted by the client, and it is the
@@ -1253,6 +1259,7 @@ another's battery level.
   | `parse_ms` | milliseconds | 0 – 60000 | The **longest single** application of a payload since the last report |
   | `display_fps` | hertz | 0 – 240 | Measured refresh rate of the client's own display over the window since the last report |
   | `display_desyncs` | count | 0 – 100000 | Frames in that window the display's transfer had to be restarted in |
+  | `display_flushes` | count | 0 – 1000000 | Regions the client copied into its display in that window |
   | `display_jitter_us` | microseconds | 0 – 1000000 | Spread between the longest and the shortest frame in that window |
   | `reset_reason` | text | at most 64 characters | Why the device last restarted |
 

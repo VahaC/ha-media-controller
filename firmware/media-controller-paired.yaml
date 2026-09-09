@@ -40,7 +40,7 @@ substitutions:
   # an IP address if .local names are unreliable on your network.
   ha_url: "http://homeassistant.local:8123"
 
-  firmware_version: "0.6.17"
+  firmware_version: "0.6.18"
 
   # The version of docs/CONTRACT.md this firmware implements. firmware_version
   # says when this build shipped; this says what it understands, and it is the
@@ -3677,7 +3677,13 @@ script:
                 # -- contract, and the report is what keeps
                 # -- binary_sensor.<panel>_connected honest. --
                 body: !lambda |-
-                  char buf[96];
+                  // -- Sized for the longest single snprintf below, which
+                  // -- is the display block: four keys whose ceilings in
+                  // -- the contract add up past a hundred characters. A
+                  // -- short buffer here does not warn, it truncates, and
+                  // -- a truncated key is a report Home Assistant rejects
+                  // -- as unusable. --
+                  char buf[160];
                   std::string json =
                     std::string("{\"panel_id\":\"") + get_mac_address() +
                     "\",\"version\":\"${firmware_version}\","
@@ -3779,9 +3785,9 @@ script:
                   auto lcd = id(tft_display)->take_stats();
                   snprintf(buf, sizeof(buf),
                            ",\"display_fps\":%.1f,\"display_desyncs\":%u,"
-                           "\"display_jitter_us\":%u",
+                           "\"display_flushes\":%u,\"display_jitter_us\":%u",
                            lcd.fps, (unsigned) lcd.desyncs,
-                           (unsigned) lcd.jitter_us);
+                           (unsigned) lcd.flushes, (unsigned) lcd.jitter_us);
                   json += buf;
                   const std::string &reason =
                       id(debug_reset_reason).state;

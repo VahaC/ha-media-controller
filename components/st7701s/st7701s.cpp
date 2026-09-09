@@ -62,6 +62,12 @@ bool IRAM_ATTR ST7701S::vsync_callback_(esp_lcd_panel_handle_t /*panel*/,
   int64_t previous = self->last_vsync_us_;
   self->last_vsync_us_ = now;
   self->vsync_count_++;
+  // One sweep of the frame buffer per frame is the healthy case. None means
+  // the DMA was restarted part way through, which is a frame drawn from the
+  // wrong offset.
+  if (self->frame_count_ == self->last_frame_seen_)
+    self->desync_count_++;
+  self->last_frame_seen_ = self->frame_count_;
   if (previous != 0) {
     auto period = static_cast<uint32_t>(now - previous);
     if (period < self->period_min_us_)
@@ -81,11 +87,13 @@ bool IRAM_ATTR ST7701S::frame_callback_(esp_lcd_panel_handle_t /*panel*/,
 ST7701S::Stats ST7701S::take_stats() {
   int64_t now = esp_timer_get_time();
   uint32_t vsyncs = this->vsync_count_;
-  uint32_t frames = this->frame_count_;
+  uint32_t desyncs = this->desync_count_;
+  uint32_t flushes = this->flush_count_;
   uint32_t shortest = this->period_min_us_;
   uint32_t longest = this->period_max_us_;
   this->vsync_count_ = 0;
-  this->frame_count_ = 0;
+  this->desync_count_ = 0;
+  this->flush_count_ = 0;
   this->period_min_us_ = UINT32_MAX;
   this->period_max_us_ = 0;
   int64_t window = now - this->window_start_us_;
@@ -93,9 +101,8 @@ ST7701S::Stats ST7701S::take_stats() {
 
   Stats stats{};
   stats.fps = window > 0 ? static_cast<float>(vsyncs) * 1e6f / static_cast<float>(window) : 0.0f;
-  // One sweep of the frame buffer per frame is the healthy case. A sweep that
-  // did not finish is a restarted DMA channel, which is a jump on the glass.
-  stats.desyncs = frames < vsyncs ? vsyncs - frames : 0;
+  stats.desyncs = desyncs;
+  stats.flushes = flushes;
   stats.jitter_us = longest > shortest ? longest - shortest : 0;
   return stats;
 }
@@ -113,6 +120,7 @@ void ST7701S::draw_pixels_at(int x_start, int y_start, int w, int h, const uint8
                              display::ColorBitness bitness, bool big_endian, int x_offset, int y_offset, int x_pad) {
   if (w <= 0 || h <= 0)
     return;
+  this->flush_count_++;
   // if color mapping is required, pass the buck.
   // note that endianness is not considered here - it is assumed to match!
   if (bitness != display::COLOR_BITNESS_565) {

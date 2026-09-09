@@ -75,6 +75,7 @@ async def async_setup_entry(
                     PanelParseTimeSensor(entry, runtime),
                     PanelDisplayFpsSensor(entry, runtime),
                     PanelDisplayDesyncSensor(entry, runtime),
+                    PanelDisplayFlushSensor(entry, runtime),
                     PanelDisplayJitterSensor(entry, runtime),
                     PanelResetReasonSensor(entry, runtime),
                 ]
@@ -629,6 +630,21 @@ class PanelDisplayDesyncSensor(_PanelDiagnosticSensor):
     def __init__(self, entry: ConfigEntry, runtime: Any) -> None:
         """Initialize the display desync sensor of one panel."""
         super().__init__(entry, runtime, "display_desyncs")
+
+
+class PanelDisplayFlushSensor(_PanelDiagnosticSensor):
+    """Regions the panel copied into its display over the window.
+
+    Read it against the desync count beside it. A window that collected
+    desyncs and no flushes did not get them from anything the panel drew,
+    which is the first thing worth knowing about one.
+    """
+
+    _status_key = "display_flushes"
+
+    def __init__(self, entry: ConfigEntry, runtime: Any) -> None:
+        """Initialize the display flush sensor of one panel."""
+        super().__init__(entry, runtime, "display_flushes")
 
 
 class PanelDisplayJitterSensor(_PanelDiagnosticSensor):

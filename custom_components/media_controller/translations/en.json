@@ -186,6 +186,9 @@
       "display_desyncs": {
         "name": "Display desyncs"
       },
+      "display_flushes": {
+        "name": "Display flushes"
+      },
       "display_jitter_us": {
         "name": "Display frame jitter"
       },

@@ -86,6 +86,21 @@ class ST7701S final : public display::Display,
    *    buffer in. Every one of them is a restart of the DMA channel, and a
    *    restart is the picture visibly jumping. This is the number that says
    *    whether a change helped, and it is the whole reason the counters exist.
+   *
+   *    It is counted in the VSYNC interrupt rather than worked out here, and
+   *    that is not a detail. The first version of this subtracted two free
+   *    running counters from the main loop, which cannot be right: the bounce
+   *    filler runs two buffers ahead of the beam, so for about four percent of
+   *    every frame the sweep counter is legitimately one ahead of the frame
+   *    counter. A sample taken in that window reported a deficit in the window
+   *    after it, and reported one desync per twenty-five reports on a panel
+   *    that had had none. Comparing both inside the interrupt evaluates them
+   *    at one point in the cycle, which is what makes the answer mean
+   *    something.
+   *  - `flushes` counts the times the interface handed this driver a region to
+   *    copy into the frame buffer. It is the denominator for blaming a desync
+   *    on the interface: a window with desyncs and no flushes in it did not
+   *    get them from anything the interface drew.
    *  - `jitter_us` is the spread between the longest and the shortest gap
    *    between VSYNC interrupts. The hardware period is constant, so all of
    *    the spread is the interrupt being late, and the interrupt being late
@@ -95,6 +110,7 @@ class ST7701S final : public display::Display,
   struct Stats {
     float fps;
     uint32_t desyncs;
+    uint32_t flushes;
     uint32_t jitter_us;
   };
   Stats take_stats();
@@ -181,6 +197,10 @@ class ST7701S final : public display::Display,
    * interrupt for. */
   volatile uint32_t vsync_count_{0};
   volatile uint32_t frame_count_{0};
+  volatile uint32_t desync_count_{0};
+  volatile uint32_t flush_count_{0};
+  // Interrupt-private: the sweep count this VSYNC compares against.
+  uint32_t last_frame_seen_{0};
   volatile uint32_t period_min_us_{UINT32_MAX};
   volatile uint32_t period_max_us_{0};
   volatile int64_t last_vsync_us_{0};

@@ -118,7 +118,8 @@ class FactoryEntrypointTests(unittest.TestCase):
         # These three are the only evidence that a change to the panel timing
         # below helped, and the status report is the only channel out.
         report = _read(PAIRED)
-        for key in ("display_fps", "display_desyncs", "display_jitter_us"):
+        for key in ("display_fps", "display_desyncs", "display_flushes",
+                    "display_jitter_us"):
             with self.subTest(key=key):
                 self.assertIn(f'\\"{key}\\"', report)
                 self.assertIn(f"`{key}`", _read(CONTRACT))

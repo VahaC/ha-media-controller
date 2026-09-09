@@ -680,6 +680,7 @@ PANEL_DIAGNOSTIC_ENTITIES: tuple[tuple[str, str], ...] = (
     ("sensor", "parse_ms"),
     ("sensor", "display_fps"),
     ("sensor", "display_desyncs"),
+    ("sensor", "display_flushes"),
     ("sensor", "display_jitter_us"),
     ("sensor", "push_state"),
     ("sensor", "reset_reason"),
