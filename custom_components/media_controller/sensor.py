@@ -17,6 +17,7 @@ from homeassistant.const import (
     EntityCategory,
     PERCENTAGE,
     SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
+    UnitOfFrequency,
     UnitOfInformation,
     UnitOfTemperature,
     UnitOfTime,
@@ -58,8 +59,9 @@ async def async_setup_entry(
             ]
         )
         # Only a client that reports them. A panel that never sends the
-        # block would otherwise carry seven sensors that are unavailable for
-        # the life of the installation, which says nothing and looks broken.
+        # block would otherwise carry a row of sensors that are unavailable
+        # for the life of the installation, which says nothing and looks
+        # broken.
         if runtime.client.profile.reports_diagnostics:
             async_add_entities(
                 [
@@ -71,6 +73,9 @@ async def async_setup_entry(
                     PanelLoopTimeSensor(entry, runtime),
                     PanelHttpTimeSensor(entry, runtime),
                     PanelParseTimeSensor(entry, runtime),
+                    PanelDisplayFpsSensor(entry, runtime),
+                    PanelDisplayDesyncSensor(entry, runtime),
+                    PanelDisplayJitterSensor(entry, runtime),
                     PanelResetReasonSensor(entry, runtime),
                 ]
             )
@@ -585,6 +590,64 @@ class PanelParseTimeSensor(_PanelDiagnosticSensor):
     def __init__(self, entry: ConfigEntry, runtime: Any) -> None:
         """Initialize the parse-time sensor of one panel."""
         super().__init__(entry, runtime, "parse_ms")
+
+
+class PanelDisplayFpsSensor(_PanelDiagnosticSensor):
+    """The refresh rate the panel's own display actually ran at.
+
+    Measured on the panel rather than worked out from its configuration: a
+    client that divides a clock to make a pixel clock gets the frequency the
+    divider lands on, not the one it asked for. It is what says whether a
+    timing change made on the panel arrived, and it is the denominator the
+    desync count below is read against.
+    """
+
+    _status_key = "display_fps"
+    _attr_native_unit_of_measurement = UnitOfFrequency.HERTZ
+    _attr_suggested_display_precision = 1
+
+    def __init__(self, entry: ConfigEntry, runtime: Any) -> None:
+        """Initialize the display frame-rate sensor of one panel."""
+        super().__init__(entry, runtime, "display_fps")
+
+
+class PanelDisplayDesyncSensor(_PanelDiagnosticSensor):
+    """Frames the panel had to restart the transfer to its display in.
+
+    The reading a person can see. On a panel that composes its own picture in
+    RAM and clocks it out itself, a restarted transfer is a frame sent from
+    the wrong offset: the image jumps sideways and settles. Zero is the only
+    healthy value; a steady few per minute is exactly what somebody means by
+    the screen twitching.
+
+    Read it beside `loop_time` and `Parse time`. Those say the panel was busy;
+    this says the display noticed.
+    """
+
+    _status_key = "display_desyncs"
+
+    def __init__(self, entry: ConfigEntry, runtime: Any) -> None:
+        """Initialize the display desync sensor of one panel."""
+        super().__init__(entry, runtime, "display_desyncs")
+
+
+class PanelDisplayJitterSensor(_PanelDiagnosticSensor):
+    """How unevenly the panel serviced its display over the window.
+
+    The spread between the longest and the shortest frame. The hardware frame
+    period is fixed, so none of the spread is the display and all of it is the
+    panel arriving late to it. It is the early warning for the sensor above: a
+    figure climbing towards one frame period means the next thing to give way
+    is the transfer itself.
+    """
+
+    _status_key = "display_jitter_us"
+    _attr_device_class = SensorDeviceClass.DURATION
+    _attr_native_unit_of_measurement = UnitOfTime.MICROSECONDS
+
+    def __init__(self, entry: ConfigEntry, runtime: Any) -> None:
+        """Initialize the display jitter sensor of one panel."""
+        super().__init__(entry, runtime, "display_jitter_us")
 
 
 class PanelPushStateSensor(PanelReadingEntity, SensorEntity):

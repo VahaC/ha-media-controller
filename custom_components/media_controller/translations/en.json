@@ -180,6 +180,15 @@
       "parse_ms": {
         "name": "Parse time"
       },
+      "display_fps": {
+        "name": "Display refresh rate"
+      },
+      "display_desyncs": {
+        "name": "Display desyncs"
+      },
+      "display_jitter_us": {
+        "name": "Display frame jitter"
+      },
       "push_state": {
         "name": "Push",
         "state": {

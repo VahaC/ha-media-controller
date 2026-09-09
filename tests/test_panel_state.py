@@ -571,6 +571,11 @@ class DiagnosticsReportTests(unittest.TestCase):
         "heap_fragmentation": 54,
         "psram_free": 6291456,
         "loop_time": 38,
+        "http_ms": 210,
+        "parse_ms": 12,
+        "display_fps": 30.4,
+        "display_desyncs": 0,
+        "display_jitter_us": 180,
         "reset_reason": "Software reset CPU",
     }
 
@@ -587,7 +592,47 @@ class DiagnosticsReportTests(unittest.TestCase):
         self.assertEqual(status.heap_fragmentation, 54)
         self.assertEqual(status.psram_free, 6291456)
         self.assertEqual(status.loop_time, 38)
+        self.assertEqual(status.http_ms, 210)
+        self.assertEqual(status.parse_ms, 12)
+        self.assertEqual(status.display_fps, 30.4)
+        self.assertEqual(status.display_desyncs, 0)
+        self.assertEqual(status.display_jitter_us, 180)
         self.assertEqual(status.reset_reason, "Software reset CPU")
+
+    def test_a_client_with_no_display_of_its_own_reports_none(self) -> None:
+        # A panel whose screen is refreshed by hardware it does not manage has
+        # nothing to say about frames, and must not be given three sensors
+        # that read zero for the life of the installation.
+        status = self._status({"heap_free": 1024})
+        self.assertIsNone(status.display_fps)
+        self.assertIsNone(status.display_desyncs)
+        self.assertIsNone(status.display_jitter_us)
+
+    def test_a_desync_count_of_zero_is_a_reading(self) -> None:
+        # Zero is the healthy answer and the point of the sensor. It must
+        # survive as 0.0 rather than falling through a truthiness test to
+        # "not reported", which would hide exactly the good news.
+        self.assertEqual(self._status({"display_desyncs": 0}).
+                         display_desyncs, 0)
+
+    def test_display_readings_past_the_hardware_are_discarded(self) -> None:
+        status = self._status(
+            dict(
+                self.GOOD,
+                display_fps=241,
+                display_desyncs=100001,
+                display_jitter_us=1000001,
+            )
+        )
+        self.assertIsNone(status.display_fps)
+        self.assertIsNone(status.display_desyncs)
+        self.assertIsNone(status.display_jitter_us)
+
+    def test_negative_display_readings_are_discarded(self) -> None:
+        status = self._status(dict(self.GOOD, display_fps=-1,
+                                   display_jitter_us=-1))
+        self.assertIsNone(status.display_fps)
+        self.assertIsNone(status.display_jitter_us)
 
     def test_a_report_with_no_block_reports_nothing(self) -> None:
         """A client that cannot measure them omits the block entirely."""

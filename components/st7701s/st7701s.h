@@ -11,6 +11,7 @@
 #include "esp_lcd_panel_ops.h"
 
 #include "esp_lcd_panel_rgb.h"
+#include "esp_timer.h"
 
 namespace esphome::st7701s {
 
@@ -50,6 +51,7 @@ class ST7701S final : public display::Display,
   void set_width(uint16_t width) { this->width_ = width; }
   void set_pclk_frequency(uint32_t pclk_frequency) { this->pclk_frequency_ = pclk_frequency; }
   void set_bounce_buffer_lines(uint16_t lines) { this->bounce_buffer_lines_ = lines; }
+  void set_force_restart(bool force_restart) { this->force_restart_ = force_restart; }
   void set_pclk_inverted(bool inverted) { this->pclk_inverted_ = inverted; }
   void set_dimensions(uint16_t width, uint16_t height) {
     this->width_ = width;
@@ -70,6 +72,33 @@ class ST7701S final : public display::Display,
     this->offset_x_ = offset_x;
     this->offset_y_ = offset_y;
   }
+
+  /* What the RGB peripheral did since this was last called, and it is reset
+   * by the call. There is no other way to ask: this panel has no ESPHome
+   * native API, so a number that stays on the device is a number nobody can
+   * read. The status report takes a sample each time it goes out.
+   *
+   *  - `fps` is measured rather than calculated. The pixel clock the
+   *    peripheral actually runs at is the PLL divided by an integer, not the
+   *    frequency asked for, so this is the only honest answer to what raising
+   *    `pclk_frequency` bought.
+   *  - `desyncs` counts frames the DMA did not finish a sweep of the frame
+   *    buffer in. Every one of them is a restart of the DMA channel, and a
+   *    restart is the picture visibly jumping. This is the number that says
+   *    whether a change helped, and it is the whole reason the counters exist.
+   *  - `jitter_us` is the spread between the longest and the shortest gap
+   *    between VSYNC interrupts. The hardware period is constant, so all of
+   *    the spread is the interrupt being late, and the interrupt being late
+   *    is what turns a restart into a shifted frame rather than an invisible
+   *    one.
+   */
+  struct Stats {
+    float fps;
+    uint32_t desyncs;
+    uint32_t jitter_us;
+  };
+  Stats take_stats();
+
   display::DisplayType get_display_type() override { return display::DisplayType::DISPLAY_TYPE_COLOR; }
   int get_width_internal() override { return this->width_; }
   int get_height_internal() override { return this->height_; }
@@ -82,6 +111,10 @@ class ST7701S final : public display::Display,
   void write_data_(uint8_t value);
   void write_sequence_(uint8_t cmd, size_t len, const uint8_t *bytes);
   void write_init_sequence_();
+  static bool vsync_callback_(esp_lcd_panel_handle_t panel,
+                              const esp_lcd_rgb_panel_event_data_t *data, void *ctx);
+  static bool frame_callback_(esp_lcd_panel_handle_t panel,
+                              const esp_lcd_rgb_panel_event_data_t *data, void *ctx);
 
   InternalGPIOPin *de_pin_{nullptr};
   InternalGPIOPin *pclk_pin_{nullptr};
@@ -98,20 +131,60 @@ class ST7701S final : public display::Display,
   uint16_t vsync_front_porch_ = 10;
   std::vector<uint8_t> init_sequence_;
   uint32_t pclk_frequency_ = 16 * 1000 * 1000;
-  /* How many display lines the bounce buffer holds. Upstream hardcodes ten,
-   * and ten is what starves: the LCD peripheral drains the buffer at the
-   * pixel clock, so ten lines of a 480 px panel at 12 MHz is about 400 us of
-   * slack before the refill has to have happened. Anything that holds the
-   * core or the PSRAM bus for longer than that -- a redraw compositing over
-   * an album cover, a response streaming into a PSRAM buffer, a critical
-   * section in the socket layer -- makes the DMA miss, and the VSYNC
-   * interrupt resets the channel. That reset is a frame that visibly jumps.
+  /* How many display lines the bounce buffer holds. Upstream hardcodes ten.
    *
-   * Raising it buys proportional slack, for two internal-RAM buffers of
-   * width * lines * 2 bytes each. It does not make the work cheaper; it makes
-   * the deadline wider, which is the only lever that does not depend on
-   * knowing which of several possible stalls was to blame. */
+   * The option exists because raising it looked like free slack: the LCD
+   * peripheral drains the buffer at the pixel clock, so more lines is more
+   * time for the refill to happen in. Forty was tried on that reasoning and
+   * changed nothing that could be seen, for about 75 kB of internal RAM.
+   *
+   * The reasoning was half the picture. The refill is a memcpy out of PSRAM
+   * run inside the DMA end-of-frame interrupt, and its length is what the
+   * buffer size actually sets: forty lines of a 480 px panel is 38 kB, which
+   * is on the order of a millisecond of PSRAM read. That interrupt shares its
+   * priority level with the VSYNC interrupt, which therefore cannot run until
+   * the memcpy finishes -- and the VSYNC interrupt is where a restart of the
+   * DMA channel has to happen if it is to be invisible. It has only the
+   * vertical back porch to do it in: ten lines, 650 us at 8 MHz.
+   *
+   * So the buffer trades one deadline against another. It widens the refill
+   * deadline in proportion to its size and narrows, by the same proportion,
+   * the odds that VSYNC is serviced while there is still back porch left. The
+   * total bytes copied per frame do not change either way. Ten lines is 320 us
+   * of memcpy against 650 us of back porch, and that is the side of the trade
+   * this panel wants. */
   uint16_t bounce_buffer_lines_ = 10;
+  /* Whether to ask the RGB driver to restart its DMA channel every main-loop
+   * iteration, which is what upstream does unconditionally.
+   *
+   * The request is honoured in the VSYNC interrupt, and ESP-IDF's own comment
+   * on the routine that honours it says what it costs: "this fix can lead to
+   * single-frame desyncs itself, as in: if this interrupt is late enough, the
+   * display will shift as the LCD controller already read out the first data
+   * bytes, and resetting DMA will re-send those." The interrupt has only the
+   * vertical back porch to be on time in -- ten lines, about 650 us at 8 MHz
+   * -- and it shares its priority level with the DMA end-of-frame interrupt,
+   * whose bounce-buffer memcpy runs for as long as the bounce buffer is big.
+   * So asking for a restart on every frame is asking, thirty times a second,
+   * for a lottery that a busy PSRAM bus loses.
+   *
+   * Nothing is given up by not asking. The driver in ESP-IDF 5.5 restarts on
+   * its own when a frame actually underran -- it counts the end-of-frame
+   * interrupts it received against the number it expected and restarts when
+   * they are short -- which is the case the unconditional request was written
+   * for, back when the driver had no such check. */
+  bool force_restart_{true};
+  /* Written by the VSYNC and frame-complete interrupts, read and zeroed by
+   * take_stats() from the main loop. Nothing locks them: a sample that lands
+   * between the read and the zero loses one frame out of the eighteen hundred
+   * in a minute, and a diagnostic is not worth taking a spinlock into an
+   * interrupt for. */
+  volatile uint32_t vsync_count_{0};
+  volatile uint32_t frame_count_{0};
+  volatile uint32_t period_min_us_{UINT32_MAX};
+  volatile uint32_t period_max_us_{0};
+  volatile int64_t last_vsync_us_{0};
+  int64_t window_start_us_{0};
   bool pclk_inverted_{true};
 
   bool invert_colors_{};

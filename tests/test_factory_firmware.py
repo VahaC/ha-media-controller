@@ -29,6 +29,7 @@ UI = FIRMWARE / "media-controller-ui.yaml"
 INSTALLER = REPO / "installer"
 REQUIREMENTS = FIRMWARE / "requirements.txt"
 WORKFLOWS = REPO / ".github" / "workflows"
+CONTRACT = REPO / "docs" / "CONTRACT.md"
 
 # The image the first updatable panels are running. It is build output and is
 # not committed, so anything that reads it skips when it is not there — a
@@ -110,6 +111,46 @@ class FactoryEntrypointTests(unittest.TestCase):
         # `name:` that came back would put a second copy of one of them in
         # Home Assistant for anybody who opted the native API back in.
         self.assertIsNone(re.search(r"^\s+name:\s", _read(UI), re.MULTILINE))
+
+    def test_the_display_reports_what_it_measured(self) -> None:
+        # The panel has no ESPHome device page and no log anybody can reach,
+        # so a counter it keeps and never sends is a counter nobody reads.
+        # These three are the only evidence that a change to the panel timing
+        # below helped, and the status report is the only channel out.
+        report = _read(PAIRED)
+        for key in ("display_fps", "display_desyncs", "display_jitter_us"):
+            with self.subTest(key=key):
+                self.assertIn(f'\\"{key}\\"', report)
+                self.assertIn(f"`{key}`", _read(CONTRACT))
+
+    def test_the_panel_does_not_restart_its_transfer_every_frame(self) -> None:
+        # Upstream's st7701s asks the RGB driver, once per main-loop
+        # iteration, to restart the DMA channel at the next VSYNC. ESP-IDF
+        # honours that inside the VSYNC interrupt and says in the source what
+        # it costs: an interrupt that arrives after the back porch has run out
+        # re-sends bytes the controller already latched, which is a frame
+        # drawn from the wrong offset. On this panel that was the jumping.
+        #
+        # The fork exists to make it optional and the interface turns it off.
+        # A `true` here would be the whole diagnosis quietly undone: it still
+        # compiles, still boots, and the only symptom is the picture twitching
+        # again on every repaint.
+        self.assertIsNotNone(
+            re.search(r"^\s+force_restart:\s+false\s*$", _read(UI),
+                      re.MULTILINE)
+        )
+
+    def test_the_bounce_buffer_divides_the_display_height(self) -> None:
+        # esp_lcd_new_rgb_panel() requires the frame buffer to be a whole
+        # number of bounce buffers and refuses the panel otherwise, and a
+        # refused panel on a wall is a black screen with no log behind it.
+        # The component validates this too; this catches it in the file.
+        ui = _read(UI)
+        height = int(re.search(r"^\s+height:\s+(\d+)", ui, re.MULTILINE)
+                     .group(1))
+        lines = int(re.search(r"^\s+bounce_buffer_lines:\s+(\d+)", ui,
+                              re.MULTILINE).group(1))
+        self.assertEqual(height % lines, 0)
 
     def test_the_toolchain_is_pinned(self) -> None:
         # Not a tidiness rule. ESPHome decides from its own defaults whether

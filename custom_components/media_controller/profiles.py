@@ -166,8 +166,8 @@ class ClientProfile:
     # and which would have nothing to apply a progress-ring colour to.
     has_theme: bool = False
     # Whether this client reports the `diagnostics` block. False means the
-    # seven diagnostic sensors are not created at all, rather than created
-    # and left unavailable for the life of the installation.
+    # diagnostic sensors are not created at all, rather than created and left
+    # unavailable for the life of the installation.
     reports_diagnostics: bool = False
     # Whether this client serves the push routes, and therefore whether Home
     # Assistant watches its two states in order to post them. False for the

@@ -40,7 +40,7 @@ substitutions:
   # an IP address if .local names are unreliable on your network.
   ha_url: "http://homeassistant.local:8123"
 
-  firmware_version: "0.6.15"
+  firmware_version: "0.6.16"
 
   # The version of docs/CONTRACT.md this firmware implements. firmware_version
   # says when this build shipped; this says what it understands, and it is the
@@ -3765,6 +3765,22 @@ script:
                            (unsigned) id(parse_max_ms));
                   json += std::string(",\"parse_ms\":") + buf;
                   id(parse_max_ms) = 0;
+                  // -- What the display peripheral itself did since the last
+                  // -- report, read and reset in one call. This is the only
+                  // -- way anybody sees these: they are counted in the VSYNC
+                  // -- and frame-complete interrupts, on a device with no log
+                  // -- and no ESPHome device page. `desyncs` is the one that
+                  // -- matters -- every count is a restarted DMA channel and
+                  // -- a frame that visibly jumped -- and `fps` is what says
+                  // -- whether a pixel clock raised in the interface half
+                  // -- actually arrived. --
+                  auto lcd = id(tft_display)->take_stats();
+                  snprintf(buf, sizeof(buf),
+                           ",\"display_fps\":%.1f,\"display_desyncs\":%u,"
+                           "\"display_jitter_us\":%u",
+                           lcd.fps, (unsigned) lcd.desyncs,
+                           (unsigned) lcd.jitter_us);
+                  json += buf;
                   const std::string &reason =
                       id(debug_reset_reason).state;
                   if (!reason.empty()) {

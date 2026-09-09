@@ -43,10 +43,69 @@ void ST7701S::setup() {
   }
   ESP_ERROR_CHECK(esp_lcd_panel_reset(this->handle_));
   ESP_ERROR_CHECK(esp_lcd_panel_init(this->handle_));
+
+  // The only window this panel has onto its own refresh. Both callbacks run in
+  // interrupt context and do nothing but arithmetic on counters; see Stats.
+  esp_lcd_rgb_panel_event_callbacks_t callbacks{};
+  callbacks.on_vsync = ST7701S::vsync_callback_;
+  callbacks.on_frame_buf_complete = ST7701S::frame_callback_;
+  err = esp_lcd_rgb_panel_register_event_callbacks(this->handle_, &callbacks, this);
+  if (err != ESP_OK)
+    esph_log_w(TAG, "register_event_callbacks failed: %s", esp_err_to_name(err));
+  this->window_start_us_ = esp_timer_get_time();
+}
+
+bool IRAM_ATTR ST7701S::vsync_callback_(esp_lcd_panel_handle_t /*panel*/,
+                                        const esp_lcd_rgb_panel_event_data_t * /*data*/, void *ctx) {
+  auto *self = static_cast<ST7701S *>(ctx);
+  int64_t now = esp_timer_get_time();
+  int64_t previous = self->last_vsync_us_;
+  self->last_vsync_us_ = now;
+  self->vsync_count_++;
+  if (previous != 0) {
+    auto period = static_cast<uint32_t>(now - previous);
+    if (period < self->period_min_us_)
+      self->period_min_us_ = period;
+    if (period > self->period_max_us_)
+      self->period_max_us_ = period;
+  }
+  return false;
+}
+
+bool IRAM_ATTR ST7701S::frame_callback_(esp_lcd_panel_handle_t /*panel*/,
+                                        const esp_lcd_rgb_panel_event_data_t * /*data*/, void *ctx) {
+  static_cast<ST7701S *>(ctx)->frame_count_++;
+  return false;
+}
+
+ST7701S::Stats ST7701S::take_stats() {
+  int64_t now = esp_timer_get_time();
+  uint32_t vsyncs = this->vsync_count_;
+  uint32_t frames = this->frame_count_;
+  uint32_t shortest = this->period_min_us_;
+  uint32_t longest = this->period_max_us_;
+  this->vsync_count_ = 0;
+  this->frame_count_ = 0;
+  this->period_min_us_ = UINT32_MAX;
+  this->period_max_us_ = 0;
+  int64_t window = now - this->window_start_us_;
+  this->window_start_us_ = now;
+
+  Stats stats{};
+  stats.fps = window > 0 ? static_cast<float>(vsyncs) * 1e6f / static_cast<float>(window) : 0.0f;
+  // One sweep of the frame buffer per frame is the healthy case. A sweep that
+  // did not finish is a restarted DMA channel, which is a jump on the glass.
+  stats.desyncs = frames < vsyncs ? vsyncs - frames : 0;
+  stats.jitter_us = longest > shortest ? longest - shortest : 0;
+  return stats;
 }
 
 void ST7701S::loop() {
-  if (this->handle_ != nullptr)
+  // Upstream does this unconditionally, so the default keeps it. The panel
+  // this fork was made for turns it off: see force_restart_ for why asking for
+  // a restart on every frame costs more than it buys when the PSRAM bus is
+  // also carrying the interface.
+  if (this->force_restart_ && this->handle_ != nullptr)
     esp_lcd_rgb_panel_restart(this->handle_);
 }
 
@@ -193,6 +252,12 @@ void ST7701S::dump_config() {
     ESP_LOGCONFIG(TAG, "  Data pin %d: %s", i, pin_summary);
   }
   ESP_LOGCONFIG(TAG, "  SPI Data rate: %dMHz", (unsigned) (this->data_rate_ / 1000000));
+  ESP_LOGCONFIG(TAG,
+                "  Pixel clock: %uHz\n"
+                "  Bounce buffer: %u lines\n"
+                "  Forced restart: %s",
+                (unsigned) this->pclk_frequency_, (unsigned) this->bounce_buffer_lines_,
+                YESNO(this->force_restart_));
 }
 
 }  // namespace esphome::st7701s

@@ -130,8 +130,8 @@ logger:
 # unconditional heap_caps_get_largest_free_block(), which walks every block of
 # every internal heap inside a critical section — interrupts off for as long as
 # the walk takes. The RGB panel above cannot survive that: its bounce buffer
-# holds 480x10 px, which at a 12 MHz pixel clock drains in about 400 us, so a
-# longer walk starves the refill. The panel recovers on its own -- the VSYNC
+# holds 480x10 px, which at the 8 MHz pixel clock set above drains in about
+# 600 us, so a longer walk starves the refill. The panel recovers on its own -- the VSYNC
 # interrupt counts the bounce-buffer EOFs it should have seen and resets the
 # DMA channel when they are short -- but that reset is a shifted frame, which
 # on a five second poll is a visible twitch every five seconds.
@@ -194,37 +194,61 @@ display:
     hsync_pin: 16
     vsync_pin: 17
     pclk_pin: 21
-    # -- Lowered from 12 MHz, and this is the pixel clock doing two jobs at
-    # -- once. It sets how fast the bounce buffer drains, so ten lines of a
-    # -- 480 px panel cover 400 microseconds at 12 MHz and 600 at 8. It also
-    # -- sets how much of the PSRAM bus the display itself is using: 480x480
-    # -- at two bytes is 460 kB a frame, which is about 21 MB/s at 12 MHz and
-    # -- 14 at 8. The processor is copying LVGL's buffer into that same PSRAM
-    # -- when it repaints, and it is that copy which overruns the deadline.
-    # -- Lowering the clock widens the deadline and frees bus for the copy at
-    # -- the same time.
+    # -- Lowered from 12 MHz, and this is the pixel clock doing three jobs at
+    # -- once. It sets how fast the bounce buffer drains. It sets how much of
+    # -- the PSRAM bus the display itself is using: 480x480 at two bytes is
+    # -- 460 kB a frame, about 21 MB/s at 12 MHz and 14 at 8, all of it read
+    # -- by the processor in an interrupt. And it sets the length of the
+    # -- vertical back porch in real time -- ten lines, 650 us at 8 MHz and
+    # -- 430 at 12 -- which is the entire window the VSYNC interrupt has to
+    # -- land in if a restart of the DMA channel is to be invisible.
     # --
-    # -- It is paid for in refresh rate: about 45 Hz at 12 MHz, about 30 at 8.
-    # -- Raise it back towards 12 if the picture holds. --
+    # -- It is paid for in refresh rate: nominally about 45 Hz at 12 MHz and
+    # -- 30 at 8. Nominally, because the peripheral divides a 160 MHz PLL and
+    # -- takes what that lands on. The `Display FPS` sensor in the status
+    # -- report measures what it actually got, so raising this is now a
+    # -- change with a number on the other end of it: raise it, watch
+    # -- `Display desyncs` on the same report, and stop where that leaves
+    # -- zero. --
     pclk_frequency: 8MHz
-    # -- The shock absorber between the LCD peripheral and PSRAM: ten lines
-    # -- at 480 px and a 12 MHz pixel clock is about 400 microseconds of slack
-    # -- before a missed refill becomes a reset of the DMA channel, and that
-    # -- reset is a frame that visibly jumps.
-    # --
     # -- Ten is the stock value and it is back deliberately. Forty was tried,
-    # -- on the theory that a wider deadline would cover whichever stall was
-    # -- to blame without having to identify it. It changed nothing that could
-    # -- be seen, and it cost about 75 kB of internal RAM for the two buffers:
-    # -- free heap fell from 172 to 114 kB, the minimum from 134 to 52, the
-    # -- largest free block from 82 to 34, and fragmentation went from 47% to
-    # -- 70%. On a device that has been resetting on a watchdog, that is not a
-    # -- neutral price for no effect.
+    # -- on the theory that a wider refill deadline would cover whichever
+    # -- stall was to blame without having to identify it. It changed nothing
+    # -- that could be seen, and it cost about 75 kB of internal RAM for the
+    # -- two buffers: free heap fell from 172 to 114 kB, the minimum from 134
+    # -- to 52, the largest free block from 82 to 34, and fragmentation went
+    # -- from 47% to 70%.
     # --
-    # -- The option stays because the fork now exists and the number is worth
-    # -- reaching for again if the cause turns out to be a burst this would
-    # -- actually cover. See components/st7701s/. --
-    bounce_buffer_lines: 40
+    # -- It changed nothing because the two halves of the trade cancel. The
+    # -- refill is a memcpy out of PSRAM inside the DMA end-of-frame
+    # -- interrupt, and the buffer size is its length: forty lines is 38 kB,
+    # -- about a millisecond, against a 650 us back porch. The VSYNC interrupt
+    # -- cannot run while that memcpy does -- same priority level -- so a
+    # -- buffer that is four times wider is also four times likelier to be
+    # -- holding the processor when the back porch runs out. Same bytes per
+    # -- frame either way, and only the shape of the risk moves.
+    # --
+    # -- The option stays because the fork exists and the number is a lever.
+    # -- It must divide the display height; the component refuses to compile
+    # -- otherwise. See components/st7701s/. --
+    bounce_buffer_lines: 10
+    # -- Upstream asks the RGB driver to restart its DMA channel on every
+    # -- iteration of the main loop, which the driver honours at the next
+    # -- VSYNC. ESP-IDF's own comment on the routine that honours it says what
+    # -- that costs: "this fix can lead to single-frame desyncs itself, as in:
+    # -- if this interrupt is late enough, the display will shift as the LCD
+    # -- controller already read out the first data bytes, and resetting DMA
+    # -- will re-send those." So the picture jumping on any repaint is not the
+    # -- repaint being slow. It is a restart nobody needed, asked for thirty
+    # -- times a second, landing late because a repaint had the PSRAM bus and
+    # -- the refill interrupt was still running when the back porch ended.
+    # --
+    # -- Nothing is given up by not asking. The driver in ESP-IDF 5.5 counts
+    # -- the end-of-frame interrupts it received in a frame against the number
+    # -- it expected and restarts by itself when they are short, which is the
+    # -- underrun the unconditional request was written for before that check
+    # -- existed. Turn this back on to reproduce the old behaviour. --
+    force_restart: false
     pclk_inverted: false
     hsync_pulse_width: 8
     hsync_front_porch: 10
@@ -799,34 +823,15 @@ script:
   - id: ui_sync_progress
     then:
       - lambda: |-
-          // ══════════════════════════════════════════════════════════════
-          // DISABLED FOR ONE TEST, NOW RESTORED. What that test established:
-          // stopping this stopped the jumping, and changing the volume --
-          // which repaints a different widget entirely -- brought it back. So
-          // the cause is not this script and not the progress arc. It is any
-          // repaint of any size, and the next thing tried is aimed at that.
-          // ══════════════════════════════════════════════════════════════
-          /* TEST REMOVED
-          //
-          // Everything else has been eliminated by measurement: the network
-          // (HTTP 30 ms, and the poll is now a 30 s heartbeat), the parse
-          // (48 ms down to 2), the debug component's heap walk, and a bounce
-          // buffer four times the stock size. The screen still jumps, and it
-          // jumps about every two seconds -- which for a three-minute track
-          // is exactly how often one percent of it elapses, and therefore how
-          // often this script actually changes anything on the glass.
-          //
-          // So this returns before drawing. If the jumping stops while a
-          // track is playing, the cause is the redraw this script triggers
-          // and nothing else, and the next change is aimed at the area it
-          // invalidates. If the jumping continues, the redraw is innocent and
-          // what is left is the panel timing itself.
-          //
-          // Nothing else is disabled: the position still advances, the poll
-          // and the push still run, every other widget still updates.
-          return;
-          END OF REMOVED TEST */
-
+          // -- This script was once disabled for a test, because the
+          // -- jumping tracked it almost exactly: on a three-minute track one
+          // -- percent elapses every two seconds, which is how often this
+          // -- moves the arc, and the jump came about every two seconds.
+          // -- Stopping it did stop the jumping, and then changing the volume
+          // -- -- which repaints a different widget on a different page --
+          // -- brought it straight back. So this script is not the cause and
+          // -- neither is the arc: any repaint at all was enough, and what
+          // -- the repaint was competing with is in the display block above.
           if (!id(ui_ready)) return;
           float dur = id(media_duration).state;
           int progress = 0;

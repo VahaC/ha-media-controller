@@ -1163,6 +1163,10 @@ another's battery level.
     "psram_free": 6291456,
     "loop_time": 38,
     "http_ms": 210,
+    "parse_ms": 12,
+    "display_fps": 30.4,
+    "display_desyncs": 0,
+    "display_jitter_us": 180,
     "reset_reason": "Software reset CPU"
   }
 }
@@ -1182,6 +1186,25 @@ another's battery level.
   are maxima over the window rather than averages, and both are reset when
   reported: an average hides the one exchange that took two seconds, and that
   exchange is the whole question.
+- `display_fps`, `display_desyncs` and `display_jitter_us` describe a
+  display the client refreshes itself out of its own memory, and a client
+  whose screen is refreshed by hardware it does not manage omits all three.
+  They are a window measurement like `http_ms`: reset when reported, so each
+  one covers the interval since the last report rather than the whole uptime.
+
+  `display_desyncs` is the one worth an alert. It counts the frames whose
+  transfer had to be restarted, and on a panel that composes its own picture
+  in RAM a restarted transfer is a frame drawn from the wrong offset — the
+  image visibly jumping and settling. Zero is the healthy reading and the only
+  one; a steady handful per minute is the symptom a person describes as the
+  screen twitching. `display_jitter_us` says how close the client came to that
+  on the frames that survived: the hardware frame period is constant, so all
+  of the spread is the client being late to service the display, and a figure
+  approaching one frame period means it is late by an entire frame.
+  `display_fps` is measured rather than declared — a client that divides a
+  clock to make its pixel clock does not get the frequency it asked for — so
+  it is the only honest answer to what a timing change bought.
+
 - `push_key` says that this client serves the push routes and what it wants
   on them. It is the client's own secret, minted by the client, and it is the
   only thing that makes Home Assistant push rather than leave the client
@@ -1226,6 +1249,11 @@ another's battery level.
   | `heap_fragmentation` | percent | 0 – 100 | How fragmented the heap is |
   | `psram_free` | bytes | 0 – 67108864 | Free PSRAM |
   | `loop_time` | milliseconds | 0 – 60000 | The **longest single** main-loop iteration in the last measuring interval, not an average |
+  | `http_ms` | milliseconds | 0 – 60000 | The **longest single** HTTP exchange since the last report |
+  | `parse_ms` | milliseconds | 0 – 60000 | The **longest single** application of a payload since the last report |
+  | `display_fps` | hertz | 0 – 240 | Measured refresh rate of the client's own display over the window since the last report |
+  | `display_desyncs` | count | 0 – 100000 | Frames in that window the display's transfer had to be restarted in |
+  | `display_jitter_us` | microseconds | 0 – 1000000 | Spread between the longest and the shortest frame in that window |
   | `reset_reason` | text | at most 64 characters | Why the device last restarted |
 
   A value outside its range, of the wrong type, or negative is discarded and

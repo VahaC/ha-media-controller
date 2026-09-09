@@ -194,6 +194,13 @@ PSRAM_MAX_BYTES = 67108864
 FRAGMENTATION_MIN = 0.0
 FRAGMENTATION_MAX = 100.0
 LOOP_TIME_MAX_MS = 60000.0
+# A refresh rate no display a client of this integration drives can exceed,
+# a count of restarts no window can honestly hold, and a frame late by more
+# than a second. All three are sanity ceilings rather than expectations: past
+# them the client is broken and the reading is not a discovery.
+DISPLAY_FPS_MAX = 240.0
+DISPLAY_DESYNCS_MAX = 100000.0
+DISPLAY_JITTER_MAX_US = 1000000.0
 RESET_REASON_MAX_LENGTH = 64
 
 # An uptime is republished only when the start time it implies moves by more
@@ -595,6 +602,19 @@ class PanelStatus:
     # `http_ms` -- together they say which half of a poll cycle is expensive,
     # and what `loop_time` has left over after both is the drawing itself.
     parse_ms: float | None = None
+    # What the client's own display did over the same window. Only a client
+    # that refreshes its screen out of its own memory reports these; one whose
+    # panel is driven by hardware it does not manage has nothing to say and
+    # sends none of the three.
+    #
+    # `display_desyncs` is the reading with a person behind it: every count is
+    # a frame whose transfer had to be restarted, which is the picture jumping
+    # and settling. The other two are what it is measured against -- the rate
+    # the display actually ran at, and how close the frames that survived came
+    # to the same fate.
+    display_fps: float | None = None
+    display_desyncs: float | None = None
+    display_jitter_us: float | None = None
     reset_reason: str = ""
 
     @classmethod
@@ -660,6 +680,12 @@ class PanelStatus:
                              LOOP_TIME_MAX_MS),
             parse_ms=_bounded(diagnostics.get("parse_ms"), 0,
                               LOOP_TIME_MAX_MS),
+            display_fps=_bounded(diagnostics.get("display_fps"), 0,
+                                 DISPLAY_FPS_MAX),
+            display_desyncs=_bounded(diagnostics.get("display_desyncs"), 0,
+                                     DISPLAY_DESYNCS_MAX),
+            display_jitter_us=_bounded(diagnostics.get("display_jitter_us"), 0,
+                                       DISPLAY_JITTER_MAX_US),
             reset_reason=_reset_reason(diagnostics.get("reset_reason")),
         )
 

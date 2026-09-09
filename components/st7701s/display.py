@@ -15,8 +15,6 @@ from esphome.components.mipi import (
     CONF_VSYNC_PULSE_WIDTH,
 )
 import esphome.config_validation as cv
-CONF_BOUNCE_BUFFER_LINES = "bounce_buffer_lines"
-
 from esphome.const import (
     CONF_BLUE,
     CONF_COLOR_ORDER,
@@ -45,6 +43,10 @@ from esphome.const import (
 from esphome.core import TimePeriod
 
 from .init_sequences import ST7701S_INITS, cmd
+
+# Added by this fork; neither is an upstream option.
+CONF_BOUNCE_BUFFER_LINES = "bounce_buffer_lines"
+CONF_FORCE_RESTART = "force_restart"
 
 DEPENDENCIES = ["spi", "esp32"]
 
@@ -105,6 +107,31 @@ def map_sequence(value):
     return cmd(*value)
 
 
+def _validate_bounce_buffer(config):
+    """Reject a bounce buffer the frame buffer is not a whole number of.
+
+    `esp_lcd_new_rgb_panel()` requires the frame buffer size to be a multiple
+    of the bounce buffer size and returns ESP_ERR_INVALID_ARG otherwise. Caught
+    here it is a compile error naming the two numbers; caught at runtime it is
+    a display component that marks itself failed on a panel with no log anybody
+    can read.
+    """
+    dimensions = config[CONF_DIMENSIONS]
+    height = (
+        dimensions[CONF_HEIGHT]
+        if isinstance(dimensions, dict)
+        else dimensions[1]
+    )
+    lines = config[CONF_BOUNCE_BUFFER_LINES]
+    if height % lines:
+        raise cv.Invalid(
+            f"{CONF_BOUNCE_BUFFER_LINES} must divide the display height "
+            f"({height}); {lines} does not",
+            path=[CONF_BOUNCE_BUFFER_LINES],
+        )
+    return config
+
+
 CONFIG_SCHEMA = cv.All(
     display.FULL_DISPLAY_SCHEMA.extend(
         cv.Schema(
@@ -151,10 +178,18 @@ CONFIG_SCHEMA = cv.All(
                 # rather than a target: the two buffers come out of internal
                 # RAM at width * lines * 2 bytes each, and a panel that spends
                 # all of it on slack has none left for the heap the interface
-                # runs in.
+                # runs in. A big buffer also lengthens the memcpy the refill
+                # interrupt runs, which is its own problem -- see the comment
+                # on bounce_buffer_lines_ in st7701s.h.
                 cv.Optional(
                     CONF_BOUNCE_BUFFER_LINES, default=10
                 ): cv.int_range(min=1, max=80),
+                # True is what upstream does unconditionally: ask the RGB
+                # driver, once per main-loop iteration, to restart its DMA
+                # channel at the next VSYNC. It predates the underrun check
+                # ESP-IDF now makes for itself, and on a panel whose PSRAM bus
+                # is busy it causes more shifted frames than it repairs.
+                cv.Optional(CONF_FORCE_RESTART, default=True): cv.boolean,
                 cv.Optional(CONF_INVERT_COLORS, default=False): cv.boolean,
                 cv.Required(CONF_DE_PIN): pins.internal_gpio_output_pin_schema,
                 cv.Required(CONF_PCLK_PIN): pins.internal_gpio_output_pin_schema,
@@ -171,6 +206,7 @@ CONFIG_SCHEMA = cv.All(
             }
         ).extend(spi.spi_device_schema(cs_pin_required=False, default_data_rate=1e6))
     ),
+    _validate_bounce_buffer,
     cv.only_on_esp32,
     only_on_variant(supported=[VARIANT_ESP32S3]),
 )
@@ -200,6 +236,7 @@ async def to_code(config):
     cg.add(var.set_pclk_inverted(config[CONF_PCLK_INVERTED]))
     cg.add(var.set_pclk_frequency(config[CONF_PCLK_FREQUENCY]))
     cg.add(var.set_bounce_buffer_lines(config[CONF_BOUNCE_BUFFER_LINES]))
+    cg.add(var.set_force_restart(config[CONF_FORCE_RESTART]))
     dpins = []
     if CONF_RED in config[CONF_DATA_PINS]:
         red_pins = config[CONF_DATA_PINS][CONF_RED]
