@@ -107,6 +107,13 @@ esphome:
       - script.execute: apply_theme
       # -- Honour the screen style restored from flash before the first frame. --
       - script.execute: show_home_page
+      # -- One heap reading at boot, so the diagnostic sensors are not blank
+      # -- for the first five minutes of every run -- which, on a device that
+      # -- has been restarting on a watchdog, is exactly the window worth
+      # -- looking at. It costs the one stall the walk always costs, at the
+      # -- moment nobody is watching the glass and the first frame has not
+      # -- been drawn. --
+      - component.update: dbg
 
 esp32:
   board: esp32-s3-devkitc-1
@@ -126,24 +133,32 @@ network:
 logger:
 
 # -------------------- DEBUG / STABILITY DIAGNOSTICS --------------------
-# Read on demand rather than on a clock. update_platform_() opens with an
-# unconditional heap_caps_get_largest_free_block(), which walks every block of
-# every internal heap inside a critical section — interrupts off for as long as
-# the walk takes. The RGB panel above cannot survive that: its bounce buffer
-# holds 480x10 px, which at the 8 MHz pixel clock set above drains in about
-# 600 us, so a longer walk starves the refill. The panel recovers on its own -- the VSYNC
-# interrupt counts the bounce-buffer EOFs it should have seen and resets the
-# DMA channel when they are short -- but that reset is a shifted frame, which
-# on a five second poll is a visible twitch every five seconds.
+# Read on a slow clock of its own, and the interval is the whole point.
+# update_platform_() opens with an unconditional
+# heap_caps_get_largest_free_block(), which walks every block of every internal
+# heap inside a critical section — interrupts off for as long as the walk
+# takes. The RGB panel above cannot survive that: its bounce buffer holds
+# 480x10 px, which at the 8 MHz pixel clock set above drains in about 600 us,
+# so a longer walk starves the refill. The panel recovers on its own — the
+# driver counts the bounce-buffer EOFs it should have seen in a frame and
+# restarts the DMA channel when they are short — but that restart is a shifted
+# frame.
 #
-# Nothing reads these oftener than once a minute in any case: the diagnostics
-# block rides report_status, which goes out every 60 s or on a page change. So
-# the poll is off and report_status takes the reading itself, immediately
-# before it builds the body — twelve times fewer stalls than the clock cost,
-# and a fresher number than the clock produced.
+# This is the last known stall on the device, and it is measured rather than
+# argued about. With the walk riding report_status, once a minute, the panel
+# reported one desync per five reports over two hours: the walk overruns the
+# 600 us deadline often enough to matter and not every time, which is what a
+# walk whose length follows the fragmentation would do. Riding the report also
+# put it on the worst possible schedule — a report goes out on a page change,
+# so touching the screen ran the walk while somebody was looking at it.
+#
+# Five minutes is the trade. It is a fifth of the stalls and none of them are
+# tied to a touch, against heap figures in the report that can be up to five
+# minutes old. They are watched as a trend and none of them moves in seconds,
+# so the staleness costs nothing that the freshness was buying.
 debug:
   id: dbg
-  update_interval: never
+  update_interval: 5min
 
 spi:
   clk_pin: GPIO48

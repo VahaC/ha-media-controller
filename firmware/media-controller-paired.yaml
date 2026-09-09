@@ -40,7 +40,7 @@ substitutions:
   # an IP address if .local names are unreliable on your network.
   ha_url: "http://homeassistant.local:8123"
 
-  firmware_version: "0.6.16"
+  firmware_version: "0.6.17"
 
   # The version of docs/CONTRACT.md this firmware implements. firmware_version
   # says when this build shipped; this says what it understands, and it is the
@@ -3656,12 +3656,14 @@ script:
           condition:
             lambda: return !id(ha_token).empty();
           then:
-            # -- The diagnostics below are measured here rather than on the
-            # -- component's own clock, because measuring them stalls the
-            # -- display: see the debug component in the interface half. This
-            # -- sits inside the token check so that a device nobody has
-            # -- paired yet never pays for the reading at all. --
-            - component.update: dbg
+            # -- The heap figures below are whatever the debug component
+            # -- last read on its own five-minute clock, and this deliberately
+            # -- does not ask it for a fresh one. Reading them stalls the
+            # -- display -- see the debug component in the interface half --
+            # -- and a report goes out on a page change, so asking here ran
+            # -- that stall on the beat of somebody touching the screen. The
+            # -- display counters further down are not affected: they are
+            # -- kept by the panel's own interrupts and cost nothing to read.
             - http_request.post:
                 url: !lambda |-
                   return id(ha_base) + "/api/media_controller/panel_status";
