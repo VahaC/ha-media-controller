@@ -194,7 +194,19 @@ display:
     hsync_pin: 16
     vsync_pin: 17
     pclk_pin: 21
-    pclk_frequency: 12MHz
+    # -- Lowered from 12 MHz, and this is the pixel clock doing two jobs at
+    # -- once. It sets how fast the bounce buffer drains, so ten lines of a
+    # -- 480 px panel cover 400 microseconds at 12 MHz and 600 at 8. It also
+    # -- sets how much of the PSRAM bus the display itself is using: 480x480
+    # -- at two bytes is 460 kB a frame, which is about 21 MB/s at 12 MHz and
+    # -- 14 at 8. The processor is copying LVGL's buffer into that same PSRAM
+    # -- when it repaints, and it is that copy which overruns the deadline.
+    # -- Lowering the clock widens the deadline and frees bus for the copy at
+    # -- the same time.
+    # --
+    # -- It is paid for in refresh rate: about 45 Hz at 12 MHz, about 30 at 8.
+    # -- Raise it back towards 12 if the picture holds. --
+    pclk_frequency: 8MHz
     # -- The shock absorber between the LCD peripheral and PSRAM: ten lines
     # -- at 480 px and a 12 MHz pixel clock is about 400 microseconds of slack
     # -- before a missed refill becomes a reset of the DMA channel, and that
@@ -212,7 +224,7 @@ display:
     # -- The option stays because the fork now exists and the number is worth
     # -- reaching for again if the cause turns out to be a burst this would
     # -- actually cover. See components/st7701s/. --
-    bounce_buffer_lines: 10
+    bounce_buffer_lines: 40
     pclk_inverted: false
     hsync_pulse_width: 8
     hsync_front_porch: 10
@@ -788,7 +800,13 @@ script:
     then:
       - lambda: |-
           // ══════════════════════════════════════════════════════════════
-          // TEMPORARY -- DIAGNOSTIC ONLY -- REMOVE BEFORE RELEASE
+          // DISABLED FOR ONE TEST, NOW RESTORED. What that test established:
+          // stopping this stopped the jumping, and changing the volume --
+          // which repaints a different widget entirely -- brought it back. So
+          // the cause is not this script and not the progress arc. It is any
+          // repaint of any size, and the next thing tried is aimed at that.
+          // ══════════════════════════════════════════════════════════════
+          /* TEST REMOVED
           //
           // Everything else has been eliminated by measurement: the network
           // (HTTP 30 ms, and the poll is now a 30 s heartbeat), the parse
@@ -807,7 +825,7 @@ script:
           // Nothing else is disabled: the position still advances, the poll
           // and the push still run, every other widget still updates.
           return;
-          // ══════════════════════════════════════════════════════════════
+          END OF REMOVED TEST */
 
           if (!id(ui_ready)) return;
           float dur = id(media_duration).state;
