@@ -219,12 +219,20 @@ struct _PanelUi {
     GtkWidget *room_position_scale;
     GtkWidget *room_position_value;
     GtkWidget *room_stop_button;
+    /* A fan. The speed is another slider on the same sheet, exactly as a
+     * cover's position is: a fan card wants what a dimmable light wants, a
+     * tap that toggles and one value to drag. A fan needs no STOP -- there
+     * is nothing it does over seconds that a person stops half way. */
+    GtkWidget *room_percentage_box;
+    GtkWidget *room_percentage_scale;
+    GtkWidget *room_percentage_value;
     gint room_adjust_index;
     gboolean changing_room_adjustment;
     guint brightness_debounce_source;
     guint temperature_debounce_source;
     guint setpoint_debounce_source;
     guint position_debounce_source;
+    guint percentage_debounce_source;
     gint pending_brightness_index;
     gint pending_brightness;
     gint pending_temperature_index;
@@ -233,6 +241,8 @@ struct _PanelUi {
     gdouble pending_setpoint;
     gint pending_position_index;
     gint pending_position;
+    gint pending_percentage_index;
+    gint pending_percentage;
 };
 
 /* One card on the room page. It knows its own identity, where it sits in
@@ -275,6 +285,10 @@ typedef struct {
      * reported no position — either because it has not answered yet or
      * because this cover has none to report. */
     gint position;
+    /* How fast a fan is running, 0 to 100, or -1 while Home Assistant has
+     * reported no speed — it has not answered yet, this fan has one speed,
+     * or it is off. */
+    gint fan_percentage;
     /* A weather block. The condition is owned and NULL while unknown; the
      * temperature is NAN and the humidity is -1 while unknown. It is a
      * reading rather than a control: a tap on it acts on nothing. */
@@ -728,7 +742,7 @@ static gboolean card_is_adjustable(const PanelRoomCard *card)
     return card->entity != NULL &&
            (card->entity->brightness || card->entity->color_temperature ||
             card->entity->target_temperature || card->entity->position ||
-            card->entity->stoppable);
+            card->entity->stoppable || card->entity->percentage);
 }
 
 /* A temperature as a card and a sheet write one: no unit letter, because the
@@ -1076,6 +1090,40 @@ static void room_position_changed(GtkRange *range, gpointer user_data)
         G_PRIORITY_DEFAULT_IDLE, 350, emit_position_change, ui, NULL);
 }
 
+static gboolean emit_percentage_change(gpointer user_data)
+{
+    PanelUi *ui = user_data;
+    gchar *value = g_strdup_printf("%d", ui->pending_percentage);
+
+    ui->percentage_debounce_source = 0;
+    emit_event(ui, PANEL_UI_SET_ROOM_PERCENTAGE, value,
+               ui->pending_percentage_index);
+    g_free(value);
+    return G_SOURCE_REMOVE;
+}
+
+/* A fan's speed. Debounced exactly as the cover position is: the slider
+ * moves under the finger and the value is sent once it settles, so a drag
+ * across the track is one `fan.set_percentage` and not thirty. */
+static void room_percentage_changed(GtkRange *range, gpointer user_data)
+{
+    PanelUi *ui = user_data;
+    gint value = (gint)gtk_range_get_value(range);
+    gchar *text = g_strdup_printf("%d%%", value);
+
+    gtk_label_set_text(GTK_LABEL(ui->room_percentage_value), text);
+    g_free(text);
+    if (ui->changing_room_adjustment || ui->room_adjust_index < 0)
+        return;
+
+    ui->pending_percentage_index = ui->room_adjust_index;
+    ui->pending_percentage = value;
+    if (ui->percentage_debounce_source != 0)
+        g_source_remove(ui->percentage_debounce_source);
+    ui->percentage_debounce_source = g_timeout_add_full(
+        G_PRIORITY_DEFAULT_IDLE, 350, emit_percentage_change, ui, NULL);
+}
+
 /* STOP is not debounced and carries no value: it is the one control on this
  * sheet that has to reach Home Assistant the instant it is pressed, because
  * what it is for is a blind that is moving right now. */
@@ -1190,6 +1238,7 @@ static void open_room_sheet(PanelUi *ui, gint index)
                            entity->target_temperature);
     gtk_widget_set_visible(ui->room_position_box, entity->position);
     gtk_widget_set_visible(ui->room_stop_button, entity->stoppable);
+    gtk_widget_set_visible(ui->room_percentage_box, entity->percentage);
 
     ui->changing_room_adjustment = TRUE;
     gtk_range_set_range(GTK_RANGE(ui->room_temperature_scale),
@@ -1212,6 +1261,14 @@ static void open_room_sheet(PanelUi *ui, gint index)
          * the blind to where the slider already claimed it was. */
         gtk_range_set_value(GTK_RANGE(ui->room_position_scale),
                             card->position >= 0 ? card->position : 0);
+    }
+    if (entity->percentage) {
+        /* A fan that has not answered yet opens in the middle of its range,
+         * the way an unknown setpoint does: there is no reading to move from,
+         * and the card is reached only from a tap that means to adjust it. */
+        gtk_range_set_value(GTK_RANGE(ui->room_percentage_scale),
+                            card->fan_percentage >= 0 ? card->fan_percentage
+                                                      : 50);
     }
     ui->changing_room_adjustment = FALSE;
     gtk_revealer_set_reveal_child(GTK_REVEALER(ui->room_sheet), TRUE);
@@ -2433,6 +2490,18 @@ static gchar *card_reading(const PanelRoomCard *card)
         return g_strdup(card->active ? "OPEN" : "CLOSED");
     }
 
+    /* A fan on its speed, while it is running and reports one: ON with the
+     * percentage after it. Off, or a one-speed fan, falls through to the
+     * plain ON/OFF the caller writes for a switch -- which is what a fan
+     * without a speed always was. The number is only shown while the fan is
+     * on, because an off fan is heading nowhere and a value beside OFF would
+     * read as something it is doing. */
+    if (g_strcmp0(card->entity->domain, "fan") == 0) {
+        if (card->active && card->fan_percentage >= 0)
+            return g_strdup_printf("ON %d%%", card->fan_percentage);
+        return NULL;
+    }
+
     if (!card->entity->target_temperature)
         return NULL;
 
@@ -3497,6 +3566,7 @@ static void room_cards_rebuild(PanelUi *ui)
         card->setpoint = NAN;
         card->ambient = NAN;
         card->position = -1;
+        card->fan_percentage = -1;
         card->weather_condition = NULL;
         card->weather_temperature = NAN;
         card->weather_humidity = -1;
@@ -3662,6 +3732,32 @@ static GtkWidget *room_adjust_sheet(PanelUi *ui)
     g_signal_connect(ui->room_stop_button, "clicked",
                      G_CALLBACK(room_stop_clicked), ui);
 
+    /* A fan's speed. The range is 0 to 100 for every fan there is, so like
+     * the cover position above nothing about it is set per card. */
+    ui->room_percentage_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
+    GtkWidget *percentage_header = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    GtkWidget *percentage_title = new_label("SPEED", "room-control-title");
+    ui->room_percentage_value = new_label("0%", "room-control-value");
+    gtk_widget_set_halign(percentage_title, GTK_ALIGN_START);
+    gtk_widget_set_halign(ui->room_percentage_value, GTK_ALIGN_END);
+    gtk_box_pack_start(GTK_BOX(percentage_header), percentage_title,
+                       TRUE, TRUE, 0);
+    gtk_box_pack_end(GTK_BOX(percentage_header), ui->room_percentage_value,
+                     FALSE, FALSE, 0);
+    ui->room_percentage_scale = gtk_scale_new_with_range(
+        GTK_ORIENTATION_HORIZONTAL, 0.0, 100.0, 1.0);
+    gtk_scale_set_draw_value(GTK_SCALE(ui->room_percentage_scale), FALSE);
+    gtk_widget_set_size_request(ui->room_percentage_scale, -1, 58);
+    add_css_class(ui->room_percentage_scale, "room-control-scale");
+    gtk_box_pack_start(GTK_BOX(ui->room_percentage_box), percentage_header,
+                       FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(ui->room_percentage_box),
+                       ui->room_percentage_scale, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(sheet), ui->room_percentage_box,
+                       FALSE, FALSE, 0);
+    g_signal_connect(ui->room_percentage_scale, "value-changed",
+                     G_CALLBACK(room_percentage_changed), ui);
+
     gtk_container_add(GTK_CONTAINER(revealer), sheet);
     ui->room_sheet = revealer;
     return revealer;
@@ -3797,6 +3893,8 @@ void panel_ui_free(PanelUi *ui)
         g_source_remove(ui->setpoint_debounce_source);
     if (ui->position_debounce_source != 0)
         g_source_remove(ui->position_debounce_source);
+    if (ui->percentage_debounce_source != 0)
+        g_source_remove(ui->percentage_debounce_source);
     if (ui->room_animation_tick != 0 && ui->room_area != NULL)
         gtk_widget_remove_tick_callback(ui->room_area,
                                         ui->room_animation_tick);
@@ -4542,6 +4640,8 @@ void panel_ui_set_room(PanelUi *ui, guint index, const PanelRoomState *state)
         card->ambient = state->ambient;
     if (state->position >= 0)
         card->position = CLAMP(state->position, 0, 100);
+    if (state->fan_percentage >= 0)
+        card->fan_percentage = CLAMP(state->fan_percentage, 0, 100);
     /* A weather block keeps its own reading. An absent condition clears the
      * last one rather than leaving a stale sky on the card. */
     if (card_is_weather(card)) {
@@ -4594,6 +4694,10 @@ void panel_ui_set_room(PanelUi *ui, guint index, const PanelRoomState *state)
         if (ui->position_debounce_source == 0 && card->position >= 0) {
             gtk_range_set_value(GTK_RANGE(ui->room_position_scale),
                                 card->position);
+        }
+        if (ui->percentage_debounce_source == 0 && card->fan_percentage >= 0) {
+            gtk_range_set_value(GTK_RANGE(ui->room_percentage_scale),
+                                card->fan_percentage);
         }
         ui->changing_room_adjustment = FALSE;
     }

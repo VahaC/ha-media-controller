@@ -60,6 +60,7 @@
           "sensors": "Sensors",
           "lights": "Lights",
           "switches": "Switches",
+          "fans": "Fans",
           "climate": "Climate devices",
           "covers": "Covers"
         }
@@ -114,6 +115,7 @@
           "sensors": "Sensors",
           "lights": "Lights",
           "switches": "Switches",
+          "fans": "Fans",
           "climate": "Climate devices",
           "covers": "Covers"
         }

@@ -88,7 +88,15 @@ class GroupTests(unittest.TestCase):
     def test_every_group_maps_to_one_domain(self) -> None:
         self.assertEqual(
             [group.domain for group in registry.GROUPS],
-            ["light", "switch", "climate", "cover", "weather", "sensor"],
+            [
+                "light",
+                "switch",
+                "fan",
+                "climate",
+                "cover",
+                "weather",
+                "sensor",
+            ],
         )
 
     def test_a_retired_group_is_no_longer_offered(self) -> None:
@@ -136,7 +144,7 @@ class GroupTests(unittest.TestCase):
     def test_an_unknown_domain_sorts_last_and_is_kept(self) -> None:
         """A registry written by a newer build stays readable by this one."""
         ordered = registry.sort_entries(
-            [entry("z", "fan.ceiling"), entry("a", "light.desk")]
+            [entry("z", "vacuum.hallway"), entry("a", "light.desk")]
         )
         self.assertEqual([element.rid for element in ordered], ["a", "z"])
 
@@ -445,6 +453,21 @@ class StorageTests(unittest.TestCase):
         )
         self.assertEqual(restored, [original])
 
+    def test_a_fan_round_trips_with_its_speed_step(self) -> None:
+        original = RegistryEntry(
+            rid="1a2b3c4d",
+            target_entity_id="fan.ceiling",
+            domain="fan",
+            name="Вентилятор",
+            registry_id="row-3",
+            controls=("toggle", "percentage"),
+            percentage_step=33.0,
+        )
+        restored = registry.stored_entries(
+            {"entities": [original.as_stored()]}, "entities"
+        )
+        self.assertEqual(restored, [original])
+
     def test_kelvin_bounds_are_omitted_where_they_do_not_apply(self) -> None:
         stored = entry("aaaaaaaa", "switch.fan").as_stored()
         self.assertNotIn("min_kelvin", stored)
@@ -456,6 +479,7 @@ class StorageTests(unittest.TestCase):
         self.assertNotIn("min_temp", stored)
         self.assertNotIn("max_temp", stored)
         self.assertNotIn("target_temp_step", stored)
+        self.assertNotIn("percentage_step", stored)
 
     def test_an_incomplete_record_is_ignored(self) -> None:
         restored = registry.stored_entries(

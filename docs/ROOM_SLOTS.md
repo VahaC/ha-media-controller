@@ -47,7 +47,7 @@ everything below.
 | 3 | A client device is a config entry of its own | Superseded: it is, since panels arrived. A source now carries only the player it is bound to |
 | 4 | Room controls are an **unbounded registry grouped by domain** | Rewritten in version 6; version 9 made it the only shape — see below |
 | 5 | Every element has a stored label; empty falls back to `friendly_name` | The form stopped asking for one — a tile is named as Home Assistant names the entity |
-| 6 | The registry accepts **six groups**; `light`, `switch`, `climate` and `cover` have cards, `weather` and `sensor` are readings | Rewritten in version 6, extended one group at a time from version 7 — see below |
+| 6 | The registry accepts **seven groups**; `light`, `switch`, `fan`, `climate` and `cover` have cards, `weather` and `sensor` are readings | Rewritten in version 6, extended one group at a time from version 7 — `fan` was the last, added after version 9 without moving it — see below |
 | 7 | The integration **normalizes capabilities** | Clients render from a plain list and never parse `supported_color_modes` |
 | 8 | Legacy **entity IDs** are preserved | Flashed ESP32 devices keep working without a reflash |
 
@@ -109,29 +109,32 @@ next time somebody tidied theirs. The integration also records the target's
 entity-registry row ID, so the element follows its entity through exactly that
 rename.
 
-### Decision 6, rewritten: six groups with client-specific rendering
+### Decision 6, rewritten: seven groups with client-specific rendering
 
 The original decision was `light` and `switch` only, with no `climate`, no
 `cover` and no `fan`. The registry widens the part of that which was about
 *storage* and keeps the part that was about *drawing*.
 
-The form offers six groups and the payload carries each element's `domain`,
-so a thermostat, a cover, a weather entity or a sensor can be added now. A
-media player is not among them: a panel plays from its source, which is a
+The form offers seven groups and the payload carries each element's `domain`,
+so a thermostat, a cover, a fan, a weather entity or a sensor can be added
+now — and a native `fan.*` no longer has to masquerade as a switch to be one.
+A media player is not among them: a panel plays from its source, which is a
 media player chosen on the same page, and a second one in the registry only
 took up a place. An element of that domain stored by an older build is retired
 the next time its panel is saved.
-Two of them have no card, because they need none: they are readings, not
+Two of the seven have no card, because they need none: they are readings, not
 controls. `controls` is the closed list `toggle`, `brightness`, `color_temp`,
-`target_temperature`, `position`, `stop`; in contract version 7 `light`,
-`switch`, `climate` and `cover` resolve to something in it and `weather` and
+`target_temperature`, `percentage`, `position`, `stop`; `light`, `switch`,
+`fan`, `climate` and `cover` resolve to something in it and `weather` and
 `sensor` are carried with an empty list. A client ignores an element whose
 domain it cannot draw — the same rule that already covers an unknown control
-name. Both panels now draw all four cards, and they were written one client at
+name. Both panels now draw all five cards, and each was written one client at
 a time: the cover card arrived on the T560 first and on the paired ESP32
-afterwards, and through the whole of that gap both clients spoke the same
-contract version and neither broke on the other's payload. That gap is the
-rule working, not the rule being bent — see **Registry entries** in
+afterwards, and the fan card landed on both at once. Through every one of
+those gaps both clients spoke the same contract version and neither broke on
+the other's payload — `fan` is a new group and `percentage` a new control
+name, and both were added without moving the version at all. That is the rule
+working, not the rule being bent — see **Registry entries** in
 [CONTRACT.md](CONTRACT.md).
 
 ### Why proxies existed at all — history
@@ -342,11 +345,17 @@ unavailable.
 | `light.*` whose modes include `color_temp` | `["toggle", "brightness", "color_temp"]` | `min_kelvin`, `max_kelvin` from `min_color_temp_kelvin` / `max_color_temp_kelvin` |
 | `climate.*` listing `off` in `hvac_modes`, or setting both `TURN_ON` and `TURN_OFF` | `["toggle"]` | — |
 | `climate.*` with the `TARGET_TEMPERATURE` feature | `["target_temperature"]` | `min_temp`, `max_temp`, `target_temp_step` from the entity's own |
+| `fan.*` — always | `["toggle"]` | — |
+| `fan.*` with the `SET_SPEED` feature | `["percentage"]` | `percentage_step` from the entity's own, when it reports a useful whole percent |
 | every other domain in the registry | `[]` | — |
 
-The two climate rows combine: a thermostat that can be turned off *and* set
-carries both controls, and one that can do neither carries an empty list like
-any other domain with no card.
+The two climate rows combine, and so do the two fan rows: a fan carries
+`toggle` unconditionally — every `fan` entity implements turn-on and
+turn-off, there is nothing to gate it on — and adds `percentage` when it can
+be driven to a speed. Preset modes, oscillation and direction set no
+`controls`: neither panel has a gesture for them, an entity that supports only
+them is a plain `toggle`, and an unknown future fan feature is ignored the
+same way an unknown control name is.
 
 `TARGET_TEMPERATURE_RANGE` without `TARGET_TEMPERATURE` gets **no** setpoint
 control: that entity has a high and a low and no single number a card could

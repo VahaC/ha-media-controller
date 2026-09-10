@@ -435,13 +435,17 @@ Real attributes, not an encoded string. Rules a client must follow:
 - In `entities`, `entity` is always the **real entity**. There are no proxy
   entities anywhere in this contract any more; see **Registry entries** below.
 - `controls` uses the closed vocabulary `toggle`, `brightness`, `color_temp`,
-  `target_temperature`, `position`, `stop`. An unknown value must be ignored,
-  not treated as an error, so that a future control can be added without
-  breaking released clients.
+  `target_temperature`, `percentage`, `position`, `stop`. An unknown value
+  must be ignored, not treated as an error, so that a future control can be
+  added without breaking released clients — `percentage` itself was added
+  after both panels shipped and without moving this document's version.
 - `min_kelvin` and `max_kelvin` are present only when `controls` contains
   `color_temp`.
 - `min_temp`, `max_temp` and `target_temp_step` are present only when
   `controls` contains `target_temperature`.
+- `percentage_step` is present only when `controls` contains `percentage`,
+  and only when the fan reports a useful whole-percent step; a client that
+  finds it absent sweeps a percent at a time.
 - `revision` is a checksum of the rest of the payload, not a counter. Equal
   values mean an unchanged configuration; any change produces a different
   value. A client uses it to skip a re-layout, never to order versions.
@@ -528,19 +532,21 @@ client profile allows, in any of the groups below, and removes them again.
   domains below. **A client that cannot draw a domain ignores that element**,
   exactly as it ignores a control it does not know, so a group added later
   cannot break a client already in the field.
-- `controls` is the closed list `slots` uses, plus the three values only a
+- `controls` is the closed list `slots` uses, plus the values only a
   registry element can carry: `toggle`, `brightness`, `color_temp`,
-  `target_temperature`, `position`, `stop`. It is resolved by the integration
-  from the target's capabilities. A client renders from it and never parses
-  `supported_color_modes` or `supported_features` itself. As of this version
-  `light`, `switch`, `climate` and `cover` produce controls; `weather` and
-  `sensor` are carried with an empty list and drawn as a reading rather than
-  a control — see **Weather blocks** and **Sensor blocks** below — as is any
-  domain that is no longer a group.
+  `target_temperature`, `percentage`, `position`, `stop`. It is resolved by
+  the integration from the target's capabilities. A client renders from it and
+  never parses `supported_color_modes` or `supported_features` itself. As of
+  this version `light`, `switch`, `climate`, `cover` and `fan` produce
+  controls; `weather` and `sensor` are carried with an empty list and drawn
+  as a reading rather than a control — see **Weather blocks** and **Sensor
+  blocks** below — as is any domain that is no longer a group.
 - `min_kelvin` and `max_kelvin` appear only when `controls` contains
   `color_temp`.
 - `min_temp`, `max_temp` and `target_temp_step` appear only when `controls`
   contains `target_temperature`. See **Climate cards** below.
+- `percentage_step` appears only when `controls` contains `percentage`. See
+  **Fan cards** below.
 - The order of the list is the order to render in. It is the group order in
   the table below, and within a group the order the user added them.
 
@@ -560,6 +566,7 @@ The groups, in payload order:
 | --- | --- | --- |
 | Lights | `light` | yes |
 | Switches | `switch` | yes |
+| Fans | `fan` | yes, added after version 9 without moving it |
 | Climate | `climate` | yes, since version 7 |
 | Covers | `cover` | yes, in version 7 |
 | Weather | `weather` | yes, as a reading |
@@ -567,8 +574,11 @@ The groups, in payload order:
 
 The table describes the contract vocabulary, not a requirement that every
 client draw every domain. A client ignores a domain it cannot draw, so the
-T560 and paired ESP32 may implement different subsets while both speak
-contract version 7.
+T560 and paired ESP32 may implement different subsets while both speak the
+same contract version. The `fan` group is the current example of the rule
+that a group may be added without moving the version: a client built before
+it never sees a `fan` element, because nobody running that client could have
+added one.
 
 ### Display names
 
@@ -718,6 +728,64 @@ A card whose element gives no `position` still draws and still toggles, and a
 card that gives none of the three is drawn as a reading rather than a
 control — the honest thing to show for a cover this integration can offer no
 action on.
+
+### Fan cards
+
+Added after version 9, and without moving the version: `fan` is a new group
+and `percentage` a new control name, and both are covered by the additive
+rules above — a client built before them never sees a `fan` element. A `fan`
+element is resolved from the fan's feature bits the way a `cover` one is, and
+a client never inspects `supported_features` itself.
+
+```json
+{
+  "rid": "1a2b3c4d",
+  "entity": "fan.ceiling",
+  "name": "Ceiling fan",
+  "domain": "fan",
+  "controls": ["toggle", "percentage"],
+  "percentage_step": 33
+}
+```
+
+- **`toggle`** is **unconditional** for a fan. Every `fan` entity implements
+  turn-on and turn-off, and `homeassistant.toggle` calls whichever the state
+  asks for. There is no fan that starts but will not stop, the way a cover
+  can be openable but not closable, so nothing gates it — and a fan that
+  users exposed as a `switch` until now toggled with no speed control at all,
+  which is the case that must keep working.
+- **`percentage`** means the entity sets the `SET_SPEED` feature bit and a
+  card may drag any speed from 0 to 100. A fan without it runs at one speed,
+  and a card that drew a slider would be moving a number Home Assistant has
+  nowhere to send. It is a sweep like `brightness`, and the service behind it
+  is `fan.set_percentage`.
+- **`percentage_step`** is the only metadata, and it is optional. It is a
+  whole-percent step the fan's speeds sit on — a three-speed fan reports 33 —
+  present only beside a `percentage` control and only when the fan reports a
+  useful one. A client that finds it absent sweeps a percent at a time, the
+  way it does a lamp's brightness. Like the setpoint bounds it carries no
+  unit and needs none: a speed is a percentage by definition.
+
+Preset modes, oscillation and direction are **not** in this contract. They
+are neither a toggle nor a single swept value, so neither panel has a gesture
+for them; a fan that supports them alongside a speed resolves exactly as if
+they were absent, and one that supports only them is a plain `toggle`.
+
+How fast the fan is running, `percentage`, is **state and not a capability**,
+exactly like a cover's `current_position`: it is an ordinary attribute that
+moves while the fan is simply being used, so it is not in the payload. A
+client that can ask Home Assistant for the entity reads it directly; a client
+that cannot reads it out of **Room states**, where it travels beside the
+fan's state.
+
+| Client | Tap | Beyond a tap |
+| --- | --- | --- |
+| T560 panel | `toggle` | The speed on the sheet a light's brightness uses |
+| ESP32-S3 panel | `toggle` | A long press sweeps `percentage`, sent once on release |
+
+A card whose element gives no `percentage` still draws and still toggles: it
+is the fan a `switch` card always was, now in its own group and with its own
+artwork.
 
 ### Weather blocks
 
@@ -1842,7 +1910,8 @@ into the config sensor beside the registry:
     "7c41b8e0": ["heat", 21.5, 22.0],
     "9d2e7a41": ["sunny", 15.5, 62],
     "b71f0c2e": ["21.5", "°C"],
-    "3f9a01cd": ["opening", 40]
+    "3f9a01cd": ["opening", 40],
+    "1a2b3c4d": ["on", 60]
   }
 }
 ```
@@ -1857,6 +1926,9 @@ One small array per element, keyed by `rid`:
   moving, and cannot ask for the attribute itself for the same reason the
   block exists at all. A cover that reports no position sends JSON null in
   its place, which is the case for every blind that only opens and closes;
+- a fan travels the same way: the state and `percentage`, the speed it
+  reports. The state alone says `on` or `off`; a fan running at a single
+  speed, or one that is off, reports no `percentage` and sends JSON null;
 - a thermostat travels as the mode, the room temperature and the setpoint;
 - a weather block as the condition, the temperature and the humidity;
 - a sensor block as the value and the unit;
@@ -1890,9 +1962,10 @@ Rules a client must follow:
 - **an array may grow, and a client reads only the positions it knows.** The
   cover's `current_position` was added after the block shipped, and a panel
   built before it reads the state out of position 0 and never looks at
-  position 1. That is what makes a reading addable to a domain without
-  moving the contract version: a position a client does not read costs it
-  nothing, and one it expects is either there or JSON null.
+  position 1. The fan's `percentage` is a second element added the same way,
+  in a group added the same way. That is what makes a reading addable to a
+  domain without moving the contract version: a value a client does not read
+  costs it nothing, and one it expects is either there or JSON null.
 
 ## Direct Music Assistant state
 

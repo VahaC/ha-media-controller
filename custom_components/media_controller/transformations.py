@@ -154,6 +154,29 @@ def room_state_position(value: Any) -> int | None:
     return max(0, min(100, int(round(value))))
 
 
+def room_state_percentage(value: Any) -> int | None:
+    """Return a fan's speed as a whole percentage, or None.
+
+    Like a cover's position and unlike every other room-state reading, this
+    one is bounded by its own definition: 0 is stopped and 100 is full speed,
+    in every house. It is rounded to a whole percent and clamped to that
+    range rather than passed through, because a client draws it on a control
+    whose travel is the range itself.
+
+    A fan that reports no speed — one running at a single speed, or one that
+    is simply off and says nothing — returns None, which travels as JSON
+    null. Inventing a number for it would put a value under a finger that,
+    on a single-speed fan, moves nothing.
+    """
+    if isinstance(value, bool):
+        return None
+    if not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, float) and math.isnan(value):
+        return None
+    return max(0, min(100, int(round(value))))
+
+
 def room_state_unit(value: Any) -> str | None:
     """Return a sensor unit for a room-state reading, or None.
 
@@ -195,6 +218,13 @@ def room_state_values(
         # and the one client that reads this block is the one that cannot ask
         # for the attribute itself. A cover that reports none sends null.
         return [state, room_state_position(safe_attributes.get("current_position"))]
+    if domain == "fan":
+        # The state says `on` or `off` and cannot say how fast. The speed
+        # rides beside it for the same reason a cover's position does: the
+        # panel that reads this block cannot ask Home Assistant for the
+        # `percentage` attribute itself. A fan running at a single speed, or
+        # one that is off, reports no percentage and sends null.
+        return [state, room_state_percentage(safe_attributes.get("percentage"))]
     if domain == "climate":
         return [
             state,
@@ -279,6 +309,11 @@ class EntityPayload:
     min_temp: float | None = None
     max_temp: float | None = None
     target_temp_step: float | None = None
+    # A fan's speed step as a whole percent, travelling only beside a
+    # `percentage` control the way the setpoint bounds travel only beside
+    # `target_temperature`. Absent when the fan reports no useful step, and a
+    # client then sweeps a percent at a time.
+    percentage_step: float | None = None
     # The catalog identifier of the picture this tile draws, or "" when the
     # user chose none and the client draws whatever its domain suggests. It
     # is a name and never a position, so the catalog may be reordered without
@@ -310,6 +345,8 @@ class EntityPayload:
             payload["max_temp"] = self.max_temp
         if self.target_temp_step is not None:
             payload["target_temp_step"] = self.target_temp_step
+        if self.percentage_step is not None:
+            payload["percentage_step"] = self.percentage_step
         return payload
 
 

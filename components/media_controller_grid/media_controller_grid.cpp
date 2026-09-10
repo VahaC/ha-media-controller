@@ -76,6 +76,8 @@ static uint8_t domain_from_name(const char *domain) {
     return DOMAIN_CLIMATE;
   if (strcmp(domain, "cover") == 0)
     return DOMAIN_COVER;
+  if (strcmp(domain, "fan") == 0)
+    return DOMAIN_FAN;
   if (strcmp(domain, "weather") == 0)
     return DOMAIN_WEATHER;
   if (strcmp(domain, "sensor") == 0)
@@ -93,6 +95,8 @@ static const char *domain_to_name(uint8_t domain) {
       return "climate";
     case DOMAIN_COVER:
       return "cover";
+    case DOMAIN_FAN:
+      return "fan";
     case DOMAIN_WEATHER:
       return "weather";
     case DOMAIN_SENSOR:
@@ -309,6 +313,27 @@ std::string card_reading(const Entry &entry) {
    * no other reading. */
   if (entry.domain == DOMAIN_LIGHT || entry.domain == DOMAIN_SWITCH) {
     return entry_is_on(entry) ? "ON" : "OFF";
+  }
+
+  /* A fan says whether it is running and, where it reports one, how fast: ON
+   * or OFF, with `60%` after it. The word comes first because every fan has
+   * one and the speed second because not every fan does — a single-speed
+   * fan reports no `percentage` at all, and this card says ON rather than
+   * inventing a number. The speed is only shown while the fan is on: a fan
+   * that is off is heading nowhere, exactly like an off thermostat's
+   * setpoint, and a number beside OFF would read as something it is doing.
+   *
+   * The percentage is Home Assistant's own reading between presses and the
+   * swept value while a finger is on the card, the same as a cover's. */
+  if (entry.domain == DOMAIN_FAN) {
+    std::string text = entry_is_on(entry) ? "ON" : "OFF";
+    if (entry_is_on(entry) && !std::isnan(entry.fan_pct)) {
+      char buffer[8];
+      snprintf(buffer, sizeof(buffer), " %d%%",
+               static_cast<int>(entry.fan_pct + 0.5f));
+      text += buffer;
+    }
+    return text;
   }
 
   /* A blind says what it is doing and, where it reports one, how far open it
@@ -595,6 +620,7 @@ bool MediaControllerGrid::ingest_entities(const std::string &attributes) {
       entry.settable_temp = false;
       entry.positionable = false;
       entry.stoppable = false;
+      entry.percentable = false;
       JsonArray controls = element["controls"].as<JsonArray>();
       for (JsonVariant control : controls) {
         const char *value = control.as<const char *>();
@@ -609,8 +635,10 @@ bool MediaControllerGrid::ingest_entities(const std::string &attributes) {
          * long press, and that press is already spent on brightness for a
          * lamp and on the setpoint for a thermostat. A cover spends the same
          * two gestures on nothing else — there is no brightness to sweep and
-         * no setpoint — so `position` and `stop` cost it nothing, which is
-         * why they are read here and a colour temperature still is not. */
+         * no setpoint — so `position` and `stop` cost it nothing; a fan is
+         * the lamp again, its `percentage` on the same long press its
+         * brightness would be. A colour temperature still is not read,
+         * because it alone would want a gesture this build does not have. */
         if (value == nullptr)
           continue;
         if (strcmp(value, "toggle") == 0)
@@ -623,6 +651,8 @@ bool MediaControllerGrid::ingest_entities(const std::string &attributes) {
           entry.positionable = true;
         else if (strcmp(value, "stop") == 0)
           entry.stoppable = true;
+        else if (strcmp(value, "percentage") == 0)
+          entry.percentable = true;
       }
       /* The bounds are sent only with the control, and Home Assistant's own
        * Celsius defaults are what it would have sent had the thermostat
@@ -637,11 +667,23 @@ bool MediaControllerGrid::ingest_entities(const std::string &attributes) {
       }
       if (entry.temp_step <= 0.0f)
         entry.temp_step = 0.5f;
+      /* A fan's speed step, sent only beside `percentage` and only when the
+       * fan reports a useful one. NAN means "no step", and the sweep then
+       * moves a percent at a time, the way a lamp's brightness does. A step
+       * outside 1-100 is not a step Home Assistant would have derived from a
+       * speed count, so it is dropped rather than snapped to. */
+      entry.pct_step = NAN;
+      if (element["percentage_step"].is<float>()) {
+        const float step = element["percentage_step"].as<float>();
+        if (step >= 1.0f && step <= 100.0f)
+          entry.pct_step = step;
+      }
       entry.ambient = NAN;
       entry.setpoint = NAN;
       entry.weather_temp = NAN;
       entry.weather_humidity = NAN;
       entry.position = NAN;
+      entry.fan_pct = NAN;
       entry.fc_count = 0;
       entry.pct = 50.0f;
       entry.direction = 1;
@@ -664,8 +706,11 @@ bool MediaControllerGrid::ingest_entities(const std::string &attributes) {
           was.icon != now.icon || was.domain != now.domain || was.togglable != now.togglable ||
           was.dimmable != now.dimmable || was.settable_temp != now.settable_temp ||
           was.positionable != now.positionable || was.stoppable != now.stoppable ||
+          was.percentable != now.percentable ||
           was.min_temp != now.min_temp || was.max_temp != now.max_temp ||
-          was.temp_step != now.temp_step) {
+          was.temp_step != now.temp_step ||
+          (std::isnan(was.pct_step) != std::isnan(now.pct_step)) ||
+          (!std::isnan(was.pct_step) && was.pct_step != now.pct_step)) {
         changed = true;
         break;
       }
@@ -687,6 +732,7 @@ bool MediaControllerGrid::ingest_entities(const std::string &attributes) {
       entry.weather_humidity = previous->weather_humidity;
       entry.sensor_unit = previous->sensor_unit;
       entry.position = previous->position;
+      entry.fan_pct = previous->fan_pct;
       entry.fc_count = previous->fc_count;
       for (uint8_t day = 0; day < previous->fc_count && day < FORECAST_DAYS; day++) {
         entry.fc_dow[day] = previous->fc_dow[day];
@@ -1364,6 +1410,7 @@ bool MediaControllerGrid::apply_room_states(const std::string &room_states) {
       float weather_temp = entry.weather_temp;
       float weather_humidity = entry.weather_humidity;
       float position = entry.position;
+      float fan_pct = entry.fan_pct;
       std::string unit = entry.sensor_unit;
       if (entry.domain == DOMAIN_CLIMATE) {
         ambient = room_number(item[1]);
@@ -1382,6 +1429,13 @@ bool MediaControllerGrid::apply_room_states(const std::string &room_states) {
          * not the same thing. */
         if (!held)
           position = room_number(item[1]);
+      } else if (entry.domain == DOMAIN_FAN) {
+        /* Absent on a single-speed fan, and on one that is simply off. NAN
+         * for the same reason a cover's is: a stopped fan and a fan that
+         * cannot say are different cards, and the held card keeps the number
+         * under the finger. */
+        if (!held)
+          fan_pct = room_number(item[1]);
       }
 
       if (entry.state == state && same_number(entry.ambient, ambient) &&
@@ -1389,6 +1443,7 @@ bool MediaControllerGrid::apply_room_states(const std::string &room_states) {
           same_number(entry.weather_temp, weather_temp) &&
           same_number(entry.weather_humidity, weather_humidity) &&
           same_number(entry.position, position) &&
+          same_number(entry.fan_pct, fan_pct) &&
           entry.sensor_unit == unit) {
         continue;
       }
@@ -1398,6 +1453,7 @@ bool MediaControllerGrid::apply_room_states(const std::string &room_states) {
       entry.weather_temp = weather_temp;
       entry.weather_humidity = weather_humidity;
       entry.position = position;
+      entry.fan_pct = fan_pct;
       entry.sensor_unit = unit;
       changed = true;
     }
@@ -2009,6 +2065,7 @@ void MediaControllerGrid::handle_entities_(AsyncWebServerRequest *request) {
       item["target_temperature"] = entry.settable_temp;
       item["position"] = entry.positionable;
       item["stop"] = entry.stoppable;
+      item["percentage"] = entry.percentable;
     }
 
     /* The artwork Home Assistant publishes, so the editor offers exactly

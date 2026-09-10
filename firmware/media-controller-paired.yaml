@@ -1439,6 +1439,43 @@ script:
       - delay: 400ms
       - script.execute: ui_load_room_config
 
+  # -- A fan's speed, the `percentage` control. It is the lamp's brightness
+  # -- again in every way but the service: a long press sweeps it and the
+  # -- value goes to Home Assistant once, on release.
+  # --
+  # -- Once and not per tick, unlike brightness. A mains fan could take a
+  # -- call a tick, but many are on a Zigbee or Z-Wave mesh exactly as a
+  # -- radiator valve is, and the setpoint's reasoning applies unchanged: ten
+  # -- instructions a second for a speed nobody has finished choosing.
+  # --
+  # -- `fan.set_percentage` rather than the `homeassistant` domain a toggle
+  # -- goes through: there is no domain-agnostic service for it, and the
+  # -- entity prefix is checked for the reason the others are — the entity
+  # -- comes from the payload and the service is named for a domain that has
+  # -- to match it. --
+  - id: cmd_entity_set_fan_percentage
+    mode: parallel
+    max_runs: 4
+    parameters:
+      entity: string
+      pct: int
+    then:
+      - lambda: |-
+          if (entity.rfind("fan.", 0) != 0) return;
+          // -- A percentage, so Home Assistant refuses one outside 0-100
+          //    rather than clamping it. The sweep cannot leave the range,
+          //    but this is where the number becomes a call, so it is where
+          //    to be sure. --
+          int value = pct < 0 ? 0 : (pct > 100 ? 100 : pct);
+          char buf[8];
+          snprintf(buf, sizeof(buf), "%d", value);
+          id(ha_action)->execute(
+              std::string("fan"), std::string("set_percentage"),
+              "{\"entity_id\":\"" + entity +
+              "\",\"percentage\":" + buf + "}");
+      - delay: 400ms
+      - script.execute: ui_load_room_config
+
   # Translate the local display labels to the identifiers offered by /api/skins.
   - id: sync_editor_skin
     then:
@@ -2853,7 +2890,7 @@ script:
                 !is_reading &&
                 (entry == nullptr || entry->togglable || entry->dimmable ||
                  entry->settable_temp || entry->positionable ||
-                 entry->stoppable);
+                 entry->stoppable || entry->percentable);
             if (actionable) {
               lv_obj_add_flag(tile, LV_OBJ_FLAG_CLICKABLE);
             }
@@ -2957,6 +2994,13 @@ script:
             else if (entry != nullptr &&
                      entry->domain == media_controller_grid::DOMAIN_COVER) {
               art = id(card_icon_blind);
+            }
+            else if (entry != nullptr &&
+                     entry->domain == media_controller_grid::DOMAIN_FAN) {
+              // -- The fan artwork already in flash, the same picture a
+              //    switch falls back to. A native fan gets it by its domain
+              //    the way a blind gets the blind. --
+              art = id(card_icon_fan);
             }
 
             // -- A one-cell card is 54 px of paint and has room for the icon
@@ -3218,11 +3262,11 @@ script:
                   // -- This device has one gesture beyond a tap, and each
                   //    card type spends it on the one value it has: a light
                   //    on its brightness, a thermostat on its setpoint, a
-                  //    blind on how far open it is. The sweep runs up, turns
-                  //    round at the top and comes back down, exactly as the
-                  //    four fixed buttons do; the value is local because a
-                  //    light reports the brightness it reached, not the one
-                  //    the finger is heading for. --
+                  //    blind on how far open it is, a fan on how fast. The
+                  //    sweep runs up, turns round at the top and comes back
+                  //    down, exactly as the four fixed buttons do; the value
+                  //    is local because a light reports the brightness it
+                  //    reached, not the one the finger is heading for. --
                   if (entry->dimmable) {
                     float pct = entry->pct + entry->direction * 4.0f;
                     if (pct >= 100.0f) { pct = 100.0f; entry->direction = -1; }
@@ -3233,13 +3277,14 @@ script:
                     break;
                   }
 
-                  // -- The two values that are **not** sent per tick. A lamp
+                  // -- The values that are **not** sent per tick. A lamp
                   //    above answers on mains wiring and can afford a call
-                  //    every tick; a radiator valve on a Zigbee mesh and a
-                  //    motor on a blind cannot, so both of these move on the
-                  //    device and go to Home Assistant once, on release. See
-                  //    cmd_entity_set_temperature and
-                  //    cmd_entity_set_position. --
+                  //    every tick; a radiator valve on a Zigbee mesh, a
+                  //    motor on a blind and a fan on the same kind of mesh
+                  //    cannot, so all of these move on the device and go to
+                  //    Home Assistant once, on release. See
+                  //    cmd_entity_set_temperature, cmd_entity_set_position
+                  //    and cmd_entity_set_fan_percentage. --
                   bool swept = false;
                   if (entry->positionable) {
                     // -- A blind that reports no position starts the sweep
@@ -3286,6 +3331,36 @@ script:
                     }
                     entry->setpoint = target;
                     swept = true;
+                  } else if (entry->percentable &&
+                             media_controller_grid::entry_is_on(*entry)) {
+                    // -- Not while it is off, the thermostat's rule for the
+                    //    thermostat's reason: an off fan's card shows OFF
+                    //    with no number, so a sweep there would move a value
+                    //    with nothing on screen changing. A tap turns it on,
+                    //    and the sweep is there the moment it runs.
+                    // --
+                    //    A fan that has not reported a speed yet starts from
+                    //    the middle, the way an unknown setpoint does. The
+                    //    step is the fan's own where it published one -- a
+                    //    three-speed fan moving a rung at a time -- and four
+                    //    percent, the lamp's step, where it did not. The
+                    //    range is the definition of a percentage: 0 stopped,
+                    //    100 full. --
+                    const float step =
+                        std::isnan(entry->pct_step) ? 4.0f : entry->pct_step;
+                    float target =
+                        std::isnan(entry->fan_pct) ? 50.0f : entry->fan_pct;
+                    target += entry->direction * step;
+                    if (target >= 100.0f) {
+                      target = 100.0f;
+                      entry->direction = -1;
+                    }
+                    if (target <= 0.0f) {
+                      target = 0.0f;
+                      entry->direction = 1;
+                    }
+                    entry->fan_pct = target;
+                    swept = true;
                   }
                   if (!swept) break;
                   id(room_card_swept) = true;
@@ -3305,18 +3380,23 @@ script:
                   break;
                 }
                 case LV_EVENT_PRESS_LOST:
-                  // -- The press went somewhere else: onto another tile, or
-                  //    into a scroll that took it over. No more sweep ticks
-                  //    will reach this card, so the poll owns its value
-                  //    again from here.
+                  // -- The press went somewhere else. LVGL re-searches the
+                  //    object under the finger on every cycle unless the
+                  //    widget sets LV_OBJ_FLAG_PRESS_LOCK, which these tiles
+                  //    do not, so a finger that slides onto the next tile
+                  //    loses this one. **RELEASED does not follow here**: in
+                  //    both paths that send this event lv_indev.c moves
+                  //    `act_obj` on — to the new widget, or to NULL — and
+                  //    the release goes to that instead. So this is the last
+                  //    thing this card hears, and the hold has to be given
+                  //    up here or the poll would go on skipping its value
+                  //    for good.
                   // --
-                  //    Only the hold is released. `room_card_swept` is left
-                  //    exactly as it was, because RELEASED is still to come
-                  //    and it is the one that decides: a finger that slides
-                  //    off the card still ends the sweep and still means it,
-                  //    which is the rule the setpoint has always been
-                  //    committed under. Clearing it here would quietly
-                  //    change that for both. --
+                  //    An abandoned sweep is dropped rather than sent, which
+                  //    is what has always happened to a setpoint abandoned
+                  //    the same way. `room_card_swept` is left alone because
+                  //    nothing can read it stale: whatever the finger lands
+                  //    on next gets PRESSED first, and PRESSED clears it. --
                   id(room_grid)->release_card();
                   break;
                 case LV_EVENT_RELEASED:
@@ -3332,6 +3412,10 @@ script:
                                !std::isnan(entry->setpoint)) {
                       id(cmd_entity_set_temperature)->execute(entry->entity,
                                                               entry->setpoint);
+                    } else if (entry->percentable &&
+                               !std::isnan(entry->fan_pct)) {
+                      id(cmd_entity_set_fan_percentage)->execute(
+                          entry->entity, (int) (entry->fan_pct + 0.5f));
                     }
                   }
                   id(room_card_swept) = false;
@@ -3484,11 +3568,12 @@ script:
                 lv_label_set_text(
                     reading,
                     media_controller_grid::card_reading(*entry).c_str());
-                // -- ON on a lamp, a socket or a blind draws in the accent;
-                //    OFF stays in the dim reading grey. --
+                // -- ON on a lamp, a socket, a blind or a fan draws in the
+                //    accent; OFF stays in the dim reading grey. --
                 if (entry->domain == media_controller_grid::DOMAIN_LIGHT ||
                     entry->domain == media_controller_grid::DOMAIN_SWITCH ||
-                    entry->domain == media_controller_grid::DOMAIN_COVER) {
+                    entry->domain == media_controller_grid::DOMAIN_COVER ||
+                    entry->domain == media_controller_grid::DOMAIN_FAN) {
                   bool on_value =
                       media_controller_grid::entry_is_on(*entry);
                   lv_obj_set_style_text_color(

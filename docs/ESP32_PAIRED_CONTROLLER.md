@@ -871,6 +871,7 @@ reports the outcome on `GET /api/entities`.
 | `switch` | toggle | — | icon and a tap |
 | `climate` | toggle | sweeps the setpoint | icon and a tap |
 | `cover` | toggle while still, stop while moving | sweeps the position | icon and a tap |
+| `fan` | toggle | sweeps the speed | icon and a tap |
 | `weather` | — (a reading, never a button) | — | value, name where it fits |
 | `sensor` | — (a reading) | — | value, name where it fits |
 
@@ -902,6 +903,20 @@ state in the `room_states` block of the config sensor. It is not a capability
 and never was; the T560 reads the same number from the entity itself, and this
 panel cannot, which is what that block exists for. See **Room states** in
 `docs/CONTRACT.md`.
+
+A `fan` is the lamp again: a tap toggles it and the long press sweeps its one
+value, the speed. It is sent once on release, for the same reason the
+setpoint is — many fans sit on the same Zigbee or Z-Wave mesh a radiator
+valve does. The sweep steps by the fan's own `percentage_step` where it
+publishes one and by four percent where it does not, and it runs only while
+the fan is on, exactly as the setpoint sweep runs only while the thermostat
+is: an off fan's card shows `OFF` with no number, and a sweep with nothing on
+screen changing is the one thing a sweep must not do. A fan with one speed
+carries `toggle` alone, shows `ON` or `OFF`, and ignores the long press — the
+card a fan exposed as a switch always was. Its speed travels beside its state
+in the `room_states` block, exactly as a cover's position does. Preset modes,
+direction and oscillation are not read: this build has no gesture left for
+them, and an unknown future fan control is ignored rather than half-drawn.
 
 A card two cells square or larger carries its name; a thermostat carries a
 reading above the name as well — the temperature the room is at and the
@@ -1056,6 +1071,25 @@ ESPHome as it always was.
       card type.
     - Judge touch responsiveness and watch `Loop Time` during a sweep, and
       confirm free heap is unchanged after a few minutes of sweeping.
+7b. **The fan card, on a real `fan.*` entity with a settable speed.**
+    - A tap toggles the fan; the card follows to `ON 60%` or `OFF` within a
+      poll. Compare the percentage with the entity's own `percentage` in
+      **Developer tools → States**.
+    - A long press sweeps the speed on the card, up and back down. Watch the
+      Home Assistant logbook: there must be **exactly one**
+      `fan.set_percentage` call, on release, and none during the sweep. On a
+      fan that reports a `percentage_step` (a two- or three-speed fan), the
+      sweep should step by that amount rather than by one percent.
+    - Long-press a fan that is **off**. Nothing must move: an off fan's card
+      shows `OFF` with no number, and the sweep does not run until a tap has
+      turned it on.
+    - Change the speed from Home Assistant with nobody touching the panel;
+      the card follows within a poll.
+    - Add a fan with one speed (or one exposed as a `switch` before). It must
+      show `ON`/`OFF` with no percentage, toggle on a tap, and ignore a long
+      press.
+    - Make the fan entity unavailable. The card takes the unavailable border
+      and drops its reading, like every other card type.
 8. Fill the registry to its limit of 64 elements, with Cyrillic names, and
    confirm the config payload is not cut off: the cards must all appear and
    the log must show `The registry now carries 64 element(s)`. A truncated

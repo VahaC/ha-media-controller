@@ -150,6 +150,70 @@ class RoomStateValueTests(unittest.TestCase):
             transformations.room_state_values("cover", None, None), ["unknown"]
         )
 
+    def test_a_fan_reports_its_state_and_its_speed(self) -> None:
+        # The state says on or off and cannot say how fast. The panel that
+        # reads this block draws a slider with the number and cannot ask for
+        # the attribute itself.
+        self.assertEqual(
+            transformations.room_state_values(
+                "fan", "on", {"percentage": 60}
+            ),
+            ["on", 60],
+        )
+
+    def test_a_single_speed_or_off_fan_sends_null_not_zero(self) -> None:
+        # A one-speed fan reports no percentage, and neither does one that is
+        # simply off. Stopped and "cannot say" are not the same, and a
+        # fabricated number would go under a finger that moves nothing.
+        self.assertEqual(
+            transformations.room_state_values("fan", "on", {}), ["on", None]
+        )
+        self.assertEqual(
+            transformations.room_state_values(
+                "fan", "off", {"percentage": None}
+            ),
+            ["off", None],
+        )
+
+    def test_a_fan_speed_is_a_whole_percent_inside_its_range(self) -> None:
+        self.assertEqual(
+            transformations.room_state_values(
+                "fan", "on", {"percentage": 66.6}
+            ),
+            ["on", 67],
+        )
+        self.assertEqual(
+            transformations.room_state_values(
+                "fan", "on", {"percentage": 140}
+            ),
+            ["on", 100],
+        )
+        self.assertEqual(
+            transformations.room_state_values(
+                "fan", "on", {"percentage": -3}
+            ),
+            ["on", 0],
+        )
+
+    def test_a_fan_speed_that_is_not_a_number_is_no_speed(self) -> None:
+        for value in ("None", "", "fast", True, False, float("nan")):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    transformations.room_state_values(
+                        "fan", "on", {"percentage": value}
+                    ),
+                    ["on", None],
+                )
+
+    def test_an_unavailable_fan_says_so_and_claims_no_speed(self) -> None:
+        self.assertEqual(
+            transformations.room_state_values("fan", "unavailable", {}),
+            ["unavailable", None],
+        )
+        self.assertEqual(
+            transformations.room_state_values("fan", None, None), ["unknown"]
+        )
+
     def test_an_unknown_domain_travels_as_a_bare_state(self) -> None:
         self.assertEqual(
             transformations.room_state_values("vacuum", "cleaning", {}),

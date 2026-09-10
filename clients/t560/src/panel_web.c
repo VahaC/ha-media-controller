@@ -220,6 +220,8 @@ static void handle_entities(PanelWeb *web, SoupServerMessage *message)
         json_builder_add_boolean_value(builder, entity->position);
         json_builder_set_member_name(builder, "stop");
         json_builder_add_boolean_value(builder, entity->stoppable);
+        json_builder_set_member_name(builder, "percentage");
+        json_builder_add_boolean_value(builder, entity->percentage);
         json_builder_end_object(builder);
     }
     json_builder_end_array(builder);

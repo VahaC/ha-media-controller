@@ -558,6 +558,21 @@ static void handle_ui_event(PanelUiEvent event, const gchar *value, gint index,
         }
         break;
     }
+    case PANEL_UI_SET_ROOM_PERCENTAGE: {
+        const PanelEntity *room = configured_room(application, index);
+        /* Only where Home Assistant said the fan has a settable speed. A
+         * one-speed fan would refuse `set_percentage`, and the drag would
+         * answer nothing. Clamped here as the last step before the wire. */
+        if (room != NULL && value != NULL && room->percentage) {
+            gint percentage = (gint)g_ascii_strtoll(value, NULL, 10);
+            percentage = CLAMP(percentage, 0, 100);
+            gchar *json = room_value_json(room->entity, "percentage",
+                                          percentage);
+            call_service(application, "fan", "set_percentage", json);
+            g_free(json);
+        }
+        break;
+    }
     case PANEL_UI_SET_ROOM_COLOR_TEMPERATURE: {
         const PanelEntity *room = configured_room(application, index);
         if (room != NULL && value != NULL && room->color_temperature) {
@@ -825,6 +840,7 @@ static void update_room(PanelApplication *application, guint index,
         .setpoint = NAN,
         .ambient = NAN,
         .position = -1,
+        .fan_percentage = -1,
         .weather_condition = NULL,
         .weather_temperature = NAN,
         .weather_humidity = -1,
@@ -884,6 +900,11 @@ static void update_room(PanelApplication *application, guint index,
     if (json_object_number(attributes, "current_position", &value) &&
         value >= 0.0)
         reported.position = CLAMP((gint)(value + 0.5), 0, 100);
+    /* A fan the same way: `percentage` rides on the document the card was
+     * already polled with. A one-speed fan, or one that is off, reports none
+     * and this stays at -1. */
+    if (json_object_number(attributes, "percentage", &value) && value >= 0.0)
+        reported.fan_percentage = CLAMP((gint)(value + 0.5), 0, 100);
 
     panel_ui_set_room(application->ui, index, &reported);
 }

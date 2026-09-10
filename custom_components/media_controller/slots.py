@@ -29,6 +29,7 @@ from .profiles import (
     CAP_MAX_TEMP,
     CAP_MIN_KELVIN,
     CAP_MIN_TEMP,
+    CAP_PCT_STEP,
     CAP_TEMP_STEP,
     ClientProfile,
     limit_controls,
@@ -124,6 +125,7 @@ def _resolve_entry_capabilities(
         min_temp=capabilities.get(CAP_MIN_TEMP),
         max_temp=capabilities.get(CAP_MAX_TEMP),
         target_temp_step=capabilities.get(CAP_TEMP_STEP),
+        percentage_step=capabilities.get(CAP_PCT_STEP),
     )
 
 
@@ -400,6 +402,7 @@ class ClientConfiguration:
                     min_temp=entry.min_temp,
                     max_temp=entry.max_temp,
                     target_temp_step=entry.target_temp_step,
+                    percentage_step=entry.percentage_step,
                     # Normalized here rather than read straight from
                     # storage. The picture a person chose is a fact about the
                     # element and not something resolved from the target the

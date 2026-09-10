@@ -59,6 +59,7 @@ REGISTRY_KEY_MAX_KELVIN = "max_kelvin"
 REGISTRY_KEY_MIN_TEMP = "min_temp"
 REGISTRY_KEY_MAX_TEMP = "max_temp"
 REGISTRY_KEY_TEMP_STEP = "target_temp_step"
+REGISTRY_KEY_PCT_STEP = "percentage_step"
 REGISTRY_KEY_ICON = "icon"
 # Not part of the contract: the Home Assistant entity registry row ID of the
 # target. It never reaches a client, and it is what makes an element follow
@@ -74,14 +75,17 @@ class RegistryGroup:
     domain: str
 
 
-# In payload order. Lights, switches, climate and covers draw controls; weather
-# and sensors are carried with an empty control list and drawn as readings
-# rather than controls — see docs/CONTRACT.md, Weather blocks and Sensor
-# blocks. A client ignores an element whose domain it cannot draw, so a group
-# added here cannot break a client already in the field.
+# In payload order. Lights, switches, fans, climate and covers draw controls;
+# weather and sensors are carried with an empty control list and drawn as
+# readings rather than controls — see docs/CONTRACT.md, Weather blocks and
+# Sensor blocks. A client ignores an element whose domain it cannot draw, so a
+# group added here cannot break a client already in the field: `fans` was
+# added after both panels shipped, and a build from before it simply never
+# sees a `fan` element because nobody running it could have added one.
 GROUPS: tuple[RegistryGroup, ...] = (
     RegistryGroup("lights", "light"),
     RegistryGroup("switches", "switch"),
+    RegistryGroup("fans", "fan"),
     RegistryGroup("climate", "climate"),
     RegistryGroup("covers", "cover"),
     RegistryGroup("weather", "weather"),
@@ -142,6 +146,10 @@ class RegistryEntry:
     min_temp: float | None = None
     max_temp: float | None = None
     target_temp_step: float | None = None
+    # A fan's speed step as a whole percent, present only beside a
+    # `percentage` control the way the temperature bounds are present only
+    # beside `target_temperature`. Resolved from the live target, never typed.
+    percentage_step: float | None = None
     # A catalog identifier, or "" for automatic. It is a name and never a
     # position: `icon_catalog.ICONS` may be reordered, added to or shortened
     # without changing what any stored element points at.
@@ -175,6 +183,8 @@ class RegistryEntry:
             stored[REGISTRY_KEY_MAX_TEMP] = self.max_temp
         if self.target_temp_step is not None:
             stored[REGISTRY_KEY_TEMP_STEP] = self.target_temp_step
+        if self.percentage_step is not None:
+            stored[REGISTRY_KEY_PCT_STEP] = self.percentage_step
         # Written only when one was chosen, so an entry saved before icons
         # existed and one whose icon is automatic are the same record on disk.
         if self.icon:
@@ -203,6 +213,7 @@ class RegistryEntry:
             min_temp=stored.get(REGISTRY_KEY_MIN_TEMP),
             max_temp=stored.get(REGISTRY_KEY_MAX_TEMP),
             target_temp_step=stored.get(REGISTRY_KEY_TEMP_STEP),
+            percentage_step=stored.get(REGISTRY_KEY_PCT_STEP),
             icon=str(stored.get(REGISTRY_KEY_ICON) or "").strip(),
         )
 

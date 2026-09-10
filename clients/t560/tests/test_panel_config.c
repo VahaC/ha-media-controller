@@ -238,6 +238,54 @@ static void test_cover_without_a_position(void)
     panel_layout_clear(&layout);
 }
 
+/* TB-28: the fan card. A fan resolves to a `toggle` and, where it has a
+ * settable speed, a `percentage`. Like a cover it carries no bounds -- a
+ * speed is a percentage -- so the controls are the whole of it. */
+static void test_fan_element_is_read(void)
+{
+    PanelLayout layout = {0};
+    gchar *failure = NULL;
+    gchar *attributes = g_strdup_printf(
+        "%s,\"entities\":[{\"rid\":\"1a2b3c4d\",\"entity\":\"fan.ceiling\","
+        "\"name\":\"Ceiling fan\",\"domain\":\"fan\","
+        "\"controls\":[\"toggle\",\"percentage\",\"preset_mode\"]}]",
+        CONTROLLER_ENTITIES);
+
+    /* `preset_mode` is the unknown one here, ignored rather than an error;
+     * `percentage` this build knows and reads. */
+    g_assert_true(parse(attributes, &layout, &failure));
+    g_assert_cmpuint(entity_count(&layout), ==, 1);
+    g_assert_cmpstr(entity_at(&layout, 0)->domain, ==, "fan");
+    g_assert_true(entity_at(&layout, 0)->togglable);
+    g_assert_true(entity_at(&layout, 0)->percentage);
+    g_assert_false(entity_at(&layout, 0)->position);
+    g_assert_false(entity_at(&layout, 0)->stoppable);
+    g_assert_false(entity_at(&layout, 0)->target_temperature);
+
+    g_free(attributes);
+    panel_layout_clear(&layout);
+}
+
+/* A one-speed fan, or a fan exposed as a switch until now: it toggles and
+ * nothing else, and the sheet it would open carries no slider. */
+static void test_fan_without_a_speed(void)
+{
+    PanelLayout layout = {0};
+    gchar *failure = NULL;
+    gchar *attributes = g_strdup_printf(
+        "%s,\"entities\":[{\"rid\":\"1a2b3c4d\",\"entity\":\"fan.bathroom\","
+        "\"name\":\"Bathroom fan\",\"domain\":\"fan\","
+        "\"controls\":[\"toggle\"]}]", CONTROLLER_ENTITIES);
+
+    g_assert_true(parse(attributes, &layout, &failure));
+    g_assert_cmpuint(entity_count(&layout), ==, 1);
+    g_assert_true(entity_at(&layout, 0)->togglable);
+    g_assert_false(entity_at(&layout, 0)->percentage);
+
+    g_free(attributes);
+    panel_layout_clear(&layout);
+}
+
 /* A sensor block. It carries an empty control list, because there is
  * nothing to act on: the value is the entity state and the unit arrives
  * with the poll, never in the payload. */
@@ -1071,6 +1119,8 @@ void panel_config_tests_register(void)
                     test_a_future_control_does_not_disturb_the_known_ones);
     g_test_add_func("/config/climate", test_climate_element_is_read);
     g_test_add_func("/config/cover", test_cover_element_is_read);
+    g_test_add_func("/config/fan", test_fan_element_is_read);
+    g_test_add_func("/config/fan-no-speed", test_fan_without_a_speed);
     g_test_add_func("/config/sensor", test_sensor_element_is_read);
     g_test_add_func("/config/sensor-unknown-control",
                     test_sensor_with_unknown_control_is_still_a_reading);

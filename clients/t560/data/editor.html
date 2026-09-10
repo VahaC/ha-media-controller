@@ -673,7 +673,8 @@ function cardNode(card, index) {
     face.appendChild(forecast);
   }
   if (true && entity && (entity.brightness || entity.color_temp ||
-      entity.target_temperature || entity.position || entity.stop)) {
+      entity.target_temperature || entity.position || entity.stop ||
+      entity.percentage)) {
     var adjust = document.createElement("span");
     adjust.className = "adjust";
     face.appendChild(adjust);

@@ -198,6 +198,14 @@ the tap itself into the stop for as long as the blind is moving. Its card says
 `OPENING` or `CLOSING` while that is what a tap does. A blind that only opens
 and closes gets neither on either panel, and still toggles.
 
+Fans have a card on **both panels**, so a real `fan.*` entity no longer has
+to be exposed as a switch to reach a panel. A tap toggles it. Where the fan
+has a settable speed, that speed is a slider: on the tablet's adjust sheet,
+or a long press on the ESP32, sent once when the drag settles. A fan with one
+speed toggles and shows `ON` or `OFF` with no slider — exactly what it did as
+a switch, now in its own group with the fan artwork. Preset modes, direction
+and oscillation are left to Home Assistant.
+
 Weather is drawn as a reading block on both panels: the condition and the
 temperature, with the humidity where it is reported. A tap on it acts on
 nothing.

@@ -122,6 +122,14 @@ enum CardDomain : uint8_t {
    * Neither control is guaranteed: a blind that only opens and closes
    * carries `toggle` alone and behaves exactly as it always did. */
   DOMAIN_COVER = 6,
+  /* A fan. It is the light's twin: a tap toggles it and the one long press
+   * sweeps its single value, the speed percentage. `percentage` is not
+   * guaranteed — a fan with one speed carries `toggle` alone and is the
+   * card a fan exposed as a switch always was — and preset modes, direction
+   * and oscillation are not read at all, because this build has no gesture
+   * left to spend on them. Added after both panels shipped, so a build from
+   * before it never sees a `fan` element. */
+  DOMAIN_FAN = 7,
 };
 
 /* One card, in the shape that goes to flash.
@@ -192,6 +200,15 @@ struct Entry {
    * percentage by definition, so 0 and 100 are the range in every house. */
   bool positionable;
   bool stoppable;
+  /* A fan's one control beyond the toggle. `percentable` is the `percentage`
+   * control, which a long press sweeps the way it sweeps a lamp's
+   * brightness. It may be absent — a single-speed fan carries only
+   * `toggle` — and a card then behaves exactly as a switch card does. The
+   * step it snaps to, `pct_step`, is the fan's own `percentage_step` where
+   * it reports a useful one and NAN otherwise, in which case the sweep
+   * moves a percent at a time. */
+  bool percentable;
+  float pct_step;
   /* The catalog identifier of the picture this element's cards draw, or
    * empty when the user chose none and the domain decides. It arrives in the
    * `entities` block beside the name, because which picture a lamp wears is
@@ -237,6 +254,18 @@ struct Entry {
    * against a motor; a call per sweep tick would ask it to change its mind
    * ten times a second. */
   float position;
+  /* A fan's speed, 0 stopped and 100 full, from the same poll as `state`.
+   * NAN until Home Assistant has answered once, and NAN for good on a fan
+   * that reports no `percentage` — a single-speed fan, or one that is
+   * simply off — which is why a card checks it before printing it rather
+   * than drawing a fabricated zero.
+   *
+   * It is also where a long-press sweep leaves the value, exactly as
+   * `position` and `setpoint` are, and sent to Home Assistant once on
+   * release: `fan.set_percentage` on a mains fan is cheap, but a call every
+   * sweep tick is still ten instructions a second for a speed nobody has
+   * finished choosing. */
+  float fan_pct;
   /* The daily forecast behind a weather block: up to FORECAST_DAYS days
    * after today, each a weekday and a high, with a low of NAN where none
    * was reported. Empty until a forecast poll has answered once; drawn only
@@ -250,8 +279,9 @@ struct Entry {
    * kept, for the same reason — a light reports the brightness it reached,
    * not the one the finger is heading for. */
   float pct;
-  /* Which way a sweep is going, shared by brightness, by the setpoint and by
-   * a cover's position: only one card can be under a finger. */
+  /* Which way a sweep is going, shared by brightness, by the setpoint, by a
+   * cover's position and by a fan's speed: only one card can be under a
+   * finger. */
   int8_t direction;
 };
 
@@ -265,9 +295,9 @@ struct Entry {
  *               the card is for — unless a person chose an icon for it in
  *               the editor, which wins);
  *   child 1     the value, on every labelled card but an unknown one: the
- *               reading on a thermostat, sensor or cover card, and ON/OFF
- *               on a light or switch card. On a large weather card it is the
- *               hero temperature instead (see weather_hero);
+ *               reading on a thermostat, sensor, cover or fan card, and
+ *               ON/OFF on a light or switch card. On a large weather card it
+ *               is the hero temperature instead (see weather_hero);
  *   child 2     on a large weather card, the condition with the humidity
  *               (see weather_sub); on any other labelled card, the first of
  *               the children below — which, weather aside, is the name;
@@ -299,12 +329,12 @@ uint8_t card_forecast_rows(const Card &card, const Entry *entry);
  * element that is unavailable, or that has not been polled yet, must not
  * read as off — off is a fact and that is the absence of one.
  *
- * A light and a switch say "on" and everything else is off. A thermostat
- * does not: its state is the mode it is in — heat, cool, auto, dry, fan_only
- * — and every one of them but "off" is a thermostat that is running. A
- * cover is open when it is not shut: Home Assistant reports `open`,
- * `closed`, `opening` and `closing`, one that is moving towards open reads
- * as on, and only `closed` reads as off. */
+ * A light, a switch and a fan say "on" and everything else is off. A
+ * thermostat does not: its state is the mode it is in — heat, cool, auto,
+ * dry, fan_only — and every one of them but "off" is a thermostat that is
+ * running. A cover is open when it is not shut: Home Assistant reports
+ * `open`, `closed`, `opening` and `closing`, one that is moving towards open
+ * reads as on, and only `closed` reads as off. */
 bool entry_is_known(const Entry &entry);
 bool entry_is_on(const Entry &entry);
 /* Whether this element is a reading rather than a control: a weather block
@@ -337,9 +367,11 @@ std::string weather_sub(const Entry &entry);
  * setpoint after it on a thermostat, which is the order a thermostat is
  * read in; what a cover is doing and how far open it is, as `OPEN 40%`,
  * `OPENING 40%` or `CLOSED` — the word first because it is true of every
- * blind and the percentage second because it is not; the condition and how
- * warm it is on a weather block, with the humidity where one is reported;
- * the value with its unit on a sensor block.
+ * blind and the percentage second because it is not; `ON 60%` or `OFF` on a
+ * fan, the word first for the same reason and the speed only while it is
+ * running and reports one; the condition and how warm it is on a weather
+ * block, with the humidity where one is reported; the value with its unit on
+ * a sensor block.
  *
  * Empty means "there is nothing to say", which includes a thermostat that is
  * off and reports no room temperature, and the caller **writes** that empty
@@ -611,12 +643,12 @@ class MediaControllerGrid final : public AsyncWebHandler, public Component {
   /* Which card is under a finger, and whether one is.
    *
    * A long press sweeps a value that Home Assistant also reports: the
-   * setpoint of a thermostat, the position of a cover. The config poll runs
-   * once a second whatever is on screen, so without this the poll would
-   * write Home Assistant's number back over the one the finger is choosing —
-   * every second on a thermostat, and on a *travelling* blind every second
-   * with a different value, because `current_position` moves while the motor
-   * runs. The card would then fight the finger.
+   * setpoint of a thermostat, the position of a cover, the speed of a fan.
+   * The config poll runs once a second whatever is on screen, so without
+   * this the poll would write Home Assistant's number back over the one the
+   * finger is choosing — every second on a thermostat, and on a *travelling*
+   * blind every second with a different value, because `current_position`
+   * moves while the motor runs. The card would then fight the finger.
    *
    * So the poll leaves the swept value of the held card alone and takes
    * everything else from it, including the state itself: a blind that

@@ -257,7 +257,7 @@ class CoverFirmwareTests(unittest.TestCase):
         # SET_POSITION but neither OPEN nor CLOSE would otherwise be built
         # unclickable and its sweep would never arrive.
         self.assertIn("entry->positionable ||", self.text)
-        self.assertIn("entry->stoppable)", self.text)
+        self.assertIn("entry->stoppable", self.text)
 
     def test_the_held_card_is_named_on_press_and_released_afterwards(
         self,
@@ -273,10 +273,12 @@ class CoverFirmwareTests(unittest.TestCase):
     def test_losing_the_press_releases_the_hold_and_decides_nothing_else(
         self,
     ) -> None:
-        # RELEASED is still to come and it is the one that commits: a finger
-        # that slides off the card still ends the sweep and still means it,
-        # which is how the setpoint has always been committed. This case
-        # exists to hand the value back to the poll, not to change that.
+        # This is the last event the card hears: lv_indev.c moves `act_obj`
+        # on before the release, so RELEASED goes to whatever the finger
+        # landed on instead. Hence the hold must be given up here, or the
+        # poll would skip this card's value for the life of the session. The
+        # abandoned sweep is dropped rather than sent, which is what has
+        # always happened to a setpoint abandoned the same way.
         lost = _case_body(self.text, "case LV_EVENT_PRESS_LOST")
         self.assertIn("release_card()", lost)
         self.assertNotIn("id(room_card_swept) =", lost)
@@ -318,10 +320,13 @@ class CoverGridComponentTests(unittest.TestCase):
     def test_the_poll_may_still_move_the_held_card_state(self) -> None:
         # Only the swept number is pinned. A blind that reaches its end stop
         # under a finger must still be allowed to say CLOSED, or the tap that
-        # follows would be deciding from a state a second out of date.
+        # follows would be deciding from a state a second out of date. The
+        # fan's speed joined the same list; see test_fan_cards.py.
         self.assertIn("entry.state = state;", self.cpp)
         held_guarded = re.findall(r"if \(!held\)\n\s+(\w+) =", self.cpp)
-        self.assertEqual(sorted(held_guarded), ["position", "setpoint"])
+        self.assertEqual(
+            sorted(held_guarded), ["fan_pct", "position", "setpoint"]
+        )
 
     def test_the_card_says_which_way_a_moving_blind_is_going(self) -> None:
         self.assertIn('text = "OPENING";', self.cpp)

@@ -364,9 +364,38 @@ class RegistryPayloadTests(unittest.TestCase):
             "min_temp",
             "max_temp",
             "target_temp_step",
+            "percentage_step",
         ):
             with self.subTest(key=key):
                 self.assertNotIn(key, element)
+
+    def test_a_fan_carries_its_speed_step_only_beside_the_control(self) -> None:
+        attributes = self._panel(
+            entities=(
+                transformations.EntityPayload(
+                    rid="1a2b3c4d",
+                    entity="fan.ceiling",
+                    name="Ceiling fan",
+                    domain="fan",
+                    controls=("toggle", "percentage"),
+                    percentage_step=33.0,
+                ),
+                transformations.EntityPayload(
+                    rid="5e6f7a8b",
+                    entity="fan.bathroom",
+                    name="Bathroom fan",
+                    domain="fan",
+                    controls=("toggle",),
+                ),
+            )
+        ).as_attributes()
+        with_speed, toggle_only = attributes["entities"]
+        self.assertEqual(with_speed["controls"], ["toggle", "percentage"])
+        self.assertEqual(with_speed["percentage_step"], 33.0)
+        # A one-speed fan carries the control list and nothing else: a step
+        # would be metadata for a slider that is not on the card.
+        self.assertEqual(toggle_only["controls"], ["toggle"])
+        self.assertNotIn("percentage_step", toggle_only)
 
     def test_a_thermostat_carries_its_setpoint_bounds(self) -> None:
         attributes = self._panel(

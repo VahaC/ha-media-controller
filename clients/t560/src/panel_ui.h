@@ -21,6 +21,7 @@ typedef enum {
     PANEL_UI_SET_ROOM_COLOR_TEMPERATURE,
     PANEL_UI_SET_ROOM_TARGET_TEMPERATURE,
     PANEL_UI_SET_ROOM_POSITION,
+    PANEL_UI_SET_ROOM_PERCENTAGE,
     PANEL_UI_STOP_ROOM,
     PANEL_UI_SHOW_PAGE,
     PANEL_UI_SELECT_QUEUE_ITEM,
@@ -130,6 +131,11 @@ typedef struct {
      * position. A cover that reports none is not half anything: it is open
      * or closed, and the card says so in words. */
     gint position;
+    /* How fast a fan is running, 0 to 100, or -1 when the entity reported no
+     * `percentage` -- a one-speed fan, or one that is simply off. Like a
+     * cover with no position, it is not half anything: the card says ON or
+     * OFF in words and adds the number only where there is one. */
+    gint fan_percentage;
     /* A weather block. The condition is the entity state itself ("sunny",
      * "partlycloudy", ...) and NULL while unknown; the temperature is NAN
      * while unknown and the humidity is -1 while unknown. A weather card is

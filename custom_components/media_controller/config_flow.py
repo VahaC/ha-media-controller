@@ -227,6 +227,7 @@ FORM_GROUP_ORDER: tuple[str, ...] = (
     "sensors",
     "lights",
     "switches",
+    "fans",
     "climate",
     "covers",
 )

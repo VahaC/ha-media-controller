@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+import math
 from typing import Any
 
 CONTROL_TOGGLE = "toggle"
@@ -18,6 +19,11 @@ CONTROL_COLOR_TEMP = "color_temp"
 # climate card; a client that does not know the name ignores it, which is
 # what lets clients implement different subsets safely.
 CONTROL_TARGET_TEMPERATURE = "target_temperature"
+# A fan's speed, as a percentage a card can drag. It is a sweep like
+# brightness, and it is added the way the cover controls were: a new value
+# name in an existing list, read only by a client that knows it, so a client
+# in the field is unaffected and the contract version does not move.
+CONTROL_PERCENTAGE = "percentage"
 # How far open something is, as a percentage a card can drag. Part of
 # contract version 7 with the cover card, alongside `stop`.
 CONTROL_POSITION = "position"
@@ -32,6 +38,7 @@ CONTROL_ORDER = (
     CONTROL_BRIGHTNESS,
     CONTROL_COLOR_TEMP,
     CONTROL_TARGET_TEMPERATURE,
+    CONTROL_PERCENTAGE,
     CONTROL_POSITION,
     CONTROL_STOP,
 )
@@ -43,6 +50,12 @@ CAP_MAX_KELVIN = "max_kelvin"
 CAP_MIN_TEMP = "min_temp"
 CAP_MAX_TEMP = "max_temp"
 CAP_TEMP_STEP = "target_temp_step"
+# The one piece of metadata a `percentage` control carries, and only when the
+# fan reports a useful one. It is a whole-percent step a sweep should land
+# on — a three-speed fan wants 33, not a percent at a time — and it is
+# optional the way the setpoint bounds are: present only beside the control
+# it belongs to, absent when the entity says nothing worth sending.
+CAP_PCT_STEP = "percentage_step"
 
 # What a target entity's state has to change for its controls to change with
 # it. Nothing here may be a value that moves while the thing is simply being
@@ -60,6 +73,10 @@ CAPABILITY_ATTRIBUTES = (
     "min_temp",
     "max_temp",
     "target_temp_step",
+    # A fan's speed step, not its current speed: it is derived from the fixed
+    # number of speeds the fan has, so it is safe here. `percentage` itself
+    # moves every time somebody changes the speed and must never be here.
+    "percentage_step",
 )
 # The two of those that are read for presence rather than for their value: a
 # light group reports the effective attribute without a complete
@@ -71,6 +88,7 @@ LIGHT_DOMAIN = "light"
 SWITCH_DOMAIN = "switch"
 CLIMATE_DOMAIN = "climate"
 COVER_DOMAIN = "cover"
+FAN_DOMAIN = "fan"
 SENSOR_DOMAIN = "sensor"
 
 # The domains a client can draw a control for today. A weather element and a
@@ -79,7 +97,13 @@ SENSOR_DOMAIN = "sensor"
 # blocks — so both stay out of this tuple. A client ignores an element whose
 # domain it cannot draw. So is a domain that is no longer a group at all.
 # See docs/CONTRACT.md, Registry entries.
-CARD_DOMAINS = (LIGHT_DOMAIN, SWITCH_DOMAIN, CLIMATE_DOMAIN, COVER_DOMAIN)
+CARD_DOMAINS = (
+    LIGHT_DOMAIN,
+    SWITCH_DOMAIN,
+    CLIMATE_DOMAIN,
+    COVER_DOMAIN,
+    FAN_DOMAIN,
+)
 
 # Every Home Assistant colour mode except these carries a brightness channel,
 # so brightness is derived from the set difference rather than an allow-list
@@ -110,6 +134,13 @@ COVER_OPEN = 1
 COVER_CLOSE = 2
 COVER_SET_POSITION = 4
 COVER_STOP = 8
+
+# The one bit of Home Assistant's `FanEntityFeature` this integration reads,
+# written out for the same reason as the climate and cover ones above. A fan
+# that sets it can be driven to any speed percentage; one that does not runs
+# at a single speed. The preset-mode, oscillate and direction bits are
+# deliberately not here — see `_fan_capabilities`.
+FAN_SET_SPEED = 1
 
 # Used only when a thermostat does not report its own bounds, which a real
 # one always does. They are the Home Assistant defaults, and like every
@@ -239,6 +270,7 @@ T560 = ClientProfile(
         CONTROL_BRIGHTNESS,
         CONTROL_COLOR_TEMP,
         CONTROL_TARGET_TEMPERATURE,
+        CONTROL_PERCENTAGE,
         CONTROL_POSITION,
         CONTROL_STOP,
     ),
@@ -261,6 +293,11 @@ T560 = ClientProfile(
 # reaching for it means. Neither costs the gesture a light or a thermostat
 # already spends, which is the whole reason colour temperature still cannot
 # be here.
+#
+# A fan is the same story as a light: a tap toggles it and the long press
+# sweeps its one value, the speed percentage. `percentage` is therefore
+# listed for the same reason `brightness` is, and colour temperature is still
+# the odd one out because it would want a gesture this device does not have.
 ESP32_S3_PANEL = ClientProfile(
     slug="esp32_s3_panel",
     rotations=(0, 90, 180, 270),
@@ -277,6 +314,7 @@ ESP32_S3_PANEL = ClientProfile(
         CONTROL_TOGGLE,
         CONTROL_BRIGHTNESS,
         CONTROL_TARGET_TEMPERATURE,
+        CONTROL_PERCENTAGE,
         CONTROL_POSITION,
         CONTROL_STOP,
     ),
@@ -358,6 +396,8 @@ def normalize_capabilities(
         return _climate_capabilities(attributes or {})
     if domain == COVER_DOMAIN:
         return _cover_capabilities(attributes or {})
+    if domain == FAN_DOMAIN:
+        return _fan_capabilities(attributes or {})
     if domain != LIGHT_DOMAIN:
         return {CAP_CONTROLS: ()}
 
@@ -478,6 +518,52 @@ def _cover_capabilities(attributes: Mapping[str, Any]) -> dict[str, Any]:
     return {CAP_CONTROLS: order_controls(controls)}
 
 
+def _fan_capabilities(attributes: Mapping[str, Any]) -> dict[str, Any]:
+    """Convert a fan's attributes to the controls a card may draw.
+
+    Two of them, and they are not claimed the same way:
+
+    * `toggle` is **unconditional**. Every `fan` entity implements
+      `fan.turn_on` and `fan.turn_off`, and `homeassistant.toggle` calls
+      whichever the current state asks for. There is no fan that can be
+      started but not stopped, the way a cover can be openable but not
+      closable, so there is nothing to gate the toggle on — and a fan
+      exposed as a switch until now toggled with no speed control at all,
+      which is exactly the case that must keep working.
+    * `percentage` needs the `SET_SPEED` feature bit. A fan without it runs
+      at one speed, and a card that drew a slider would be dragging a number
+      Home Assistant has nowhere to send.
+
+    `percentage_step` is the one piece of metadata, and it is optional. A fan
+    that reports a whole-percent step is one whose speeds are rungs — a
+    three-speed fan reports 33 — and a sweep is nicer when it lands on them;
+    a fan that reports none is swept a percent at a time, like a lamp's
+    brightness. It travels only beside a `percentage` control, the way the
+    setpoint bounds travel only beside `target_temperature`.
+
+    Preset modes, oscillation and direction are deliberately not read. They
+    are neither a toggle nor a single swept value, so this build has no card
+    gesture for them; an entity that supports nothing else still resolves to
+    a `toggle`, and one that supports them alongside a speed resolves exactly
+    as if they were absent. A control name this function does not recognise
+    could not reach `controls` even if it tried — `order_controls` keeps only
+    the names in `CONTROL_ORDER` — so a future fan feature is ignored rather
+    than mishandled.
+    """
+    features = _integer(attributes.get("supported_features"))
+
+    controls: list[str] = [CONTROL_TOGGLE]
+    capabilities: dict[str, Any] = {}
+    if features & FAN_SET_SPEED:
+        controls.append(CONTROL_PERCENTAGE)
+        step = _percentage_step(attributes.get("percentage_step"))
+        if step is not None:
+            capabilities[CAP_PCT_STEP] = step
+
+    capabilities[CAP_CONTROLS] = order_controls(controls)
+    return capabilities
+
+
 def capability_signature(attributes: Mapping[str, Any] | None) -> tuple[Any, ...]:
     """Return the state portion that can change a target's controls."""
     safe_attributes = attributes or {}
@@ -512,6 +598,25 @@ def _integer(value: Any) -> int:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return 0
     return int(value)
+
+
+def _percentage_step(value: Any) -> int | None:
+    """Read a fan's speed step as a whole percent, or None when it has none.
+
+    Home Assistant derives it from the fixed number of speeds a fan has, so a
+    real one reports a number between 1 and 100. Anything else — a missing
+    attribute, the string "None", a boolean, zero, a value out of range, a
+    NaN — is no step at all, and a client sweeps a percent at a time instead
+    of being told to snap. It is rounded to a whole percent because that is
+    the resolution a speed rung is ever on, and because a step of
+    33.333333 would otherwise travel into every payload and every checksum.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    step = int(round(value))
+    return step if 1 <= step <= 100 else None
 
 
 def _temperature(value: Any, fallback: float) -> float:

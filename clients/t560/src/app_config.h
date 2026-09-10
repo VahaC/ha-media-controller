@@ -108,6 +108,12 @@ typedef struct {
      * cards. */
     gboolean position;
     gboolean stoppable;
+    /* A fan. `percentage` is whether the card may drag a speed. It is a
+     * capability like the two above; how fast the fan is running arrives
+     * with every poll as the `percentage` attribute. A fan with one speed
+     * carries neither this nor any bound: like a cover's position, a fan's
+     * speed is a percentage by definition. See docs/CONTRACT.md, Fan cards. */
+    gboolean percentage;
     /* The catalog identifier of the picture this element's cards draw, or
      * NULL when the person chose none and the domain decides. It is a name
      * and never a position, so the Media Controller integration may reorder

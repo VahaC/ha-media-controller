@@ -25,6 +25,7 @@ static void read_controls(JsonArray *controls, PanelEntity *entity)
     entity->target_temperature = FALSE;
     entity->position = FALSE;
     entity->stoppable = FALSE;
+    entity->percentage = FALSE;
     if (controls == NULL)
         return;
 
@@ -44,6 +45,8 @@ static void read_controls(JsonArray *controls, PanelEntity *entity)
             entity->position = TRUE;
         else if (g_str_equal(control, "stop"))
             entity->stoppable = TRUE;
+        else if (g_str_equal(control, "percentage"))
+            entity->percentage = TRUE;
     }
 }
 
@@ -384,7 +387,8 @@ static gboolean entity_structure_matches(const PanelEntity *current,
         current->color_temperature != candidate->color_temperature ||
         current->target_temperature != candidate->target_temperature ||
         current->position != candidate->position ||
-        current->stoppable != candidate->stoppable)
+        current->stoppable != candidate->stoppable ||
+        current->percentage != candidate->percentage)
         return FALSE;
     if (current->min_kelvin != candidate->min_kelvin ||
         current->max_kelvin != candidate->max_kelvin ||

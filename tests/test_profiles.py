@@ -65,10 +65,13 @@ class CapabilityTests(unittest.TestCase):
                 self.assertNotIn(key, capabilities)
 
     def test_the_drawable_domains_are_named(self) -> None:
-        # Contract version 7 adds climate and cover to the two original
-        # actionable domains; weather and sensors are read-only blocks.
+        # Contract version 7 added climate and cover to the two original
+        # actionable domains; `fan` joined later without moving the version,
+        # the same way its group did. Weather and sensors are read-only
+        # blocks and stay out.
         self.assertEqual(
-            profiles.CARD_DOMAINS, ("light", "switch", "climate", "cover")
+            profiles.CARD_DOMAINS,
+            ("light", "switch", "climate", "cover", "fan"),
         )
 
     def test_a_cover_that_opens_closes_stops_and_positions(self) -> None:
@@ -114,6 +117,79 @@ class CapabilityTests(unittest.TestCase):
             "cover", {"supported_features": 4}
         )
         self.assertEqual(capabilities["controls"], ("position",))
+
+    def test_a_fan_with_a_speed_toggles_and_sweeps_it(self) -> None:
+        # SET_SPEED is bit 1. A fan that has it gets both controls, and the
+        # speed sits after the toggle in canonical order.
+        capabilities = profiles.normalize_capabilities(
+            "fan", {"supported_features": 1}
+        )
+        self.assertEqual(
+            capabilities["controls"], ("toggle", "percentage")
+        )
+
+    def test_a_toggle_only_fan_gets_no_speed_control(self) -> None:
+        # The case that matters: a fan exposed as a switch until now toggled
+        # with no slider, and a native fan that reports no SET_SPEED must go
+        # on doing exactly that rather than gain a control that moves nothing.
+        for attributes in (
+            {},
+            None,
+            {"supported_features": 0},
+            {"supported_features": None},
+            {"supported_features": "nonsense"},
+            {"supported_features": 2 | 8},  # oscillate + direction, no speed
+        ):
+            with self.subTest(attributes=attributes):
+                self.assertEqual(
+                    profiles.normalize_capabilities("fan", attributes)[
+                        "controls"
+                    ],
+                    ("toggle",),
+                )
+
+    def test_a_fan_reports_its_speed_step_when_it_has_rungs(self) -> None:
+        capabilities = profiles.normalize_capabilities(
+            "fan", {"supported_features": 1, "percentage_step": 33}
+        )
+        self.assertEqual(capabilities["percentage_step"], 33)
+
+    def test_a_fan_speed_step_is_a_whole_percent_in_range(self) -> None:
+        # Home Assistant derives it from the speed count, so a real one is
+        # 1..100. A fractional value is rounded; anything outside the range
+        # or not a number at all is no step, and the sweep falls back to 1%.
+        self.assertEqual(
+            profiles.normalize_capabilities(
+                "fan", {"supported_features": 1, "percentage_step": 33.4}
+            )["percentage_step"],
+            33,
+        )
+        for value in (0, -5, 150, "None", True, float("nan"), None):
+            with self.subTest(value=value):
+                self.assertNotIn(
+                    "percentage_step",
+                    profiles.normalize_capabilities(
+                        "fan",
+                        {"supported_features": 1, "percentage_step": value},
+                    ),
+                )
+
+    def test_a_fan_step_never_travels_without_the_control(self) -> None:
+        # A step beside a fan that reports no SET_SPEED would be metadata for
+        # a control that is not there, the way a setpoint bound would be.
+        capabilities = profiles.normalize_capabilities(
+            "fan", {"supported_features": 0, "percentage_step": 33}
+        )
+        self.assertEqual(list(capabilities), ["controls"])
+
+    def test_a_future_fan_control_is_ignored_not_mishandled(self) -> None:
+        # Preset modes, oscillation and direction set higher bits. A fan that
+        # supports them alongside a speed resolves exactly as if they were
+        # absent, and one that supports only them is a plain toggle.
+        capabilities = profiles.normalize_capabilities(
+            "fan", {"supported_features": 1 | 2 | 4 | 8 | 16}
+        )
+        self.assertEqual(capabilities["controls"], ("toggle", "percentage"))
 
     def test_onoff_light_has_no_brightness(self) -> None:
         capabilities = profiles.normalize_capabilities(
@@ -456,6 +532,18 @@ class ProfileTests(unittest.TestCase):
                         ("toggle", "position", "stop"), profile
                     ),
                     ("toggle", "position", "stop"),
+                )
+
+    def test_both_panels_draw_a_fan_toggle_and_its_speed(self) -> None:
+        # A fan spends the same two gestures a light does: a tap toggles it
+        # and the long press sweeps its speed. Neither panel strips either.
+        for profile in profiles.PANEL_PROFILES:
+            with self.subTest(profile=profile.slug):
+                self.assertEqual(
+                    profiles.limit_controls(
+                        ("toggle", "percentage"), profile
+                    ),
+                    ("toggle", "percentage"),
                 )
 
     def test_a_source_is_a_profile_but_not_a_panel(self) -> None:
