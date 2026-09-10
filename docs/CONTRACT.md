@@ -290,7 +290,9 @@ of the `theme` block above:
 
 A panel whose profile says it **reports diagnostics** — again the paired ESP32
 firmware — has seven more, all of them diagnostic entities and all of them
-unavailable until the matching key arrives in a status report:
+unavailable until the matching key arrives in a status report. Every one
+except `sensor.<panel>_reset_reason` is **disabled by default** — enable it
+from the entity's settings when a panel needs debugging:
 
 | Entity | Platform | Purpose |
 | --- | --- | --- |

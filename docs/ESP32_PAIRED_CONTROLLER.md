@@ -629,7 +629,10 @@ configuration revision, so nothing is rebuilt and nothing flickers.
 
 ### Diagnostics
 
-Seven readings, all under **Diagnostic** on the panel's device:
+Seven readings, all under **Diagnostic** on the panel's device. All except
+`sensor.<panel>_reset_reason` are **disabled by default** — they are runtime
+internals for chasing a fault, so enable the ones you need from each entity's
+settings:
 
 | Entity | What it says |
 | --- | --- |

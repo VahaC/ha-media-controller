@@ -436,9 +436,17 @@ class _PanelDiagnosticSensor(PanelReadingEntity, SensorEntity):
     A client sends the parts of the block it can measure and omits the rest,
     so a missing PSRAM figure and a panel that has not reported for three
     minutes both correctly show nothing rather than a zero.
+
+    Disabled by default. These are the heap, timing and display internals a
+    person turns on while chasing a specific fault and turns off again after —
+    a dozen measurement sensors per panel that nothing on a wall needs. The
+    device-health readings beside them (battery, Wi-Fi, temperature, connected,
+    last report, uptime, reset reason) stay enabled; enable one of these from
+    the entity's settings when a panel is misbehaving.
     """
 
     _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_entity_registry_enabled_default = False
     _attr_state_class = SensorStateClass.MEASUREMENT
     # The status field this reads, which is also the entity and translation key.
     _status_key: str = ""

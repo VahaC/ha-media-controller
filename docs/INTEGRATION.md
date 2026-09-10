@@ -239,6 +239,13 @@ Seven more diagnostic sensors, again moved rather than added:
 panel already sends, so they cost no extra request, and they are what makes a
 panel that reboots at three in the morning diagnosable without a serial cable.
 
+All of them except `reset_reason` are **disabled by default**: they are the
+runtime internals a person enables while chasing a specific fault and disables
+again afterwards, not something a wall panel needs on. Enable the ones you want
+from each entity's settings. The device-health sensors beside them — battery,
+Wi-Fi signal, temperature, connected, last report, uptime, and `reset_reason`
+itself — stay enabled.
+
 `loop_time` is the longest **single** main-loop iteration in the last
 interval, not an average: that is the number a stutter shows up in.
 
