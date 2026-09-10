@@ -420,6 +420,44 @@ class ProfileTests(unittest.TestCase):
         )
         self.assertEqual(controls, ("toggle", "brightness"))
 
+    def test_paired_esp32_now_draws_a_cover_in_full(self) -> None:
+        # `position` and `stop` were stripped by this profile until the
+        # firmware had a card for them. They cost the two gestures a blind
+        # does not otherwise spend: the long press, which has no brightness
+        # or setpoint to sweep on a cover, and the tap, which is free while
+        # the blind is travelling.
+        controls = profiles.limit_controls(
+            ("toggle", "position", "stop"),
+            profiles.ESP32_S3_PANEL,
+        )
+        self.assertEqual(controls, ("toggle", "position", "stop"))
+
+    def test_the_colour_temperature_gesture_is_still_the_one_that_is_spent(
+        self,
+    ) -> None:
+        # A cover's two controls arriving does not mean the ceiling stopped
+        # being a ceiling: colour temperature would need the long press a
+        # lamp already spends on brightness, and there is still no third
+        # gesture to give it.
+        self.assertNotIn("color_temp", profiles.ESP32_S3_PANEL.controls)
+        self.assertEqual(
+            profiles.limit_controls(
+                ("toggle", "brightness", "color_temp"),
+                profiles.ESP32_S3_PANEL,
+            ),
+            ("toggle", "brightness"),
+        )
+
+    def test_both_panels_draw_every_control_a_cover_can_carry(self) -> None:
+        for profile in profiles.PANEL_PROFILES:
+            with self.subTest(profile=profile.slug):
+                self.assertEqual(
+                    profiles.limit_controls(
+                        ("toggle", "position", "stop"), profile
+                    ),
+                    ("toggle", "position", "stop"),
+                )
+
     def test_a_source_is_a_profile_but_not_a_panel(self) -> None:
         self.assertIn(profiles.ESP32_S3_PANEL, profiles.PANEL_PROFILES)
         self.assertNotIn(profiles.SOURCE, profiles.PANEL_PROFILES)

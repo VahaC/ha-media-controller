@@ -235,6 +235,17 @@ bool entry_is_reading(const Entry &entry) {
   return entry.domain == DOMAIN_WEATHER || entry.domain == DOMAIN_SENSOR;
 }
 
+bool entry_is_moving(const Entry &entry) {
+  /* Only a cover travels. `opening` and `closing` are the two states Home
+   * Assistant reports while the motor is running, and they are the window
+   * in which a tap means stop rather than toggle. An element nothing has
+   * been said about is not moving: an unknown state is the absence of a
+   * fact, and stopping a blind on the strength of one would be a tap that
+   * did nothing on a card that promised it would. */
+  return entry.domain == DOMAIN_COVER && entry_is_known(entry) &&
+         (entry.state == "opening" || entry.state == "closing");
+}
+
 bool entry_is_on(const Entry &entry) {
   if (!entry_is_known(entry))
     return false;
@@ -300,11 +311,36 @@ std::string card_reading(const Entry &entry) {
     return entry_is_on(entry) ? "ON" : "OFF";
   }
 
-  /* A blind says whether it is shut. The percentage is not said here: the
-   * panel profile strips `position` before it reaches the device, so there
-   * is no half way this card could honestly report. */
+  /* A blind says what it is doing and, where it reports one, how far open it
+   * is: OPEN, CLOSED, OPENING or CLOSING, with `40%` after it.
+   *
+   * The word comes first because every blind has one and the percentage
+   * because not every blind does — one that only opens and closes reports no
+   * `current_position` at all, and this card says OPEN rather than inventing
+   * a number for it. The two travelling words are said out loud rather than
+   * folded into OPEN, because while one of them is on the card a tap stops
+   * the blind instead of toggling it, and a person is entitled to see which
+   * of the two their tap is about to do.
+   *
+   * The percentage is Home Assistant's own reading between presses and the
+   * swept value while a finger is on the card, exactly as a thermostat's
+   * setpoint is: what the person is choosing has to be what they can see. */
   if (entry.domain == DOMAIN_COVER) {
-    return entry_is_on(entry) ? "OPEN" : "CLOSED";
+    std::string text;
+    if (entry.state == "opening") {
+      text = "OPENING";
+    } else if (entry.state == "closing") {
+      text = "CLOSING";
+    } else {
+      text = entry_is_on(entry) ? "OPEN" : "CLOSED";
+    }
+    if (!std::isnan(entry.position)) {
+      char buffer[8];
+      snprintf(buffer, sizeof(buffer), " %d%%",
+               static_cast<int>(entry.position + 0.5f));
+      text += buffer;
+    }
+    return text;
   }
 
   /* A sensor block says its value with its unit: the name on the card says
@@ -557,6 +593,8 @@ bool MediaControllerGrid::ingest_entities(const std::string &attributes) {
       entry.togglable = false;
       entry.dimmable = false;
       entry.settable_temp = false;
+      entry.positionable = false;
+      entry.stoppable = false;
       JsonArray controls = element["controls"].as<JsonArray>();
       for (JsonVariant control : controls) {
         const char *value = control.as<const char *>();
@@ -566,11 +604,13 @@ bool MediaControllerGrid::ingest_entities(const std::string &attributes) {
          * ship on its own: this list grows by one name per contract version
          * and a device in the field skips the names it has not learned.
          *
-         * `position` and `stop` are ignored on purpose rather than unknown:
-         * the panel profile strips them before they reach the device, and
-         * this firmware has no gesture left to spend on a slider — the long
-         * press already sweeps brightness on a lamp and the setpoint on a
-         * thermostat. A cover is therefore a toggle card here. */
+         * `color_temp` is the one this build ignores on purpose rather than
+         * for want of having heard of it: the firmware has buttons and one
+         * long press, and that press is already spent on brightness for a
+         * lamp and on the setpoint for a thermostat. A cover spends the same
+         * two gestures on nothing else — there is no brightness to sweep and
+         * no setpoint — so `position` and `stop` cost it nothing, which is
+         * why they are read here and a colour temperature still is not. */
         if (value == nullptr)
           continue;
         if (strcmp(value, "toggle") == 0)
@@ -579,6 +619,10 @@ bool MediaControllerGrid::ingest_entities(const std::string &attributes) {
           entry.dimmable = true;
         else if (strcmp(value, "target_temperature") == 0)
           entry.settable_temp = true;
+        else if (strcmp(value, "position") == 0)
+          entry.positionable = true;
+        else if (strcmp(value, "stop") == 0)
+          entry.stoppable = true;
       }
       /* The bounds are sent only with the control, and Home Assistant's own
        * Celsius defaults are what it would have sent had the thermostat
@@ -597,6 +641,7 @@ bool MediaControllerGrid::ingest_entities(const std::string &attributes) {
       entry.setpoint = NAN;
       entry.weather_temp = NAN;
       entry.weather_humidity = NAN;
+      entry.position = NAN;
       entry.fc_count = 0;
       entry.pct = 50.0f;
       entry.direction = 1;
@@ -618,6 +663,7 @@ bool MediaControllerGrid::ingest_entities(const std::string &attributes) {
       if (was.rid != now.rid || was.entity != now.entity || was.name != now.name ||
           was.icon != now.icon || was.domain != now.domain || was.togglable != now.togglable ||
           was.dimmable != now.dimmable || was.settable_temp != now.settable_temp ||
+          was.positionable != now.positionable || was.stoppable != now.stoppable ||
           was.min_temp != now.min_temp || was.max_temp != now.max_temp ||
           was.temp_step != now.temp_step) {
         changed = true;
@@ -640,6 +686,7 @@ bool MediaControllerGrid::ingest_entities(const std::string &attributes) {
       entry.weather_temp = previous->weather_temp;
       entry.weather_humidity = previous->weather_humidity;
       entry.sensor_unit = previous->sensor_unit;
+      entry.position = previous->position;
       entry.fc_count = previous->fc_count;
       for (uint8_t day = 0; day < previous->fc_count && day < FORECAST_DAYS; day++) {
         entry.fc_dow[day] = previous->fc_dow[day];
@@ -1305,26 +1352,43 @@ bool MediaControllerGrid::apply_room_states(const std::string &room_states) {
       std::string state =
           (raw != nullptr && *raw != '\0') ? raw : "unknown";
 
+      /* The value this card's long press sweeps, while the finger is still
+       * on it. The poll may move everything else about a held card — its
+       * state above all, so a blind that reaches its end stop mid-press can
+       * still say CLOSED — but not the number the person is choosing. See
+       * hold_card. */
+      const bool held = this->holding_ && entry.rid == this->held_rid_;
+
       float ambient = entry.ambient;
       float setpoint = entry.setpoint;
       float weather_temp = entry.weather_temp;
       float weather_humidity = entry.weather_humidity;
+      float position = entry.position;
       std::string unit = entry.sensor_unit;
       if (entry.domain == DOMAIN_CLIMATE) {
         ambient = room_number(item[1]);
-        setpoint = room_number(item[2]);
+        if (!held)
+          setpoint = room_number(item[2]);
       } else if (entry.domain == DOMAIN_WEATHER) {
         weather_temp = room_number(item[1]);
         weather_humidity = room_number(item[2]);
       } else if (entry.domain == DOMAIN_SENSOR) {
         const char *text = item[1].as<const char *>();
         unit = text != nullptr ? text : "";
+      } else if (entry.domain == DOMAIN_COVER) {
+        /* Absent on every blind that only opens and closes, and NAN is what
+         * a card checks before it prints a percentage: the reading is
+         * missing, not zero, and a shut blind and one that cannot say are
+         * not the same thing. */
+        if (!held)
+          position = room_number(item[1]);
       }
 
       if (entry.state == state && same_number(entry.ambient, ambient) &&
           same_number(entry.setpoint, setpoint) &&
           same_number(entry.weather_temp, weather_temp) &&
           same_number(entry.weather_humidity, weather_humidity) &&
+          same_number(entry.position, position) &&
           entry.sensor_unit == unit) {
         continue;
       }
@@ -1333,6 +1397,7 @@ bool MediaControllerGrid::apply_room_states(const std::string &room_states) {
       entry.setpoint = setpoint;
       entry.weather_temp = weather_temp;
       entry.weather_humidity = weather_humidity;
+      entry.position = position;
       entry.sensor_unit = unit;
       changed = true;
     }
@@ -1942,6 +2007,8 @@ void MediaControllerGrid::handle_entities_(AsyncWebServerRequest *request) {
       item["brightness"] = entry.dimmable;
       item["color_temp"] = false;
       item["target_temperature"] = entry.settable_temp;
+      item["position"] = entry.positionable;
+      item["stop"] = entry.stoppable;
     }
 
     /* The artwork Home Assistant publishes, so the editor offers exactly

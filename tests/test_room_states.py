@@ -64,15 +64,90 @@ class RoomStateValueTests(unittest.TestCase):
             transformations.room_state_values("light", "off", {}), ["off"]
         )
 
-    def test_a_switch_and_a_cover_travel_the_same_way(self) -> None:
+    def test_a_switch_travels_as_its_bare_state(self) -> None:
         self.assertEqual(
             transformations.room_state_values("switch", "on", {}), ["on"]
         )
+
+    def test_a_cover_reports_its_state_and_how_far_open_it_is(self) -> None:
+        # The state says open or closed and cannot say how far. The panel
+        # that reads this block is the one that cannot ask for the attribute
+        # itself, and it draws a position control with the number.
         self.assertEqual(
-            transformations.room_state_values("cover", "open", {}), ["open"]
+            transformations.room_state_values(
+                "cover", "open", {"current_position": 40}
+            ),
+            ["open", 40],
         )
         self.assertEqual(
-            transformations.room_state_values("cover", "closed", {}), ["closed"]
+            transformations.room_state_values(
+                "cover", "opening", {"current_position": 0}
+            ),
+            ["opening", 0],
+        )
+
+    def test_a_cover_that_reports_no_position_sends_null_not_zero(
+        self,
+    ) -> None:
+        # Every blind that only opens and closes. Shut and "cannot say" are
+        # not the same thing, and a fabricated percentage would go under a
+        # finger that moves nothing.
+        self.assertEqual(
+            transformations.room_state_values("cover", "closed", {}),
+            ["closed", None],
+        )
+        self.assertEqual(
+            transformations.room_state_values(
+                "cover", "open", {"current_position": None}
+            ),
+            ["open", None],
+        )
+
+    def test_a_cover_position_is_a_whole_percent_inside_its_range(
+        self,
+    ) -> None:
+        # A position is drawn on a control whose travel is the range itself,
+        # so a reading off the end of it is clamped rather than passed on.
+        self.assertEqual(
+            transformations.room_state_values(
+                "cover", "open", {"current_position": 39.6}
+            ),
+            ["open", 40],
+        )
+        self.assertEqual(
+            transformations.room_state_values(
+                "cover", "open", {"current_position": 120}
+            ),
+            ["open", 100],
+        )
+        self.assertEqual(
+            transformations.room_state_values(
+                "cover", "open", {"current_position": -5}
+            ),
+            ["open", 0],
+        )
+
+    def test_a_cover_position_that_is_not_a_number_is_no_position(
+        self,
+    ) -> None:
+        # Home Assistant writes the string "None" for an attribute an entity
+        # does not have, and a boolean is not a percentage either.
+        for value in ("None", "", "forty", True, False, float("nan")):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    transformations.room_state_values(
+                        "cover", "open", {"current_position": value}
+                    ),
+                    ["open", None],
+                )
+
+    def test_an_unavailable_cover_says_so_and_claims_no_position(self) -> None:
+        self.assertEqual(
+            transformations.room_state_values("cover", "unavailable", {}),
+            ["unavailable", None],
+        )
+        self.assertEqual(
+            transformations.room_state_values("cover", None, None), ["unknown"]
         )
 
     def test_an_unknown_domain_travels_as_a_bare_state(self) -> None:

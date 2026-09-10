@@ -113,11 +113,14 @@ enum CardDomain : uint8_t {
    * is the entity state itself and the unit an attribute of the same poll,
    * so like weather it needs no bounds beside the reading. */
   DOMAIN_SENSOR = 5,
-  /* Contract version 7. A blind, a shutter or an awning. This build draws
-   * the toggle the integration offers it and reports OPEN/CLOSED; the
-   * percentage and the stop button need a slider the firmware has no
-   * gesture left for, so the panel profile already strips `position` and
-   * `stop` before they reach the device. */
+  /* Contract version 7. A blind, a shutter or an awning. It is the one card
+   * type whose two gestures are not the ones every other card spends: the
+   * long press is free, because a blind has neither a brightness nor a
+   * setpoint to sweep, so it sweeps the position; and the tap changes
+   * meaning while the blind is travelling, because `cover.toggle` is not
+   * what a person reaching for a moving blind means — that is a stop.
+   * Neither control is guaranteed: a blind that only opens and closes
+   * carries `toggle` alone and behaves exactly as it always did. */
   DOMAIN_COVER = 6,
 };
 
@@ -180,6 +183,15 @@ struct Entry {
   float min_temp;
   float max_temp;
   float temp_step;
+  /* A cover's two controls beyond the toggle. `positionable` is the
+   * `position` control, which a long press sweeps the way it sweeps a lamp's
+   * brightness; `stoppable` is `stop`, which a tap spends while the blind is
+   * travelling. Both may be absent — a blind that only opens and closes
+   * carries neither — and a card then behaves exactly as it did before this
+   * build learned them. No bounds travel with either: a position is a
+   * percentage by definition, so 0 and 100 are the range in every house. */
+  bool positionable;
+  bool stoppable;
   /* The catalog identifier of the picture this element's cards draw, or
    * empty when the user chose none and the domain decides. It arrives in the
    * `entities` block beside the name, because which picture a lamp wears is
@@ -211,6 +223,20 @@ struct Entry {
    * unit arrives with the same poll, as the entity's `unit_of_measurement`
    * attribute. Empty until Home Assistant has answered once. */
   std::string sensor_unit;
+  /* How far open a cover is, 0 shut and 100 fully open, from the same poll
+   * as `state`. NAN until Home Assistant has answered once and NAN for good
+   * on a blind that reports no position — every one that merely opens and
+   * closes — which is why a card checks it rather than printing it: a
+   * fabricated percentage under a finger that moves nothing is worse than
+   * no percentage at all.
+   *
+   * It is also where a long-press sweep leaves the value, exactly as
+   * `setpoint` is, and for the same reason: a blind reports the position it
+   * has reached, not the one the finger is heading for, and the number is
+   * sent to Home Assistant once, on release. A blind travels for seconds
+   * against a motor; a call per sweep tick would ask it to change its mind
+   * ten times a second. */
+  float position;
   /* The daily forecast behind a weather block: up to FORECAST_DAYS days
    * after today, each a weekday and a high, with a low of NAN where none
    * was reported. Empty until a forecast poll has answered once; drawn only
@@ -224,8 +250,8 @@ struct Entry {
    * kept, for the same reason — a light reports the brightness it reached,
    * not the one the finger is heading for. */
   float pct;
-  /* Which way a sweep is going, shared by brightness and by the setpoint:
-   * only one card can be under a finger. */
+  /* Which way a sweep is going, shared by brightness, by the setpoint and by
+   * a cover's position: only one card can be under a finger. */
   int8_t direction;
 };
 
@@ -285,6 +311,15 @@ bool entry_is_on(const Entry &entry);
  * or a sensor block. A tap on one acts on nothing, exactly like the T560
  * panel — it never shows a pressed state and never calls a service. */
 bool entry_is_reading(const Entry &entry);
+/* Whether this element is travelling under its own power right now: a cover
+ * Home Assistant reports as `opening` or `closing`, and nothing else — no
+ * other domain here has a state that means "on its way". It is a question of
+ * its own rather than a test spelled out at each call site because two
+ * things ask it and they must agree: the tap, which becomes a stop while the
+ * answer is yes, and the reading, which says so on the card. A person must
+ * never be shown a blind that says OPENING and stopped by a tap that
+ * toggled. */
+bool entry_is_moving(const Entry &entry);
 /* One forecast row as a card writes it ("Sat 22°/14°", or the high alone
  * where no low was reported). Empty when the card holds no such day. */
 std::string forecast_text(const Entry &entry, uint8_t day);
@@ -300,9 +335,11 @@ std::string weather_sub(const Entry &entry);
  * switch, because "on" is the whole of what the person came to see there;
  * the temperature the room is at and, while the thermostat is running, the
  * setpoint after it on a thermostat, which is the order a thermostat is
- * read in; OPEN/CLOSED on a cover; the condition and how warm it is on a
- * weather block, with the humidity where one is reported; the value with
- * its unit on a sensor block.
+ * read in; what a cover is doing and how far open it is, as `OPEN 40%`,
+ * `OPENING 40%` or `CLOSED` — the word first because it is true of every
+ * blind and the percentage second because it is not; the condition and how
+ * warm it is on a weather block, with the humidity where one is reported;
+ * the value with its unit on a sensor block.
  *
  * Empty means "there is nothing to say", which includes a thermostat that is
  * off and reports no room temperature, and the caller **writes** that empty
@@ -571,6 +608,32 @@ class MediaControllerGrid final : public AsyncWebHandler, public Component {
    * about the card, not a card that is off. Returns whether anything
    * actually moved, which is what decides a repaint. */
   bool apply_room_states(const std::string &room_states);
+  /* Which card is under a finger, and whether one is.
+   *
+   * A long press sweeps a value that Home Assistant also reports: the
+   * setpoint of a thermostat, the position of a cover. The config poll runs
+   * once a second whatever is on screen, so without this the poll would
+   * write Home Assistant's number back over the one the finger is choosing —
+   * every second on a thermostat, and on a *travelling* blind every second
+   * with a different value, because `current_position` moves while the motor
+   * runs. The card would then fight the finger.
+   *
+   * So the poll leaves the swept value of the held card alone and takes
+   * everything else from it, including the state itself: a blind that
+   * reaches its end stop mid-press must still be allowed to say CLOSED. The
+   * finger releases, the value is sent once, and the poll after that is
+   * authoritative again.
+   *
+   * "Nothing is held" is a flag of its own rather than a reserved rid,
+   * because there is no rid to reserve: a rid is a 32-bit draw rendered as
+   * eight hex characters, `00000000` is one of the values it can take, and a
+   * build that spelled "none" that way would pin that one card's reading for
+   * the life of the installation. */
+  void hold_card(uint32_t rid) {
+    this->held_rid_ = rid;
+    this->holding_ = true;
+  }
+  void release_card() { this->holding_ = false; }
   /* The body of one `weather.get_forecasts` request for the drawn weather
    * entities, at most two: a day-by-day answer is kilobytes, and the
    * response buffer is not the place to find that out. Empty when no
@@ -646,6 +709,11 @@ class MediaControllerGrid final : public AsyncWebHandler, public Component {
   std::vector<Entry> entries_;
   std::vector<Card> cards_;
   ESPPreferenceObject pref_;
+  /* The card a finger is on, for hold_card above. Written and read on the
+   * main loop only — the touch handler and the poll are both on it — so they
+   * need none of the locking the server task's fields do. */
+  uint32_t held_rid_{0};
+  bool holding_{false};
 
   /* The catalog Home Assistant publishes, and the pictures downloaded from
    * it. Both are read by the server task and written by the main loop, so

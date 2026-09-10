@@ -40,7 +40,7 @@ substitutions:
   # an IP address if .local names are unreliable on your network.
   ha_url: "http://homeassistant.local:8123"
 
-  firmware_version: "0.6.19"
+  firmware_version: "0.6.20"
 
   # The version of docs/CONTRACT.md this firmware implements. firmware_version
   # says when this build shipped; this says what it understands, and it is the
@@ -1376,6 +1376,66 @@ script:
               "\",\"temperature\":" + buf + "}");
       # -- Same reason as a toggle: the card must not wait for the next
       # -- config poll to show what the person just asked for. --
+      - delay: 400ms
+      - script.execute: ui_load_room_config
+
+  # -- A cover's position, the `position` control of contract version 7.
+  # --
+  # -- Called once on release, for the thermostat's reason and one of its
+  # -- own: a blind is a motor on a mechanism, and every intermediate
+  # -- percentage of a sweep would be an instruction to set off towards a
+  # -- place the finger has already left. The value swept during the press
+  # -- lives in the grid component and only this sends it.
+  # --
+  # -- `cover.set_cover_position` rather than the `homeassistant` domain a
+  # -- toggle goes through: there is no domain-agnostic service for this one,
+  # -- and the entity prefix is checked for the same reason the two above
+  # -- check theirs — the entity comes from the payload, and a service is
+  # -- named for a domain that has to match it. --
+  - id: cmd_entity_set_position
+    mode: parallel
+    max_runs: 4
+    parameters:
+      entity: string
+      pct: int
+    then:
+      - lambda: |-
+          if (entity.rfind("cover.", 0) != 0) return;
+          // -- A position is a percentage by definition, and Home Assistant
+          //    refuses one outside the range rather than clamping it. The
+          //    sweep cannot leave it, but this is the one place the number
+          //    turns into a service call, so it is the place to be sure. --
+          int value = pct < 0 ? 0 : (pct > 100 ? 100 : pct);
+          char buf[8];
+          snprintf(buf, sizeof(buf), "%d", value);
+          id(ha_action)->execute(
+              std::string("cover"), std::string("set_cover_position"),
+              "{\"entity_id\":\"" + entity +
+              "\",\"position\":" + buf + "}");
+      - delay: 400ms
+      - script.execute: ui_load_room_config
+
+  # -- Stop a travelling blind, the `stop` control of the same version. It is
+  # -- what a tap means while the card says OPENING or CLOSING: a person
+  # -- reaching for a blind that is already moving means "stop there", and
+  # -- `homeassistant.toggle` on one would send it to the other end instead.
+  # --
+  # -- The refresh after it matters more here than anywhere else. A stop is
+  # -- the one action whose result is a position nobody chose, so the card
+  # -- has nothing to predict and everything to read back: the blind reports
+  # -- `open` with whatever percentage the motor came to rest at, and until
+  # -- that arrives the card is still saying CLOSING. --
+  - id: cmd_entity_stop_cover
+    mode: parallel
+    max_runs: 4
+    parameters:
+      entity: string
+    then:
+      - lambda: |-
+          if (entity.rfind("cover.", 0) != 0) return;
+          id(ha_action)->execute(
+              std::string("cover"), std::string("stop_cover"),
+              "{\"entity_id\":\"" + entity + "\"}");
       - delay: 400ms
       - script.execute: ui_load_room_config
 
@@ -2792,7 +2852,8 @@ script:
             bool actionable =
                 !is_reading &&
                 (entry == nullptr || entry->togglable || entry->dimmable ||
-                 entry->settable_temp);
+                 entry->settable_temp || entry->positionable ||
+                 entry->stoppable);
             if (actionable) {
               lv_obj_add_flag(tile, LV_OBJ_FLAG_CLICKABLE);
             }
@@ -3140,6 +3201,15 @@ script:
                 case LV_EVENT_PRESSED:
                   id(room_card_long_active) = false;
                   id(room_card_swept) = false;
+                  // -- The poll runs once a second whatever is on screen, and
+                  //    two of the values it carries are values a long press
+                  //    sweeps. Naming the held card stops the poll writing
+                  //    Home Assistant's number back over the one the finger
+                  //    is choosing; see hold_card in
+                  //    media_controller_grid.h. It matters most on a blind,
+                  //    whose current_position genuinely moves while the
+                  //    motor runs. --
+                  id(room_grid)->hold_card(placed[index].rid);
                   break;
                 case LV_EVENT_LONG_PRESSED:
                   id(room_card_long_active) = true;
@@ -3147,11 +3217,12 @@ script:
                 case LV_EVENT_LONG_PRESSED_REPEAT: {
                   // -- This device has one gesture beyond a tap, and each
                   //    card type spends it on the one value it has: a light
-                  //    on its brightness, a thermostat on its setpoint. The
-                  //    sweep runs up, turns round at the top and comes back
-                  //    down, exactly as the four fixed buttons do; the value
-                  //    is local because a light reports the brightness it
-                  //    reached, not the one the finger is heading for. --
+                  //    on its brightness, a thermostat on its setpoint, a
+                  //    blind on how far open it is. The sweep runs up, turns
+                  //    round at the top and comes back down, exactly as the
+                  //    four fixed buttons do; the value is local because a
+                  //    light reports the brightness it reached, not the one
+                  //    the finger is heading for. --
                   if (entry->dimmable) {
                     float pct = entry->pct + entry->direction * 4.0f;
                     if (pct >= 100.0f) { pct = 100.0f; entry->direction = -1; }
@@ -3161,32 +3232,62 @@ script:
                                                        (int) pct);
                     break;
                   }
-                  // -- Not while it is off. The card of an off thermostat
-                  //    shows the room temperature and not the setpoint,
-                  //    because it is heading nowhere, so a sweep there would
-                  //    move a number with nothing on screen changing — the
-                  //    one thing a sweep must never do. Turning it on is a
-                  //    tap, and the sweep is there the moment it runs. --
-                  if (!entry->settable_temp ||
-                      !media_controller_grid::entry_is_on(*entry)) break;
 
-                  // -- Nothing is sent from here. The setpoint moves on the
-                  //    device and goes to Home Assistant once, on release:
-                  //    see cmd_entity_set_temperature for why a thermostat
-                  //    is not swept the way a lamp is. --
-                  float target = std::isnan(entry->setpoint)
-                                     ? (entry->min_temp + entry->max_temp) / 2.0f
-                                     : entry->setpoint;
-                  target += entry->direction * entry->temp_step;
-                  if (target >= entry->max_temp) {
-                    target = entry->max_temp;
-                    entry->direction = -1;
+                  // -- The two values that are **not** sent per tick. A lamp
+                  //    above answers on mains wiring and can afford a call
+                  //    every tick; a radiator valve on a Zigbee mesh and a
+                  //    motor on a blind cannot, so both of these move on the
+                  //    device and go to Home Assistant once, on release. See
+                  //    cmd_entity_set_temperature and
+                  //    cmd_entity_set_position. --
+                  bool swept = false;
+                  if (entry->positionable) {
+                    // -- A blind that reports no position starts the sweep
+                    //    from the middle, the way an unknown setpoint does:
+                    //    there is no reading to move from, and half open is
+                    //    the one guess that is never more than half wrong.
+                    //    Four percent a tick is the lamp's step, and the
+                    //    range is the definition of a position rather than
+                    //    anything the payload carries — 0 is shut and 100 is
+                    //    fully open in every house. --
+                    float target =
+                        std::isnan(entry->position) ? 50.0f : entry->position;
+                    target += entry->direction * 4.0f;
+                    if (target >= 100.0f) {
+                      target = 100.0f;
+                      entry->direction = -1;
+                    }
+                    if (target <= 0.0f) {
+                      target = 0.0f;
+                      entry->direction = 1;
+                    }
+                    entry->position = target;
+                    swept = true;
+                  } else if (entry->settable_temp &&
+                             media_controller_grid::entry_is_on(*entry)) {
+                    // -- Not while it is off. The card of an off thermostat
+                    //    shows the room temperature and not the setpoint,
+                    //    because it is heading nowhere, so a sweep there
+                    //    would move a number with nothing on screen changing
+                    //    — the one thing a sweep must never do. Turning it
+                    //    on is a tap, and the sweep is there the moment it
+                    //    runs. --
+                    float target = std::isnan(entry->setpoint)
+                                       ? (entry->min_temp + entry->max_temp) / 2.0f
+                                       : entry->setpoint;
+                    target += entry->direction * entry->temp_step;
+                    if (target >= entry->max_temp) {
+                      target = entry->max_temp;
+                      entry->direction = -1;
+                    }
+                    if (target <= entry->min_temp) {
+                      target = entry->min_temp;
+                      entry->direction = 1;
+                    }
+                    entry->setpoint = target;
+                    swept = true;
                   }
-                  if (target <= entry->min_temp) {
-                    target = entry->min_temp;
-                    entry->direction = 1;
-                  }
-                  entry->setpoint = target;
+                  if (!swept) break;
                   id(room_card_swept) = true;
 
                   // -- Only this card is repainted, not the page: a full
@@ -3203,29 +3304,69 @@ script:
                   }
                   break;
                 }
+                case LV_EVENT_PRESS_LOST:
+                  // -- The press went somewhere else: onto another tile, or
+                  //    into a scroll that took it over. No more sweep ticks
+                  //    will reach this card, so the poll owns its value
+                  //    again from here.
+                  // --
+                  //    Only the hold is released. `room_card_swept` is left
+                  //    exactly as it was, because RELEASED is still to come
+                  //    and it is the one that decides: a finger that slides
+                  //    off the card still ends the sweep and still means it,
+                  //    which is the rule the setpoint has always been
+                  //    committed under. Clearing it here would quietly
+                  //    change that for both. --
+                  id(room_grid)->release_card();
+                  break;
                 case LV_EVENT_RELEASED:
-                  // -- Where a setpoint sweep is committed. RELEASED and not
-                  //    CLICKED, because a finger that slides off the card
-                  //    still ends the sweep and still means it; LVGL sends
-                  //    RELEASED in both cases and CLICKED in only one. --
-                  if (id(room_card_swept) && !std::isnan(entry->setpoint)) {
-                    id(cmd_entity_set_temperature)->execute(entry->entity,
-                                                            entry->setpoint);
+                  // -- Where a sweep is committed. RELEASED and not CLICKED,
+                  //    because a finger that slides off the card still ends
+                  //    the sweep and still means it; LVGL sends RELEASED in
+                  //    both cases and CLICKED in only one. --
+                  if (id(room_card_swept)) {
+                    if (entry->positionable && !std::isnan(entry->position)) {
+                      id(cmd_entity_set_position)->execute(
+                          entry->entity, (int) (entry->position + 0.5f));
+                    } else if (entry->settable_temp &&
+                               !std::isnan(entry->setpoint)) {
+                      id(cmd_entity_set_temperature)->execute(entry->entity,
+                                                              entry->setpoint);
+                    }
                   }
                   id(room_card_swept) = false;
+                  // -- The finger is off, so the poll owns the value again.
+                  //    The call above has not been answered yet and the
+                  //    refresh behind it is 400 ms away; until it lands the
+                  //    card shows what Home Assistant last reported, which is
+                  //    where the blind actually is. --
+                  id(room_grid)->release_card();
                   break;
                 case LV_EVENT_CLICKED:
                   // -- A release that ended a sweep, or one that happened
                   // -- while the page was already sliding away, is not a
                   // -- tap. Neither is a tap on an element Home Assistant
-                  // -- offered no `toggle` for: a thermostat that cannot be
+                  // -- offered no action for: a thermostat that cannot be
                   // -- turned off is a card that reads rather than acts. A
-                  // -- reading never toggles even if one were offered, the
-                  // -- way the T560 panel never acts on a weather block. --
+                  // -- reading never acts even if one were offered, the way
+                  // -- the T560 panel never acts on a weather block. --
                   if (!id(room_card_long_active) &&
-                      !id(switches_swipe_active) && entry->togglable &&
+                      !id(switches_swipe_active) &&
                       !media_controller_grid::entry_is_reading(*entry)) {
-                    id(cmd_entity_toggle)->execute(entry->entity);
+                    // -- A blind that is already travelling is stopped, not
+                    //    toggled. Somebody reaching for a moving blind means
+                    //    "stop there"; `homeassistant.toggle` on one would
+                    //    send it to the far end instead, which is the
+                    //    opposite of what the hand was doing. The card says
+                    //    OPENING or CLOSING while this is what a tap does,
+                    //    so nobody has to guess which of the two they are
+                    //    about to get. --
+                    if (entry->stoppable &&
+                        media_controller_grid::entry_is_moving(*entry)) {
+                      id(cmd_entity_stop_cover)->execute(entry->entity);
+                    } else if (entry->togglable) {
+                      id(cmd_entity_toggle)->execute(entry->entity);
+                    }
                   }
                   id(room_card_long_active) = false;
                   break;

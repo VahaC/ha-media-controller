@@ -252,6 +252,15 @@ T560 = ClientProfile(
 # that sweeps a value. It spends that gesture on brightness for a light and on
 # the setpoint for a thermostat, and has nothing left to set a colour
 # temperature with.
+#
+# A cover spends the same two gestures differently, which is why `position`
+# and `stop` are here rather than stripped as they were until now: the long
+# press is free on a blind — there is no brightness and no setpoint to sweep
+# — so it sweeps the position, and the tap is free while the blind is
+# travelling, because `cover.toggle` on a moving cover is not what the person
+# reaching for it means. Neither costs the gesture a light or a thermostat
+# already spends, which is the whole reason colour temperature still cannot
+# be here.
 ESP32_S3_PANEL = ClientProfile(
     slug="esp32_s3_panel",
     rotations=(0, 90, 180, 270),
@@ -268,6 +277,8 @@ ESP32_S3_PANEL = ClientProfile(
         CONTROL_TOGGLE,
         CONTROL_BRIGHTNESS,
         CONTROL_TARGET_TEMPERATURE,
+        CONTROL_POSITION,
+        CONTROL_STOP,
     ),
 )
 

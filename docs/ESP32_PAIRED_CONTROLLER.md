@@ -867,14 +867,37 @@ reports the outcome on `GET /api/entities`.
 | `light` | toggle | sweeps brightness | icon and a tap |
 | `switch` | toggle | — | icon and a tap |
 | `climate` | toggle | sweeps the setpoint | icon and a tap |
+| `cover` | toggle while still, stop while moving | sweeps the position | icon and a tap |
 | `weather` | — (a reading, never a button) | — | value, name where it fits |
 | `sensor` | — (a reading) | — | value, name where it fits |
 
-A `cover` element is drawn as a card with no action, because no cover card is
-written for it **here** yet. The T560 draws the cover card defined by contract
-version 7; this firmware does not, and a `cover` element reaches it carrying
-controls it ignores. That client-specific subset is permitted and does not
-make the firmware contract-incompatible. See **Registry entries** in
+A blind is the one card type whose two gestures are not the ones every other
+card spends, and that is why it has both of them:
+
+- **the long press is free.** A blind has no brightness and no setpoint, so
+  the sweep that a lamp and a thermostat spend elsewhere moves how far open
+  it is, from 0 to 100 and back. The number moves on the device and reaches
+  Home Assistant **once**, when the finger comes off, for the reason a
+  thermostat's setpoint does and one of its own: a blind is a motor on a
+  mechanism, and every intermediate percentage would be an instruction to set
+  off towards a place the finger has already left. A blind that reports no
+  position starts from the middle;
+- **the tap changes meaning while the blind is travelling.** Somebody
+  reaching for a moving blind means "stop there"; `homeassistant.toggle` on
+  one would send it to the far end instead. The card says `OPENING` or
+  `CLOSING` for exactly as long as that is what a tap does, so nobody has to
+  guess which of the two they are about to get.
+
+Neither is offered unless Home Assistant said the entity has it. A blind that
+only opens and closes — the commonest there is — carries `toggle` alone and
+behaves exactly as it did before this firmware learned the other two: it
+toggles, and it says `OPEN` or `CLOSED` with no percentage after it, because
+inventing one would put a number under a finger that moves nothing.
+
+The percentage comes from `current_position`, which travels beside the cover's
+state in the `room_states` block of the config sensor. It is not a capability
+and never was; the T560 reads the same number from the entity itself, and this
+panel cannot, which is what that block exists for. See **Room states** in
 `docs/CONTRACT.md`.
 
 A card two cells square or larger carries its name; a thermostat carries a
@@ -1001,6 +1024,35 @@ ESPHome as it always was.
    one shows state and toggles. Mix a `switch` and a `light` to prove the
    domain is read at runtime; a long press must dim the light and do nothing
    to the switch.
+7a. **The cover card, on a real blind that takes seconds to travel.** All of
+    it needs a motor with a travel time; nothing below can be judged on an
+    instant-acting entity.
+    - A tap on a still blind opens or closes it, and the card follows through
+      `OPENING` or `CLOSING` to `OPEN` or `CLOSED` with the percentage after
+      it. Compare that percentage with the entity's own `current_position` in
+      **Developer tools → States** while it moves.
+    - A tap **while it is moving** stops it, and the blind stays where it is
+      rather than continuing to either end. Try it on a blind whose entity
+      reports no `STOP` feature as well: that card must toggle, because it
+      was never offered a stop.
+    - A long press sweeps the percentage on the card, up and back down. Watch
+      the Home Assistant logbook throughout the press: there must be
+      **exactly one** `set_cover_position` call, on release, and none during
+      the sweep.
+    - Sweep a card **while the blind is already travelling**. The number under
+      the finger must not jump: the once-a-second poll is carrying a different
+      `current_position` every second, and the card is meant to ignore it
+      until the finger comes off. This is the step that would catch
+      `hold_card` being wired up wrongly.
+    - Move the blind from Home Assistant with nobody touching the panel; the
+      card follows within a poll.
+    - Add a blind that only opens and closes. It must show `OPEN` or `CLOSED`
+      with **no percentage**, toggle on a tap, and ignore a long press.
+    - Make the cover entity unavailable. The card must not read as closed:
+      it takes the unavailable border and drops its reading, like every other
+      card type.
+    - Judge touch responsiveness and watch `Loop Time` during a sweep, and
+      confirm free heap is unchanged after a few minutes of sweeping.
 8. Fill the registry to its limit of 64 elements, with Cyrillic names, and
    confirm the config payload is not cut off: the cards must all appear and
    the log must show `The registry now carries 64 element(s)`. A truncated

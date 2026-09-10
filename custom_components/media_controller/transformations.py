@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 import json
+import math
 from typing import Any
 import zlib
 
@@ -129,6 +130,30 @@ def room_state_number(value: Any) -> float | int | None:
     return None
 
 
+def room_state_position(value: Any) -> int | None:
+    """Return a cover's position as a whole percentage, or None.
+
+    Unlike every other room-state reading this one is bounded by its own
+    definition: 0 is shut and 100 is fully open, in every house and every
+    unit system. It is rounded to a whole percent and clamped to that range
+    rather than passed through, because a client draws it on a control whose
+    travel is the range itself — a blind reporting 120 would otherwise be
+    drawn off the end of its own slider.
+
+    A cover that reports no position at all — every blind that only opens
+    and closes — returns None, which travels as JSON null. That is the whole
+    of what "missing" may become: inventing a percentage for a cover that
+    reports none would put a number under a finger that moves nothing.
+    """
+    if isinstance(value, bool):
+        return None
+    if not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, float) and math.isnan(value):
+        return None
+    return max(0, min(100, int(round(value))))
+
+
 def room_state_unit(value: Any) -> str | None:
     """Return a sensor unit for a room-state reading, or None.
 
@@ -164,6 +189,12 @@ def room_state_values(
     safe_attributes = attributes or {}
     if state is None:
         return ["unknown"]
+    if domain == "cover":
+        # The state says `open` or `closed` and cannot say how far. A client
+        # that draws a position control has to be told the number it moves,
+        # and the one client that reads this block is the one that cannot ask
+        # for the attribute itself. A cover that reports none sends null.
+        return [state, room_state_position(safe_attributes.get("current_position"))]
     if domain == "climate":
         return [
             state,

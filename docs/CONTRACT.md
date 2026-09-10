@@ -698,17 +698,19 @@ Each control is claimed only on evidence, and any of them may be absent:
   no position at all.
 
 How far open the thing currently is, `current_position`, is **state and not a
-capability**: it is an ordinary attribute of the entity a client already
-polls, it changes while the cover is simply being used, and it is therefore
-not in the payload. A client reads it the way it already reads a lamp's
-brightness or a room's temperature.
+capability**: it is an ordinary attribute of the entity, it changes while the
+cover is simply being used, and it is therefore not in the payload. A client
+that can ask Home Assistant for the entity reads it the way it already reads
+a lamp's brightness or a room's temperature; a client that cannot reads it
+out of **Room states**, where it travels beside the cover's state for exactly
+the reason that block exists.
 
 What a client draws is its own business, and the two panels differ:
 
 | Client | Tap | Beyond a tap |
 | --- | --- | --- |
 | T560 panel | `toggle` | The percentage on the sheet a light's brightness uses, and a STOP button beside it |
-| ESP32-S3 panel | `toggle` | Nothing; `position` and `stop` are stripped by its panel profile, so the card reads OPEN/CLOSED and a tap toggles |
+| ESP32-S3 panel | `toggle` while the cover is still, `stop` while it is moving | A long press sweeps `position`, sent once on release |
 
 A card whose element gives no `position` still draws and still toggles, and a
 card that gives none of the three is drawn as a reading rather than a
@@ -1837,15 +1839,22 @@ into the config sensor beside the registry:
     "a3f1c92d": ["on"],
     "7c41b8e0": ["heat", 21.5, 22.0],
     "9d2e7a41": ["sunny", 15.5, 62],
-    "b71f0c2e": ["21.5", "°C"]
+    "b71f0c2e": ["21.5", "°C"],
+    "3f9a01cd": ["opening", 40]
   }
 }
 ```
 
 One small array per element, keyed by `rid`:
 
-- a light, a switch and a cover travel as the bare state — `on`, `open`,
-  `unavailable` — because for them the state is the whole of the content;
+- a light and a switch travel as the bare state — `on`, `off`, `unavailable`
+  — because for them the state is the whole of the content;
+- a cover travels as the state and `current_position`, the percentage open
+  it reports. The state alone says `open` or `closed` and cannot say how far;
+  a client that draws a position control has to be told the number it is
+  moving, and cannot ask for the attribute itself for the same reason the
+  block exists at all. A cover that reports no position sends JSON null in
+  its place, which is the case for every blind that only opens and closes;
 - a thermostat travels as the mode, the room temperature and the setpoint;
 - a weather block as the condition, the temperature and the humidity;
 - a sensor block as the value and the unit;
@@ -1875,7 +1884,13 @@ Rules a client must follow:
 - a client that has no use for the block ignores it. The T560 panel reads
   per-entity state and ignores the whole of it; an older ESP32 panel reads
   nothing and behaves exactly as it did before the block existed, which is
-  why this addition moves no version number.
+  why this addition moves no version number;
+- **an array may grow, and a client reads only the positions it knows.** The
+  cover's `current_position` was added after the block shipped, and a panel
+  built before it reads the state out of position 0 and never looks at
+  position 1. That is what makes a reading addable to a domain without
+  moving the contract version: a position a client does not read costs it
+  nothing, and one it expects is either there or JSON null.
 
 ## Direct Music Assistant state
 

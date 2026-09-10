@@ -127,9 +127,12 @@ controls. `controls` is the closed list `toggle`, `brightness`, `color_temp`,
 `switch`, `climate` and `cover` resolve to something in it and `weather` and
 `sensor` are carried with an empty list. A client ignores an element whose
 domain it cannot draw — the same rule that already covers an unknown control
-name. The cover card is available on the T560 and not yet on the paired ESP32;
-both clients still speak contract version 7 and neither breaks on the other's
-payload.
+name. Both panels now draw all four cards, and they were written one client at
+a time: the cover card arrived on the T560 first and on the paired ESP32
+afterwards, and through the whole of that gap both clients spoke the same
+contract version and neither broke on the other's payload. That gap is the
+rule working, not the rule being bent — see **Registry entries** in
+[CONTRACT.md](CONTRACT.md).
 
 ### Why proxies existed at all — history
 
