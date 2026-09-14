@@ -121,6 +121,23 @@ esp32:
   flash_size: 16MB
   framework:
     type: esp-idf
+    # -- The data cache is what the display's bounce-buffer refill reads
+    # -- through. Every ten lines an interrupt copies 9600 bytes of frame
+    # -- buffer out of PSRAM, and the ESP-IDF driver preloads the next chunk
+    # -- into the cache after each copy. The defaults are 32 kB with 32-byte
+    # -- lines. A 64-byte line halves the number of PSRAM bursts a cold copy
+    # -- costs, and 64 kB is room for the preloaded chunk to survive a
+    # -- repaint streaming through the same cache -- which is exactly when
+    # -- the refill misses its deadline and the picture twitches. See
+    # -- pclk_frequency in the display block for the other half of this.
+    # --
+    # -- The price is 32 kB of internal SRAM, taken from the heap the
+    # -- interface runs in; read the heap diagnostics after touching this.
+    # -- Neither option moves the partition table, so an update carries
+    # -- them to a panel already on a wall. --
+    sdkconfig_options:
+      CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
+      CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
 
 psram:
   mode: octal
@@ -223,18 +240,29 @@ display:
     # -- takes what that lands on; at 8 MHz the division was exact and the
     # -- panel measured 30.4 Hz against 30.4 calculated.
     # --
-    # -- Raised back to 12 on measurement rather than on hope. At 8 the panel
-    # -- ran for hours at zero desyncs with 160 us of frame jitter against a
-    # -- 647 us back porch -- a fourfold margin, and nothing else left to
-    # -- spend it on. Twelve halves both sides of that: the back porch becomes
-    # -- 432 us and the bounce refill has to finish 9600 bytes inside it,
-    # -- which is on the order of 300. The margin is real but it is no longer
-    # -- generous.
+    # -- Eight, and back from twelve on a symptom rather than on a counter.
+    # -- At 8 the panel ran for hours at zero desyncs with 160 us of frame
+    # -- jitter against a 647 us back porch, so it was raised to 12 for the
+    # -- refresh rate. Twelve also read zero -- for as long as nobody touched
+    # -- the glass -- and twitched on every button press. Those are the same
+    # -- margin measured in two states. Between repaints the refill copies
+    # -- its 9600 bytes out of the cache, because the driver preloads the
+    # -- next chunk after each one, and that takes tens of microseconds
+    # -- against a 432 us deadline. A repaint is different: the LVGL draw
+    # -- buffer is in PSRAM too, so rendering and the flush behind it stream
+    # -- through the data cache and evict the preload, and the refill goes
+    # -- back to reading PSRAM cold -- on the order of 300 us -- while also
+    # -- writing back the dirty lines the repaint left. That is over 432 and
+    # -- it is not over 648, which is what eight buys. A wider bounce buffer
+    # -- does not help with this, and it was tried: the deadline and the copy
+    # -- grow together, and the shortfall is proportional to both.
     # --
-    # -- So this is the one number in the block to revisit if `Display
-    # -- desyncs` stops reading zero. It is the first thing to lower, before
-    # -- anything else here is touched. --
-    pclk_frequency: 12MHz
+    # -- The cache options in the esp32 block are the other half of the same
+    # -- fix: a longer cache line makes the cold copy faster, and a larger
+    # -- cache makes the preload likelier to survive a repaint. Twelve is
+    # -- worth trying again once `Display desyncs` has read zero through a
+    # -- session of button presses with them in place. --
+    pclk_frequency: 8MHz
     # -- Ten is the stock value and it is back deliberately. Forty was tried,
     # -- on the theory that a wider refill deadline would cover whichever
     # -- stall was to blame without having to identify it. It changed nothing
