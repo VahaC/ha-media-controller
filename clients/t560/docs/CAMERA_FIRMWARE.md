@@ -1,5 +1,13 @@
 # Firmware requirements for camera motion detection
 
+**Status: implemented.** The kernel package that meets this specification,
+a prebuilt boot image and the flashing procedure are in
+[../firmware/](../firmware/README.md). Two details differ from the plan below:
+the sensor is started by a minimal in-kernel driver instead of a device-tree
+subdevice, and the driver refuses `GREY` (its DCAM YUV400 mode was never
+verified), so the detector negotiates `NV21` and the acceptance test reports
+`capture works: NV21 320x240` with a 115200-byte first frame.
+
 This document lists what the postmarketOS firmware of the SM-T560 must provide
 so that [t560-motion-detector.py](../scripts/t560-motion-detector.py) can
 detect motion. The daemon itself is finished and needs no change: it uses the

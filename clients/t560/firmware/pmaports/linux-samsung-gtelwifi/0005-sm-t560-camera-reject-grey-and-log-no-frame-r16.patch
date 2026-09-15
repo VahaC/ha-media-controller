@@ -1,0 +1,40 @@
+diff --git a/drivers/media/sprd_dcam/common/dcam_v4l2.c b/drivers/media/sprd_dcam/common/dcam_v4l2.c
+--- a/drivers/media/sprd_dcam/common/dcam_v4l2.c
++++ b/drivers/media/sprd_dcam/common/dcam_v4l2.c
+@@ -699,6 +699,12 @@ LOCAL int sprd_v4l2_check_path1_cap(uint32_t fourcc,
+ 	temph = path->in_rect.h;
+ 	info->img_deci.x_factor = 0;
+ 	f->fmt.pix.sizeimage = 0;
++#if defined(CONFIG_MACH_GTELWIFI)
++	if (V4L2_PIX_FMT_GREY == fourcc) {
++		printk("camera-r16: rejecting unverified GREY/DCAM_YUV400 output; use a YUV420 format\n");
++		return -EINVAL;
++	}
++#endif
+ 	/*app should fill in this field(fmt.pix.priv) to set the base index of frame buffer,
+ 	and lately this field will return the flag whether ISP is needed for this work path*/
+ 	switch (fourcc) {
+@@ -887,6 +893,10 @@ LOCAL int sprd_v4l2_check_path1_cap(uint32_t fourcc,
+ 	path->out_size.h = f->fmt.pix.height;
+ 	path->is_work = 1;
+ 	sprd_v4l2_fill_pix_layout(&f->fmt.pix);
++#if defined(CONFIG_MACH_GTELWIFI)
++	printk("camera-r16: selected path1 fourcc=0x%08x size=%ux%u dcam_format=%u\n",
++		fourcc, path->out_size.w, path->out_size.h, path->out_fmt);
++#endif
+ 	return 0;
+ }
+ LOCAL int sprd_v4l2_check_path2_cap(uint32_t fourcc,
+@@ -2825,6 +2835,12 @@ LOCAL int sprd_vb2_stop_streaming(struct vb2_queue *queue)
+ 	struct dcam_dev *dev = vb2_get_drv_priv(queue);
+ 	int ret;
+ 
++#if defined(CONFIG_MACH_GTELWIFI)
++	printk("camera-r16: stopping stream after %u completed frame(s)\n",
++		dev->vb2_sequence);
++	if (!dev->vb2_sequence)
++		sprd_v4l2_print_reg();
++#endif
+ 	ret = sprd_v4l2_stop_hardware(dev);
+ #if defined(CONFIG_MACH_GTELWIFI)
+ 	v4l2_subdev_call(dev->sensor_sd, video, s_stream, 0);

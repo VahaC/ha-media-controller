@@ -4,10 +4,16 @@ The UI process does not perform camera analysis. On this ARMv7 tablet a
 separate low-priority daemon is safer: a camera failure cannot freeze the music
 controls, and the daemon can be stopped when the camera is not needed.
 
-## Measured result on the SM-T560: the built-in camera cannot be used
+**Update, September 2026:** the built-in camera works with the patched kernel
+shipped in [../firmware/](../firmware/README.md). The section below describes
+the stock postmarketOS kernel and stays true for it; with the camera kernel
+the probe answers `capture works: NV21 320x240` and motion detection runs on
+the tablet itself.
+
+## Measured result on the stock kernel: the built-in camera cannot be used
 
 The detection daemon is complete and tested, but the camera of this tablet
-cannot deliver frames to any application under the postmarketOS 3.10.17
+cannot deliver frames to any application under the stock postmarketOS 3.10.17
 kernel. Measured on the device with `t560-motion-detector.py --probe`:
 
 ```text

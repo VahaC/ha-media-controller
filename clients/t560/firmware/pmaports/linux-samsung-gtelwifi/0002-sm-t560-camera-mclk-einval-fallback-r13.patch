@@ -1,0 +1,67 @@
+diff --git a/drivers/media/sprd_sensor/sensor_drv_k.c b/drivers/media/sprd_sensor/sensor_drv_k.c
+index 071b7cb8..69d3d5ba 100755
+--- a/drivers/media/sprd_sensor/sensor_drv_k.c
++++ b/drivers/media/sprd_sensor/sensor_drv_k.c
+@@ -1071,6 +1071,8 @@ int sensor_k_set_mclk(uint32_t mclk)
+ 	struct clk *clk_parent = NULL;
+ 	struct clk *current_parent;
+ 	int ret;
++	unsigned long target_rate;
++	unsigned long selected_parent_rate;
+ 	char *clk_src_name = NULL;
+ 	uint8_t clk_div;
+ 	SENSOR_CHECK_ZERO(s_p_sensor_mod);
+@@ -1110,32 +1112,46 @@ int sensor_k_set_mclk(uint32_t mclk)
+ 		SENSOR_PRINT("sensor_k_set_mclk : clk_get clk_src_name = %s done\n", clk_src_name);
+ 		current_parent = clk_get_parent(s_p_sensor_mod->ccir_clk);
++		target_rate = mclk * SENOR_CLK_M_VALUE;
++		selected_parent_rate = clk_get_rate(clk_parent);
+ 		SENSOR_PRINT_HIGH("sensor_k_set_mclk : source=%s target_rate=%lu current_parent_rate=%lu selected_parent_rate=%lu\n",
+-			clk_src_name, (unsigned long)(mclk * SENOR_CLK_M_VALUE),
++			clk_src_name, target_rate,
+ 			current_parent ? clk_get_rate(current_parent) : 0,
+-			clk_get_rate(clk_parent));
++			selected_parent_rate);
+ 
+ 		if (current_parent != clk_parent)
+ 		{
+ 			ret = clk_set_parent(s_p_sensor_mod->ccir_clk, clk_parent);
+ 			if (ret)
+ 			{
++				if (ret == -EINVAL &&
++				    !strcmp(clk_src_name, "clk_48m") &&
++				    selected_parent_rate == 48000000 &&
++				    target_rate == 24000000)
++				{
++					SENSOR_PRINT_HIGH("camera-r13: tolerating clk_set_parent(clk_48m) -EINVAL for verified 48 MHz to 24 MHz camera MCLK path\n");
++					ret = 0;
++				}
++				else
++				{
+ 				SENSOR_PRINT_ERR("sensor_k_set_mclk : clock : clk_set_parent(%s) failed: %d\n",
+ 					clk_src_name, ret);
+ 				goto put_parent;
++				}
+ 			}
+-			SENSOR_PRINT("sensor_k_set_mclk : parent changed to %s\n",
+-				clk_src_name);
++			if (!ret)
++				SENSOR_PRINT("sensor_k_set_mclk : continuing with source %s\n",
++					clk_src_name);
+ 		}
+ 		else
+ 		{
+ 			SENSOR_PRINT("sensor_k_set_mclk : parent already %s; skipping clk_set_parent\n",
+ 				clk_src_name);
+ 		}
+ 
+-		ret = clk_set_rate(s_p_sensor_mod->ccir_clk, (mclk * SENOR_CLK_M_VALUE));
++		ret = clk_set_rate(s_p_sensor_mod->ccir_clk, target_rate);
+ 		if (ret)
+ 		{
+ 			SENSOR_PRINT_ERR("sensor_k_set_mclk : clock : clk_set_rate(%lu) failed: %d\n",
+-				(unsigned long)(mclk * SENOR_CLK_M_VALUE), ret);
++				target_rate, ret);
+ 			goto put_parent;
+ 		}
+

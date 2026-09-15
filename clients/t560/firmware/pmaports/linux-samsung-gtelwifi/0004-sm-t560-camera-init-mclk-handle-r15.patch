@@ -1,0 +1,58 @@
+diff --git a/drivers/media/sprd_sensor/sensor_drv_k.c b/drivers/media/sprd_sensor/sensor_drv_k.c
+index 084be2f..63c6189 100755
+--- a/drivers/media/sprd_sensor/sensor_drv_k.c
++++ b/drivers/media/sprd_sensor/sensor_drv_k.c
+@@ -1078,6 +1078,26 @@ int sensor_k_set_mclk(uint32_t mclk)
+ 	uint8_t clk_div;
+ 	SENSOR_CHECK_ZERO(s_p_sensor_mod);
+ 
++	/*
++	 * The direct V4L2 open path powers the sensor without opening the
++	 * legacy sprd_sensor misc device first. Acquire the DT-defined MCLK
++	 * handle lazily so clk_set_parent/rate never receive a NULL clock.
++	 */
++	if (mclk && !s_p_sensor_mod->ccir_clk) {
++		if (!s_sensor_of_node)
++			return -ENODEV;
++		s_p_sensor_mod->ccir_clk = parse_clk(s_sensor_of_node, SENSOR_CLK);
++		if (IS_ERR(s_p_sensor_mod->ccir_clk)) {
++			ret = PTR_ERR(s_p_sensor_mod->ccir_clk);
++			s_p_sensor_mod->ccir_clk = NULL;
++			SENSOR_PRINT_ERR("camera-r15: failed to acquire %s: %d\n",
++				SENSOR_CLK, ret);
++			return ret;
++		}
++		SENSOR_PRINT_HIGH("camera-r15: acquired DT clock %s for direct V4L2 power path\n",
++			SENSOR_CLK);
++	}
++
+ 	SENSOR_PRINT_HIGH("sensor_k_set_mclk : Set mclk org = %d, clk = %d\n", s_p_sensor_mod->sensor_mclk, mclk);
+ 
+ 	if ((0 != mclk) && (s_p_sensor_mod->sensor_mclk != mclk))
+@@ -1123,24 +1143,12 @@ int sensor_k_set_mclk(uint32_t mclk)
+ 			ret = clk_set_parent(s_p_sensor_mod->ccir_clk, clk_parent);
+ 			if (ret)
+ 			{
+-				if (ret == -EINVAL &&
+-				    !strcmp(clk_src_name, "clk_48m") &&
+-				    selected_parent_rate == 48000000 &&
+-				    target_rate == 24000000)
+-				{
+-					SENSOR_PRINT_HIGH("camera-r13: tolerating clk_set_parent(clk_48m) -EINVAL for verified 48 MHz to 24 MHz camera MCLK path\n");
+-					ret = 0;
+-				}
+-				else
+-				{
+ 				SENSOR_PRINT_ERR("sensor_k_set_mclk : clock : clk_set_parent(%s) failed: %d\n",
+ 					clk_src_name, ret);
+ 				goto put_parent;
+-				}
+ 			}
+-			if (!ret)
+-				SENSOR_PRINT("sensor_k_set_mclk : continuing with source %s\n",
+-					clk_src_name);
++			SENSOR_PRINT("sensor_k_set_mclk : parent changed to %s\n",
++				clk_src_name);
+ 		}
+ 		else
+ 		{

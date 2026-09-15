@@ -1,0 +1,91 @@
+# Archived: unmaintained
+# Reference: <https://postmarketos.org/vendorkernel>
+# Kernel config based on: arch/arm/configs/gtelwifi-dt_hw07_defconfig
+
+maintainer=""
+pkgname=linux-samsung-gtelwifi
+pkgver=3.10.17
+pkgrel=20
+pkgdesc="Samsung Galaxy Tab E 9.6 kernel fork"
+arch="armv7"
+_carch="arm"
+_flavor="samsung-gtelwifi"
+url="https://kernel.org"
+license="GPL-2.0-only"
+options="!strip !check !tracedeps pmb:cross-native"
+makedepends="bash bc bison devicepkg-dev flex openssl-dev perl dtbtool linux-headers installkernel"
+
+# Source
+_repository="linux-samsung-sm-t560"
+_commit="e81e8d5094db8f10ff44cc95f55939c90df35e51"
+_config="config-$_flavor.$arch"
+source="
+	$pkgname-$_commit.tar.gz::https://github.com/pmsourcedump/$_repository/archive/$_commit.tar.gz
+	$_config
+	gcc7-give-up-on-ilog2-const-optimizations.patch
+	gcc8-fix-put-user.patch
+	gcc10-extern_YYLOC_global_declaration.patch
+	kernel-use-the-gnu89-standard-explicitly.patch
+	linux3.0-8933-1-replace-Sun-Solaris-style-flag-on-section.patch
+	linux3.4-fix-piggy.gzip.S.patch
+	fix-recordmcount.patch
+	fix-dtb_qcom-msm-id.patch
+	sprdfb-check-for-buffering.patch
+	sprdfb-fix-swapped-colors.patch
+	0001-sm-t560-vb2-sr200pc20m-camera.patch
+	0002-sm-t560-camera-mclk-einval-fallback-r13.patch
+	0003-sm-t560-camera-manual-open-once-guard-r14.patch
+	0004-sm-t560-camera-init-mclk-handle-r15.patch
+	0005-sm-t560-camera-reject-grey-and-log-no-frame-r16.patch
+	0006-sm-t560-camera-csi2-host-snapshot-r17.patch
+	0007-sm-t560-camera-csi-phy-id-param-r17.patch
+	0008-sm-t560-camera-yuv-pattern-param-phy-c-default-r18.patch
+	0009-sm-t560-camera-retire-one-shot-guard-r19.patch
+	0010-sm-t560-camera-silence-sof-wait-printk-r20.patch
+"
+builddir="$srcdir/$_repository-$_commit"
+_outdir="out"
+
+prepare() {
+	default_prepare
+	. downstreamkernel_prepare
+}
+
+build() {
+	unset LDFLAGS
+	make O="$_outdir" ARCH="$_carch" CC="${CC:-gcc}" \
+		KBUILD_BUILD_VERSION="$((pkgrel + 1 ))-postmarketOS"
+}
+
+package() {
+	downstreamkernel_package "$builddir" "$pkgdir" "$_carch" "$_flavor" "$_outdir"
+
+	# Master DTB (deviceinfo_bootimg_qcdt)
+	dtbTool -p scripts/dtc/ -o "$_outdir/arch/$_carch/boot"/dt.img "$_outdir/arch/$_carch/boot/"
+	install -Dm644 "$_outdir/arch/$_carch/boot"/dt.img "$pkgdir"/boot/dt.img
+}
+
+sha512sums="
+1d951c9e33d79250513665a617867816d81df866e869ba20664c9f4b2f05845e6ff7c667ba0ef11f9287109e6716d1b45164848a750e36202c4f95665759a2aa  linux-samsung-gtelwifi-e81e8d5094db8f10ff44cc95f55939c90df35e51.tar.gz
+47db2ca14321b367859c66d4ac53b235c2e3680ad1544ef71804bdb862e1090db342069e7d073cfcc4fb5324533771cb8ce3b51c53989007e8cf7b3319db2297  config-samsung-gtelwifi.armv7
+77eba606a71eafb36c32e9c5fe5e77f5e4746caac292440d9fb720763d766074a964db1c12bc76fe583c5d1a5c864219c59941f5e53adad182dbc70bf2bc14a7  gcc7-give-up-on-ilog2-const-optimizations.patch
+197d40a214ada87fcb2dfc0ae4911704b9a93354b75179cd6b4aadbb627a37ec262cf516921c84a8b1806809b70a7b440cdc8310a4a55fca5d2c0baa988e3967  gcc8-fix-put-user.patch
+2b48f1bf0e3f70703d2cdafc47d5e615cc7c56c70bec56b2e3297d3fa4a7a1321d649a8679614553dde8fe52ff1051dae38d5990e3744c9ca986d92187dcdbeb  gcc10-extern_YYLOC_global_declaration.patch
+ad0182a483791fc88e058838bc331b2f04a75ba291e763767babdb815efadfc3b4fda97e69e2e3f00a426cabea088e35297a92bd287592597d1e309be68ee92c  kernel-use-the-gnu89-standard-explicitly.patch
+66ab793bb1fa50a07f10e2cdb0f49ea05a787c6b1fe5358e69a76e43295ac5be3b68cdf6a882e868bfe6969cac981c5545587cd57eee4b5cec26078ae0ecaa1c  linux3.0-8933-1-replace-Sun-Solaris-style-flag-on-section.patch
+080745ca4ecaa804ee1df26ea81975ca93b74372e0c08322a6c481e97807495ae6ceb6cc77653afa24f9f2df45da8ebf8e5de6b06037fbb08e0279877ce42188  linux3.4-fix-piggy.gzip.S.patch
+32911549f0c89972d06af838954978ee90fb2eabacc1393c0bffa12deb9d80ddec5322f859df772d90afea733965bd669e85d5e90657d4f69995ae9fc25dd4f3  fix-recordmcount.patch
+e8137de3cc4d49d5447cad6c299f0f88c2d2e60e012168bc857f4898ebc1da5c88c679927227c8675211af079d5a56b5b1baef4a3dbc86cb4e921c14d3f93357  fix-dtb_qcom-msm-id.patch
+c985b4a320904c0c66fb976a4f66dd2671f21d7b86ea98c019684efc41b5801f4b9c23012f4aa37bc5ce3efd70a30523c9c78fcd6e5fbbcff172ff19d11a6579  sprdfb-check-for-buffering.patch
+6836001b24508d413a059f19b0c6f6f547037f68886c22159ad51be91d1a089e3d1d9ed79c3c62724648df7f810cd81d96a83f4a34368b373524b649e5539656  sprdfb-fix-swapped-colors.patch
+a10cf3d53a8b598e95e4549e8f4d1bbe08b6b06cef0a2c9b5f44f0e6ce85de23222cd848abc413bbb5b48fb3b4c95cee880df129c8113f9b838def39b3497a91  0001-sm-t560-vb2-sr200pc20m-camera.patch
+efa15b94870c0ab07896b60f7058caae9544a82d3814723964848b0a4b5d345d906504f414b8efc2762a64823aaf93bc3412425859673fdb03849d14d87e2f74  0002-sm-t560-camera-mclk-einval-fallback-r13.patch
+8036b540b596192e063775a9d911e94b482822de04e1789a0240dc893a015d73199a2fa06857e58f214bfbc02de2106f1ed0e2f80dfbf09def5e66e40584381d  0003-sm-t560-camera-manual-open-once-guard-r14.patch
+41aaac94e98d416b99f22b44dad20960b7672d7db29fc5429eecfe97a6b5d0868b9654656ec20bce5e65a24e53072c46064ceaff99d1b71fbaba98fdfbb0d558  0004-sm-t560-camera-init-mclk-handle-r15.patch
+ccd71e3d86da2fcb0c2b173a8197e8a5349f4440c9d25ee3791d645faa13c130fcee75823f386abe52918384f6f1ffdd465697f7b4c2b5a7da1dcb940a435458  0005-sm-t560-camera-reject-grey-and-log-no-frame-r16.patch
+6361da2143af992349b58bfc8af0710c7abdf7976dba4d50a16ceb1e51c4457a5b56d8b4857e167f042cee6246232da5b5bb0e8419e8d925c6b42b6f84a1d575  0006-sm-t560-camera-csi2-host-snapshot-r17.patch
+07a22cc8d38d0ec739a9e33e5ca2af16cc49a6fc504099fd34997a19105706b1d11ce6179fb8270164e4aa4a6d145d36d73659f34e60d6136399f088a483fcd7  0007-sm-t560-camera-csi-phy-id-param-r17.patch
+ded667103ba18d99369993f25db213ea2c0dc6204e0f3d6232dd192a3dc0c327cb9fcc06488acdef8e095b00e57137dc359bb8c6f7e083cddabf02c72c9bc9f1  0008-sm-t560-camera-yuv-pattern-param-phy-c-default-r18.patch
+1d5c9764185d9f00174a76ae2706a2f36d1471c8b9f494a1ce8b92d62e8487bad13ec2f6d1a2e0304ec618f71acdfe8cef7383939b195afbfea540b3aa4c121d  0009-sm-t560-camera-retire-one-shot-guard-r19.patch
+9de8b92ef8ce7c4b78c7fa642b19e8f77cb5e686c60ad7adbf8b48764005f690a12b063f3269c4d72ec0ea212d36a5b3543f944e8f5960936d0b34b993fcc771  0010-sm-t560-camera-silence-sof-wait-printk-r20.patch
+"

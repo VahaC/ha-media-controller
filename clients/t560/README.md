@@ -122,8 +122,9 @@ is ever written by hand is an optional set of fallbacks.
   unavailable where the tablet has nothing to read.
 - Camera motion detection: movement turns the display on while it is off, and
   postpones the automatic screen off while it continues. It is off by default
-  because the built-in camera of this tablet cannot stream to userspace; see
-  [CAMERA.md](docs/CAMERA.md).
+  because the stock postmarketOS kernel cannot stream from the built-in camera;
+  the patched kernel in [firmware/](firmware/README.md) can, and
+  [CAMERA.md](docs/CAMERA.md) describes the detector.
 - Camera analysis runs in a separate low-priority daemon, never in the panel
   process, and the panel keeps working when no camera node is usable.
 - The physical Home button toggles between the panel and desktop while the
@@ -456,14 +457,18 @@ Python standard library and no OpenCV or neural-network runtime.
 
 Every setting lives in the `[camera]` section of `config.ini`.
 `motion_detection` is `off` by default: the `/dev/video0` DCAM shim of the
-SM-T560 rejects `VIDIOC_REQBUFS`, so no application can capture frames from
-the built-in sensor under the 3.10.17 kernel. `t560-motion-detector.py
---probe` reports each node and the exact call at which capture stops, and the
-feature works as soon as a camera answers it with `capture works`, for example
-a USB camera on the OTG port.
+stock postmarketOS 3.10.17 kernel rejects `VIDIOC_REQBUFS`, so no application
+can capture frames from the built-in sensor. The patched kernel in
+[firmware/](firmware/README.md) adds a videobuf2 streaming path and a driver
+for the SR200PC20M front sensor; with it the built-in camera answers
+`t560-motion-detector.py --probe` with `capture works` and the feature runs on
+the tablet itself. The probe reports each node and the exact call at which
+capture stops, and the feature also works with any other camera that passes
+it, for example a USB camera on the OTG port.
 
 The measured driver behaviour, the architecture, and the tuning notes are
-documented in [CAMERA.md](docs/CAMERA.md), and the kernel and root filesystem
-changes that would make the built-in camera usable are listed in
-[CAMERA_FIRMWARE.md](docs/CAMERA_FIRMWARE.md). Object recognition should still run
+documented in [CAMERA.md](docs/CAMERA.md); the kernel requirements the
+firmware was built against are in [CAMERA_FIRMWARE.md](docs/CAMERA_FIRMWARE.md),
+and the kernel package, the prebuilt boot image and the flashing procedure in
+[firmware/README.md](firmware/README.md). Object recognition should still run
 on a more powerful LAN server after the tablet detects motion.

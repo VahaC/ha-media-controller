@@ -1,0 +1,65 @@
+diff --git a/drivers/media/sprd_sensor/gtelwifi/sr200pc20m_gtelwifi.c b/drivers/media/sprd_sensor/gtelwifi/sr200pc20m_gtelwifi.c
+--- a/drivers/media/sprd_sensor/gtelwifi/sr200pc20m_gtelwifi.c
++++ b/drivers/media/sprd_sensor/gtelwifi/sr200pc20m_gtelwifi.c
+@@ -39,6 +39,32 @@ static int sr200pc20m_powered;
+ static int sr200pc20m_streaming;
+ static struct v4l2_subdev sr200pc20m_subdev;
+ 
++/*
++ * camera-r17: which CSI-2 D-PHY the front camera is wired to is not recorded
++ * in the kernel tree or the DTS. Root may select PHY A (1, default), PHY B (2)
++ * or PHY C (4) for one manually armed open without rebuilding the kernel.
++ * The value used at stream start is remembered so that the matching close
++ * always releases the same PHY.
++ */
++static unsigned int gtelwifi_camera_csi_phy_id = SR200PC20M_CSI_PHY_ID;
++module_param_named(gtelwifi_camera_csi_phy_id,
++	gtelwifi_camera_csi_phy_id, uint, 0600);
++MODULE_PARM_DESC(gtelwifi_camera_csi_phy_id,
++	"SM-T560 front camera CSI-2 PHY: 1=PHY A (default), 2=PHY B, 4=PHY C");
++static unsigned int sr200pc20m_active_phy_id = SR200PC20M_CSI_PHY_ID;
++
++static unsigned int sr200pc20m_select_phy_id(void)
++{
++	unsigned int phy_id = gtelwifi_camera_csi_phy_id;
++
++	if (phy_id != 0x01 && phy_id != 0x02 && phy_id != 0x04) {
++		pr_err("sr200pc20m: invalid gtelwifi_camera_csi_phy_id 0x%x, using PHY A\n",
++		       phy_id);
++		phy_id = SR200PC20M_CSI_PHY_ID;
++	}
++	return phy_id;
++}
++
+ static int sr200pc20m_write(uint8_t reg, uint8_t value)
+ {
+ 	int attempt;
+@@ -138,7 +164,11 @@ static int sr200pc20m_gtelwifi_stream(int on)
+ 	}
+ 
+ 	if (on) {
+-		ret = sensor_k_mipi_open(SR200PC20M_CSI_PHY_ID,
++		sr200pc20m_active_phy_id = sr200pc20m_select_phy_id();
++		pr_info("camera-r17: opening MIPI on CSI phy_id=0x%x lanes=%u mbps=%u\n",
++			sr200pc20m_active_phy_id, SR200PC20M_CSI_LANES,
++			SR200PC20M_CSI_MBPS);
++		ret = sensor_k_mipi_open(sr200pc20m_active_phy_id,
+ 					 SR200PC20M_CSI_LANES,
+ 					 SR200PC20M_CSI_MBPS);
+ 		if (ret)
+@@ -163,13 +193,13 @@ static int sr200pc20m_gtelwifi_stream(int on)
+ 	}
+ 
+ 	ret = sr200pc20m_write_table(stream_stop, ARRAY_SIZE(stream_stop));
+-	sensor_k_mipi_close(SR200PC20M_CSI_PHY_ID);
++	sensor_k_mipi_close(sr200pc20m_active_phy_id);
+ 	sr200pc20m_streaming = 0;
+ 	pr_info("sr200pc20m: preview stream stopped\n");
+ 	goto out;
+ 
+ close_mipi:
+-	sensor_k_mipi_close(SR200PC20M_CSI_PHY_ID);
++	sensor_k_mipi_close(sr200pc20m_active_phy_id);
+ out:
+ 	mutex_unlock(&sr200pc20m_lock);
+ 	return ret;

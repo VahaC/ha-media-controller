@@ -1,0 +1,131 @@
+diff --git a/drivers/media/sprd_dcam/common/dcam_v4l2.c b/drivers/media/sprd_dcam/common/dcam_v4l2.c
+--- a/drivers/media/sprd_dcam/common/dcam_v4l2.c
++++ b/drivers/media/sprd_dcam/common/dcam_v4l2.c
+@@ -202,6 +202,8 @@ module_param_named(gtelwifi_camera_unsafe_open_once,
+ 	gtelwifi_camera_unsafe_open_once, bool, 0600);
+ MODULE_PARM_DESC(gtelwifi_camera_unsafe_open_once,
+ 	"Allow exactly one manually armed SM-T560 camera open");
++/* camera-r17: read-only CSI-2 host snapshot, see sprd_sensor/csi2/csi_api.c */
++void csi_api_gtelwifi_dump(const char *tag);
+ #endif
+ 
+ #ifndef __SIMULATOR__
+@@ -2392,6 +2394,10 @@ LOCAL void sprd_timer_callback(unsigned long data)
+ 	}
+ 	if (0 == atomic_read(&dev->run_flag)) {
+ 		printk("DCAM timeout.\n");
++#if defined(CONFIG_MACH_GTELWIFI)
++		/* timer context: MMIO reads and printk only, CSI is still enabled */
++		csi_api_gtelwifi_dump("dcam-timeout");
++#endif
+ 		memset((void*)&node, 0, sizeof(struct dcam_node));
+ 		node.irq_flag = V4L2_TIMEOUT;
+ 		node.f_type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+@@ -2838,8 +2844,10 @@ LOCAL int sprd_vb2_stop_streaming(struct vb2_queue *queue)
+ #if defined(CONFIG_MACH_GTELWIFI)
+ 	printk("camera-r16: stopping stream after %u completed frame(s)\n",
+ 		dev->vb2_sequence);
+-	if (!dev->vb2_sequence)
++	if (!dev->vb2_sequence) {
+ 		sprd_v4l2_print_reg();
++		csi_api_gtelwifi_dump("stream-stop");
++	}
+ #endif
+ 	ret = sprd_v4l2_stop_hardware(dev);
+ #if defined(CONFIG_MACH_GTELWIFI)
+diff --git a/drivers/media/sprd_sensor/csi2/csi_api.c b/drivers/media/sprd_sensor/csi2/csi_api.c
+--- a/drivers/media/sprd_sensor/csi2/csi_api.c
++++ b/drivers/media/sprd_sensor/csi2/csi_api.c
+@@ -666,6 +666,63 @@ int csi_reg_isr(csi2_isr_func user_func, void* user_data)
+ 	return 0;
+ }
+ 
++#if defined(CONFIG_MACH_GTELWIFI) && defined(CONFIG_ARCH_SCX30G)
++/*
++ * camera-r17: read-only CSI-2 host / D-PHY snapshot for the SM-T560 no-frame
++ * diagnosis. Plain MMIO reads and printk only: no allocation, no sleeping and
++ * no register writes, so it is safe from the DCAM timeout timer (softirq
++ * context) as well as from process context. The caller must keep the stream
++ * open; CSI2_EB is re-checked here before the CSI host block is touched.
++ *
++ * PHY_STATE, ERR1 and ERR2 bit names follow the Synopsys DesignWare MIPI CSI-2
++ * host layout that this driver already relies on (csi_lane_module_state,
++ * csi_clk_state, csi_api_event_map). ERR1/ERR2 are read-to-clear on that IP,
++ * so every snapshot reports the errors accumulated since the previous one.
++ */
++void csi_api_gtelwifi_dump(const char *tag)
++{
++	volatile u32 *csi = (volatile u32 *)SPRD_CSI2_BASE;
++	u32 ahb_eb, ckg, csi2_ctrl, pwr, phy_state, err1, err2;
++	int i;
++
++	ahb_eb = sci_glb_raw_read(REG_MM_AHB_AHB_EB);
++	ckg = sci_glb_raw_read(REG_MM_AHB_GEN_CKG_CFG);
++	csi2_ctrl = sci_glb_raw_read(REG_MM_AHB_MIPI_CSI2_CTRL);
++	pwr = sci_glb_raw_read(REG_AON_APB_PWR_CTRL);
++	printk("camera-r17 csi[%s]: MMAHB AHB_EB=0x%08x (CSI_EB=%u DCAM_EB=%u) GEN_CKG_CFG=0x%08x MIPI_CSI2_CTRL=0x%08x (CPHY_SEL=%u TEST_CTL=%u SYNC_MODE=%u SAMPLE_SEL=%u SEL_AB_C=%u) AON_PWR_CTRL=0x%08x (CSI0_PHY_PD=%u CSI1_PHY_PD=%u)\n",
++		tag, ahb_eb, !!(ahb_eb & BIT_CSI_EB), !!(ahb_eb & BIT_DCAM_EB), ckg,
++		csi2_ctrl, csi2_ctrl & 0x1, (csi2_ctrl >> 1) & 0x1,
++		(csi2_ctrl >> 2) & 0x1, (csi2_ctrl >> 3) & 0x3, (csi2_ctrl >> 5) & 0x1,
++		pwr, !!(pwr & BIT_CSI0_PHY_PD), !!(pwr & BIT_CSI1_PHY_PD));
++	if (!(ahb_eb & BIT_CSI_EB)) {
++		printk("camera-r17 csi[%s]: CSI2_EB is off, CSI host registers not read\n", tag);
++		return;
++	}
++	printk("camera-r17 csi[%s]: VERSION=0x%08x N_LANES=0x%08x PHY_SHUTDOWNZ=0x%08x DPHY_RSTZ=0x%08x CSI2_RESETN=0x%08x DATA_IDS_1=0x%08x DATA_IDS_2=0x%08x MASK1=0x%08x MASK2=0x%08x PHY_TST_CTRL0=0x%08x PHY_TST_CTRL1=0x%08x\n",
++		tag, csi[VERSION >> 2], csi[N_LANES >> 2], csi[PHY_SHUTDOWNZ >> 2],
++		csi[DPHY_RSTZ >> 2], csi[CSI2_RESETN >> 2], csi[DATA_IDS_1 >> 2],
++		csi[DATA_IDS_2 >> 2], csi[MASK1 >> 2], csi[MASK2 >> 2],
++		csi[PHY_TST_CRTL0 >> 2], csi[PHY_TST_CRTL1 >> 2]);
++	for (i = 0; i < 4; i++) {
++		phy_state = csi[PHY_STATE >> 2];
++		printk("camera-r17 csi[%s]: PHY_STATE[%d]=0x%08x rxclkactivehs=%u stopstateclk=%u rxulpsclknot=%u stopstatedata=0x%x rxulpsesc=0x%x\n",
++			tag, i, phy_state, !!(phy_state & (1 << 8)),
++			!!(phy_state & (1 << 10)), !!(phy_state & (1 << 9)),
++			(phy_state >> 4) & 0xf, phy_state & 0xf);
++		udelay(50);
++	}
++	err1 = csi[ERR1 >> 2];
++	err2 = csi[ERR2 >> 2];
++	printk("camera-r17 csi[%s]: ERR1=0x%08x sot_sync_hs=0x%x frame_boundary=0x%x frame_seq=0x%x frame_data_crc=0x%x line_boundary=0x%x line_seq=0x%x line_crc=0x%x ecc_double=%u\n",
++		tag, err1, err1 & 0xf, (err1 >> 4) & 0xf, (err1 >> 8) & 0xf,
++		(err1 >> 12) & 0xf, (err1 >> 16) & 0xf, (err1 >> 20) & 0xf,
++		(err1 >> 24) & 0xf, !!(err1 & (1 << 28)));
++	printk("camera-r17 csi[%s]: ERR2=0x%08x escape_entry=0x%x sot_hs=0x%x ecc_corrected=0x%x unsupported_data_type=0x%x line_boundary_hi=0x%x line_seq_hi=0x%x\n",
++		tag, err2, err2 & 0xf, (err2 >> 4) & 0xf, (err2 >> 8) & 0xf,
++		(err2 >> 12) & 0xf, (err2 >> 16) & 0xf, (err2 >> 20) & 0xf);
++}
++#endif
++
+ int csi_read_registers(u32* reg_buf, u32 *buf_len)
+ {
+ 	u32                *reg_addr = (u32*)SPRD_CSI2_BASE;
+diff --git a/drivers/media/sprd_sensor/gtelwifi/sr200pc20m_gtelwifi.c b/drivers/media/sprd_sensor/gtelwifi/sr200pc20m_gtelwifi.c
+--- a/drivers/media/sprd_sensor/gtelwifi/sr200pc20m_gtelwifi.c
++++ b/drivers/media/sprd_sensor/gtelwifi/sr200pc20m_gtelwifi.c
+@@ -23,6 +23,9 @@
+ #include "sr200pc20m_gtelwifi.h"
+ #include "sr200pc20m_regs_50hz.h"
+ 
++/* camera-r17: read-only CSI-2 host snapshot, see ../csi2/csi_api.c */
++void csi_api_gtelwifi_dump(const char *tag);
++
+ #define SR200PC20M_CHIP_ID_REG  0x04
+ #define SR200PC20M_CHIP_ID_B4   0xb4
+ #define SR200PC20M_CHIP_ID_B8   0xb8
+@@ -140,6 +143,7 @@ static int sr200pc20m_gtelwifi_stream(int on)
+ 					 SR200PC20M_CSI_MBPS);
+ 		if (ret)
+ 			goto out;
++		csi_api_gtelwifi_dump("mipi-open");
+ 		ret = sr200pc20m_detect();
+ 		if (ret)
+ 			goto close_mipi;
+@@ -154,6 +158,7 @@ static int sr200pc20m_gtelwifi_stream(int on)
+ 			goto close_mipi;
+ 		sr200pc20m_streaming = 1;
+ 		pr_info("sr200pc20m: 800x600 preview stream started\n");
++		csi_api_gtelwifi_dump("sensor-stream-start");
+ 		goto out;
+ 	}
+ 

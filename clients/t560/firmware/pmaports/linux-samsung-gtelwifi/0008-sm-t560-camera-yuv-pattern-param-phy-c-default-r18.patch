@@ -1,0 +1,75 @@
+diff --git a/drivers/media/sprd_dcam/common/dcam_v4l2.c b/drivers/media/sprd_dcam/common/dcam_v4l2.c
+--- a/drivers/media/sprd_dcam/common/dcam_v4l2.c
++++ b/drivers/media/sprd_dcam/common/dcam_v4l2.c
+@@ -204,6 +204,18 @@ MODULE_PARM_DESC(gtelwifi_camera_unsafe_open_once,
+ 	"Allow exactly one manually armed SM-T560 camera open");
+ /* camera-r17: read-only CSI-2 host snapshot, see sprd_sensor/csi2/csi_api.c */
+ void csi_api_gtelwifi_dump(const char *tag);
++/*
++ * camera-r18: the r17 frame captured through CSI PHY C showed the sensor
++ * bytes arriving in UYVY/VYUY order while the capture unit was programmed
++ * for YUYV (luma plane flat at 128, the picture sitting in the chroma
++ * plane). Root may pick the DCAM_CAP_YUV_TYPE pattern for the next open:
++ * 0=YUYV 1=YVYU 2=UYVY (default) 3=VYUY.
++ */
++static unsigned int gtelwifi_camera_yuv_pattern = DCAM_UYVY;
++module_param_named(gtelwifi_camera_yuv_pattern,
++	gtelwifi_camera_yuv_pattern, uint, 0600);
++MODULE_PARM_DESC(gtelwifi_camera_yuv_pattern,
++	"SM-T560 DCAM capture YUV byte order: 0=YUYV 1=YVYU 2=UYVY (default) 3=VYUY");
+ #endif
+ 
+ #ifndef __SIMULATOR__
+@@ -2444,7 +2456,18 @@ LOCAL int sprd_init_handle(struct file *file)
+ 	memset(info, 0, sizeof(*info));
+ 	info->if_mode = DCAM_CAP_IF_CSI2;
+ 	info->sn_mode = DCAM_CAP_MODE_YUV;
++#if defined(CONFIG_MACH_GTELWIFI)
++	info->yuv_ptn = gtelwifi_camera_yuv_pattern;
++	if (info->yuv_ptn >= DCAM_PATTERN_MAX) {
++		printk("camera-r18: invalid gtelwifi_camera_yuv_pattern %u, using UYVY\n",
++			info->yuv_ptn);
++		info->yuv_ptn = DCAM_UYVY;
++	}
++	printk("camera-r18: DCAM capture YUV pattern=%u (0=YUYV 1=YVYU 2=UYVY 3=VYUY)\n",
++		info->yuv_ptn);
++#else
+ 	info->yuv_ptn = DCAM_YUYV;
++#endif
+ 	info->data_bits = DCAM_CAP_8_BITS;
+ 	info->lane_num = 1;
+ 	info->pclk = 480;
+diff --git a/drivers/media/sprd_sensor/gtelwifi/sr200pc20m_gtelwifi.c b/drivers/media/sprd_sensor/gtelwifi/sr200pc20m_gtelwifi.c
+--- a/drivers/media/sprd_sensor/gtelwifi/sr200pc20m_gtelwifi.c
++++ b/drivers/media/sprd_sensor/gtelwifi/sr200pc20m_gtelwifi.c
+@@ -30,7 +30,7 @@ void csi_api_gtelwifi_dump(const char *tag);
+ #define SR200PC20M_CHIP_ID_B4   0xb4
+ #define SR200PC20M_CHIP_ID_B8   0xb8
+ #define SR200PC20M_I2C_ADDR     0x20
+-#define SR200PC20M_CSI_PHY_ID   0x01
++#define SR200PC20M_CSI_PHY_ID   0x04
+ #define SR200PC20M_CSI_LANES    1
+ #define SR200PC20M_CSI_MBPS     480
+ 
+@@ -41,8 +41,10 @@ static struct v4l2_subdev sr200pc20m_subdev;
+ 
+ /*
+  * camera-r17: which CSI-2 D-PHY the front camera is wired to is not recorded
+- * in the kernel tree or the DTS. Root may select PHY A (1, default), PHY B (2)
+- * or PHY C (4) for one manually armed open without rebuilding the kernel.
++ * in the kernel tree or the DTS. Root may select PHY A (1), PHY B (2) or
++ * PHY C (4) for one manually armed open without rebuilding the kernel.
++ * camera-r18: PHY C is the default; it is the only PHY that received the
++ * sensor's HS clock and a frame in the r17 tests.
+  * The value used at stream start is remembered so that the matching close
+  * always releases the same PHY.
+  */
+@@ -50,7 +52,7 @@ static unsigned int gtelwifi_camera_csi_phy_id = SR200PC20M_CSI_PHY_ID;
+ module_param_named(gtelwifi_camera_csi_phy_id,
+ 	gtelwifi_camera_csi_phy_id, uint, 0600);
+ MODULE_PARM_DESC(gtelwifi_camera_csi_phy_id,
+-	"SM-T560 front camera CSI-2 PHY: 1=PHY A (default), 2=PHY B, 4=PHY C");
++	"SM-T560 front camera CSI-2 PHY: 1=PHY A, 2=PHY B, 4=PHY C (default)");
+ static unsigned int sr200pc20m_active_phy_id = SR200PC20M_CSI_PHY_ID;
+ 
+ static unsigned int sr200pc20m_select_phy_id(void)

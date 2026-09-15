@@ -1,0 +1,30 @@
+diff --git a/drivers/media/sprd_dcam/sc8830g/dcam_drv.c b/drivers/media/sprd_dcam/sc8830g/dcam_drv.c
+--- a/drivers/media/sprd_dcam/sc8830g/dcam_drv.c
++++ b/drivers/media/sprd_dcam/sc8830g/dcam_drv.c
+@@ -3661,7 +3661,14 @@ LOCAL void    _dcam_path1_sof(void)
+ 
+ 		if (rtn) {
+ 			path->need_wait = 1;
++#if defined(CONFIG_MACH_GTELWIFI)
++			/* camera-r20: normal when the consumer is slower than the
++			 * sensor (motion detector reads every 400 ms); a printk per
++			 * start-of-frame flooded the kernel log at ~15 lines/s. */
++			DCAM_TRACE("DCAM: sof 1 wait \n");
++#else
+ 			printk("DCAM: sof 1 wait \n");
++#endif
+ 			return;
+ 		}
+ 	}
+@@ -3723,7 +3730,11 @@ LOCAL void    _dcam_path2_sof(void)
+ 
+ 			if (rtn) {
+ 				path->need_wait = 1;
++#if defined(CONFIG_MACH_GTELWIFI)
++				DCAM_TRACE("DCAM:sof 2 wait \n");
++#else
+ 				printk("DCAM:sof 2 wait \n");
++#endif
+ 				return;
+ 			}
+ 		}

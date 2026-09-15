@@ -1,0 +1,64 @@
+diff --git a/drivers/media/sprd_dcam/common/dcam_v4l2.c b/drivers/media/sprd_dcam/common/dcam_v4l2.c
+--- a/drivers/media/sprd_dcam/common/dcam_v4l2.c
++++ b/drivers/media/sprd_dcam/common/dcam_v4l2.c
+@@ -197,11 +197,18 @@ struct dcam_dev {
+ #endif
+ };
+ #if defined(CONFIG_MACH_GTELWIFI)
+-static bool gtelwifi_camera_unsafe_open_once;
+-module_param_named(gtelwifi_camera_unsafe_open_once,
+-	gtelwifi_camera_unsafe_open_once, bool, 0600);
+-MODULE_PARM_DESC(gtelwifi_camera_unsafe_open_once,
+-	"Allow exactly one manually armed SM-T560 camera open");
++/*
++ * camera-r19: the r14 one-shot guard is retired. The SM-T560 front camera
++ * path (CSI PHY C, UYVY capture order, NV21 320x240) delivered real frames
++ * in r18, so opens are allowed by default. A root-only kill switch remains
++ * for emergencies:
++ *   echo 1 > /sys/module/sprd_dcam/parameters/gtelwifi_camera_disable
++ */
++static bool gtelwifi_camera_disable;
++module_param_named(gtelwifi_camera_disable,
++	gtelwifi_camera_disable, bool, 0600);
++MODULE_PARM_DESC(gtelwifi_camera_disable,
++	"Refuse every SM-T560 camera open (emergency switch, default N)");
+ /* camera-r17: read-only CSI-2 host snapshot, see sprd_sensor/csi2/csi_api.c */
+ void csi_api_gtelwifi_dump(const char *tag);
+ /*
+@@ -2515,15 +2522,12 @@ LOCAL int sprd_v4l2_open(struct file *file)
+ 	int                      sensor_powered = 0;
+ 	mutex_lock(&dev->dcam_mutex);
+ #if defined(CONFIG_MACH_GTELWIFI)
+-	if (!gtelwifi_camera_unsafe_open_once) {
++	if (gtelwifi_camera_disable) {
+ 		printk(KERN_WARNING
+-			"V4L2: SM-T560 camera open blocked; arm gtelwifi_camera_unsafe_open_once manually\n");
++			"V4L2: SM-T560 camera open refused by gtelwifi_camera_disable\n");
+ 		mutex_unlock(&dev->dcam_mutex);
+ 		return -EPERM;
+ 	}
+-	gtelwifi_camera_unsafe_open_once = false;
+-	printk(KERN_WARNING
+-		"V4L2: SM-T560 one-shot camera open armed; guard consumed\n");
+ #endif
+ 	if (unlikely(atomic_inc_return(&dev->users) > 1)) {
+ 		ret = -EBUSY;
+diff --git a/drivers/media/sprd_sensor/gtelwifi/sr200pc20m_gtelwifi.c b/drivers/media/sprd_sensor/gtelwifi/sr200pc20m_gtelwifi.c
+--- a/drivers/media/sprd_sensor/gtelwifi/sr200pc20m_gtelwifi.c
++++ b/drivers/media/sprd_sensor/gtelwifi/sr200pc20m_gtelwifi.c
+@@ -175,7 +175,6 @@ static int sr200pc20m_gtelwifi_stream(int on)
+ 					 SR200PC20M_CSI_MBPS);
+ 		if (ret)
+ 			goto out;
+-		csi_api_gtelwifi_dump("mipi-open");
+ 		ret = sr200pc20m_detect();
+ 		if (ret)
+ 			goto close_mipi;
+@@ -190,7 +189,6 @@ static int sr200pc20m_gtelwifi_stream(int on)
+ 			goto close_mipi;
+ 		sr200pc20m_streaming = 1;
+ 		pr_info("sr200pc20m: 800x600 preview stream started\n");
+-		csi_api_gtelwifi_dump("sensor-stream-start");
+ 		goto out;
+ 	}
+ 

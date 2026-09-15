@@ -1,0 +1,35 @@
+diff --git a/drivers/media/sprd_dcam/common/dcam_v4l2.c b/drivers/media/sprd_dcam/common/dcam_v4l2.c
+--- a/drivers/media/sprd_dcam/common/dcam_v4l2.c
++++ b/drivers/media/sprd_dcam/common/dcam_v4l2.c
+@@ -196,5 +196,13 @@ struct dcam_dev {
+ #endif
+ };
++#if defined(CONFIG_MACH_GTELWIFI)
++static bool gtelwifi_camera_unsafe_open_once;
++module_param_named(gtelwifi_camera_unsafe_open_once,
++	gtelwifi_camera_unsafe_open_once, bool, 0600);
++MODULE_PARM_DESC(gtelwifi_camera_unsafe_open_once,
++	"Allow exactly one manually armed SM-T560 camera open");
++#endif
++
+ #ifndef __SIMULATOR__
+ LOCAL int sprd_v4l2_tx_done(struct dcam_frame *frame, void* param);
+ LOCAL int sprd_v4l2_tx_error(struct dcam_frame *frame, void* param);
+@@ -2467,6 +2475,17 @@ LOCAL int sprd_v4l2_open(struct file *file)
+ 	int                      module_enabled = 0;
+ 	int                      sensor_powered = 0;
+ 	mutex_lock(&dev->dcam_mutex);
++#if defined(CONFIG_MACH_GTELWIFI)
++	if (!gtelwifi_camera_unsafe_open_once) {
++		printk(KERN_WARNING
++			"V4L2: SM-T560 camera open blocked; arm gtelwifi_camera_unsafe_open_once manually\n");
++		mutex_unlock(&dev->dcam_mutex);
++		return -EPERM;
++	}
++	gtelwifi_camera_unsafe_open_once = false;
++	printk(KERN_WARNING
++		"V4L2: SM-T560 one-shot camera open armed; guard consumed\n");
++#endif
+ 	if (unlikely(atomic_inc_return(&dev->users) > 1)) {
+ 		ret = -EBUSY;
+ 		goto exit;

@@ -63,10 +63,10 @@ web_port=8730
 # postponed. Analysis runs in the separate t560-motion-detector.py daemon,
 # never in the panel process.
 [camera]
-# The built-in SM-T560 camera cannot be used: its DCAM driver rejects
-# VIDIOC_REQBUFS, so no application can capture frames from it. Keep this off
-# on that tablet. Set it to on for hardware whose camera answers
-# `t560-motion-detector.py --probe` with "capture works".
+# The built-in SM-T560 camera works only with the patched kernel from
+# firmware/ (see firmware/README.md); the stock postmarketOS kernel rejects
+# VIDIOC_REQBUFS, so no application can capture frames from it. Set this to on
+# once `t560-motion-detector.py --probe` answers "capture works".
 motion_detection=off
 # auto probes every /dev/video* capture node in ascending order. Set the node
 # of the front camera explicitly when several nodes accept capture; see
